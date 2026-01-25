@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const session = require('express-session');
+const SqliteStore = require('better-sqlite3-session-store')(session);
+const Database = require('better-sqlite3');
 const { WebSocketServer } = require('ws');
 const http = require('http');
 const path = require('path');
@@ -19,8 +21,18 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'maestro-secret-change-in-p
 // Initialize auth
 auth.initializeAuth();
 
-// Session middleware
+// Session store using SQLite for persistence across restarts
+const sessionDb = new Database(path.join(__dirname, '../data/sessions.db'));
+
+// Session middleware with persistent store
 const sessionMiddleware = session({
+  store: new SqliteStore({
+    client: sessionDb,
+    expired: {
+      clear: true,
+      intervalMs: 900000 // Clear expired sessions every 15 min
+    }
+  }),
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
