@@ -15,9 +15,9 @@ function attachToScreen(sessionName, options = {}) {
   // Create a unique ID for this PTY connection
   const ptyId = `${sessionName}-${Date.now()}`;
 
-  // First check if the screen session exists
-  // We'll spawn screen -r which will attach to the session
-  const ptyProcess = pty.spawn('screen', ['-r', sessionName], {
+  // Use -x for multi-display mode (allows attaching even if already attached)
+  // Use -S for exact session name match (prevents partial matching)
+  const ptyProcess = pty.spawn('screen', ['-x', '-S', sessionName], {
     name: 'xterm-256color',
     cols,
     rows,
