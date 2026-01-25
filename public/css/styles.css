@@ -283,6 +283,25 @@ h1 span { color: var(--accent); }
   color: var(--warning);
 }
 
+.git-link {
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.git-link:hover {
+  background: var(--bg-hover);
+}
+
+.git-external {
+  margin-left: auto;
+  opacity: 0.5;
+}
+
+.git-link:hover .git-external {
+  opacity: 1;
+}
+
 /* Agents section */
 .agents-header {
   display: flex;

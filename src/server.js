@@ -552,11 +552,32 @@ app.get('/api/projects/:id/git', (req, res) => {
       };
     } catch {}
 
+    // Get remote URL and convert to web URL
+    let remoteUrl = null;
+    try {
+      const remote = execSync('git remote get-url origin', { cwd, encoding: 'utf-8', stdio: 'pipe' }).trim();
+      // Convert git URLs to web URLs
+      // git@github.com:user/repo.git -> https://github.com/user/repo
+      // https://github.com/user/repo.git -> https://github.com/user/repo
+      if (remote.includes('github.com')) {
+        remoteUrl = remote
+          .replace(/^git@github\.com:/, 'https://github.com/')
+          .replace(/\.git$/, '');
+      } else if (remote.includes('gitlab.com')) {
+        remoteUrl = remote
+          .replace(/^git@gitlab\.com:/, 'https://gitlab.com/')
+          .replace(/\.git$/, '');
+      } else if (remote.startsWith('https://')) {
+        remoteUrl = remote.replace(/\.git$/, '');
+      }
+    } catch {}
+
     res.json({
       isGitRepo: true,
       branch,
       uncommittedChanges,
-      lastCommit
+      lastCommit,
+      remoteUrl
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

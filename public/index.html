@@ -350,13 +350,14 @@
             ${project.description ? `<div class="card-description">${escapeHtml(project.description)}</div>` : ''}
             ${project.path ? `<div class="card-path">${escapeHtml(project.path)}</div>` : ''}
             ${gitInfo && gitInfo.isGitRepo ? `
-              <div class="git-info">
+              ${gitInfo.remoteUrl ? `<a href="${escapeHtml(gitInfo.remoteUrl)}" target="_blank" class="git-info git-link">` : '<div class="git-info">'}
                 <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                   <path d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9"/>
                 </svg>
                 <span class="git-branch">${escapeHtml(gitInfo.branch)}</span>
                 ${gitInfo.uncommittedChanges > 0 ? `<span class="git-changes">+${gitInfo.uncommittedChanges}</span>` : ''}
-              </div>
+                ${gitInfo.remoteUrl ? `<svg class="git-external" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg>` : ''}
+              ${gitInfo.remoteUrl ? '</a>' : '</div>'}
             ` : ''}
 
             <div class="agents-header">
