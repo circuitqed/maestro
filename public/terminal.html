@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#000000">
+  <title>Terminal - Maestro</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --header-height: 48px;
+      --toolbar-height: 44px;
+    }
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    .terminal-container {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      height: 100dvh; /* Dynamic viewport height for mobile */
+    }
+
+    /* Header */
+    .terminal-header {
+      height: var(--header-height);
+      background: #1a1a1a;
+      border-bottom: 1px solid #333;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      flex-shrink: 0;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .back-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      background: none;
+      border: none;
+      color: #888;
+      cursor: pointer;
+      border-radius: 6px;
+    }
+
+    .back-btn:hover { background: #333; color: #fff; }
+
+    .session-info {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .session-name {
+      font-size: 0.95rem;
+      color: #fff;
+      font-weight: 500;
+    }
+
+    .session-status {
+      font-size: 0.75rem;
+      color: #888;
+    }
+
+    .session-status.connected { color: #22c55e; }
+    .session-status.disconnected { color: #ef4444; }
+    .session-status.connecting { color: #eab308; }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .icon-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      background: none;
+      border: none;
+      color: #888;
+      cursor: pointer;
+      border-radius: 6px;
+    }
+
+    .icon-btn:hover { background: #333; color: #fff; }
+
+    /* Terminal area */
+    .terminal-wrapper {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+    }
+
+    #terminal {
+      height: 100%;
+      width: 100%;
+    }
+
+    /* Make xterm fit properly */
+    .xterm {
+      height: 100%;
+      padding: 8px;
+    }
+
+    .xterm-viewport {
+      overflow-y: auto !important;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* Mobile toolbar */
+    .terminal-toolbar {
+      height: var(--toolbar-height);
+      background: #1a1a1a;
+      border-top: 1px solid #333;
+      display: flex;
+      align-items: center;
+      padding: 0 8px;
+      gap: 6px;
+      flex-shrink: 0;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .tool-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 44px;
+      height: 34px;
+      padding: 0 12px;
+      background: #333;
+      border: none;
+      border-radius: 6px;
+      color: #e0e0e0;
+      font-size: 0.85rem;
+      font-family: monospace;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .tool-btn:hover { background: #444; }
+    .tool-btn:active { background: #555; }
+
+    .tool-btn.danger { background: #7f1d1d; }
+    .tool-btn.danger:hover { background: #991b1b; }
+
+    /* Font size controls */
+    .font-controls {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-left: auto;
+    }
+
+    .font-size-btn {
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #333;
+      border: none;
+      border-radius: 6px;
+      color: #e0e0e0;
+      font-size: 1.1rem;
+      cursor: pointer;
+    }
+
+    .font-size-btn:hover { background: #444; }
+
+    .font-size-display {
+      color: #888;
+      font-size: 0.8rem;
+      min-width: 32px;
+      text-align: center;
+    }
+
+    /* Connection overlay */
+    .connection-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.9);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+    }
+
+    .connection-overlay.hidden { display: none; }
+
+    .connection-message {
+      color: #fff;
+      font-size: 1.1rem;
+      margin-bottom: 16px;
+    }
+
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid #333;
+      border-top-color: #7c3aed;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .retry-btn {
+      margin-top: 16px;
+      padding: 10px 20px;
+      background: #7c3aed;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      cursor: pointer;
+    }
+
+    .retry-btn:hover { background: #6d28d9; }
+
+    /* Desktop: hide toolbar on larger screens */
+    @media (min-width: 768px) {
+      .terminal-toolbar {
+        display: none;
+      }
+    }
+
+    /* Keyboard visible adjustments */
+    @media (max-height: 500px) {
+      .terminal-header {
+        height: 40px;
+      }
+      .terminal-toolbar {
+        height: 38px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="terminal-container">
+    <header class="terminal-header">
+      <div class="header-left">
+        <a href="/" class="back-btn">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path d="M19 12H5M12 19l-7-7 7-7"/>
+          </svg>
+        </a>
+        <div class="session-info">
+          <span id="session-name" class="session-name">Loading...</span>
+          <span id="session-status" class="session-status connecting">Connecting...</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <button class="icon-btn" onclick="reconnect()" title="Reconnect">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path d="M1 4v6h6M23 20v-6h-6"/>
+            <path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15"/>
+          </svg>
+        </button>
+        <button class="icon-btn" onclick="toggleFullscreen()" title="Fullscreen">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="terminal-wrapper">
+      <div id="terminal"></div>
+
+      <div id="connection-overlay" class="connection-overlay">
+        <div class="spinner"></div>
+        <p id="connection-message" class="connection-message">Connecting to session...</p>
+        <button id="retry-btn" class="retry-btn" style="display: none;" onclick="reconnect()">Retry</button>
+      </div>
+    </div>
+
+    <div class="terminal-toolbar">
+      <button class="tool-btn" onclick="sendKey('ctrl+c')">Ctrl+C</button>
+      <button class="tool-btn" onclick="sendKey('ctrl+d')">Ctrl+D</button>
+      <button class="tool-btn" onclick="sendKey('ctrl+z')">Ctrl+Z</button>
+      <button class="tool-btn" onclick="sendKey('tab')">Tab</button>
+      <button class="tool-btn" onclick="sendKey('escape')">Esc</button>
+      <button class="tool-btn" onclick="sendKey('up')">Up</button>
+      <button class="tool-btn" onclick="sendKey('down')">Down</button>
+      <div class="font-controls">
+        <button class="font-size-btn" onclick="changeFontSize(-1)">-</button>
+        <span id="font-size-display" class="font-size-display">14</span>
+        <button class="font-size-btn" onclick="changeFontSize(1)">+</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.min.js"></script>
+  <script>
+    // Get URL parameters
+    const params = new URLSearchParams(window.location.search);
+    const sessionName = params.get('session');
+    const agentId = params.get('agent');
+
+    // State
+    let ws = null;
+    let terminal = null;
+    let fitAddon = null;
+    let fontSize = parseInt(localStorage.getItem('maestro_terminal_font_size')) || 14;
+    let isConnected = false;
+
+    // Initialize
+    init();
+
+    function init() {
+      if (!sessionName) {
+        showError('No session specified');
+        return;
+      }
+
+      document.getElementById('session-name').textContent = sessionName;
+      initTerminal();
+      connect();
+
+      // Handle window resize
+      window.addEventListener('resize', debounce(fitTerminal, 100));
+
+      // Handle visibility change (reconnect when tab becomes visible)
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && !isConnected) {
+          reconnect();
+        }
+      });
+
+      // Prevent pull-to-refresh on mobile
+      document.body.addEventListener('touchmove', (e) => {
+        if (e.target.closest('.terminal-wrapper')) {
+          // Allow scrolling within terminal
+        }
+      }, { passive: false });
+    }
+
+    function initTerminal() {
+      terminal = new Terminal({
+        fontSize,
+        fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+        theme: {
+          background: '#000000',
+          foreground: '#e0e0e0',
+          cursor: '#fff',
+          cursorAccent: '#000',
+          selection: 'rgba(124, 58, 237, 0.4)',
+          black: '#000000',
+          red: '#ef4444',
+          green: '#22c55e',
+          yellow: '#eab308',
+          blue: '#3b82f6',
+          magenta: '#a855f7',
+          cyan: '#06b6d4',
+          white: '#e0e0e0',
+          brightBlack: '#666666',
+          brightRed: '#f87171',
+          brightGreen: '#4ade80',
+          brightYellow: '#facc15',
+          brightBlue: '#60a5fa',
+          brightMagenta: '#c084fc',
+          brightCyan: '#22d3ee',
+          brightWhite: '#ffffff'
+        },
+        cursorBlink: true,
+        cursorStyle: 'block',
+        scrollback: 10000,
+        allowProposedApi: true
+      });
+
+      fitAddon = new FitAddon.FitAddon();
+      const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+
+      terminal.loadAddon(fitAddon);
+      terminal.loadAddon(webLinksAddon);
+
+      terminal.open(document.getElementById('terminal'));
+
+      // Fit after a brief delay to ensure container is sized
+      setTimeout(fitTerminal, 50);
+
+      // Handle terminal input
+      terminal.onData((data) => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'input', data }));
+        }
+      });
+
+      // Handle terminal resize
+      terminal.onResize(({ cols, rows }) => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+        }
+      });
+
+      updateFontSizeDisplay();
+    }
+
+    function connect() {
+      setStatus('connecting', 'Connecting...');
+      showOverlay('Connecting to session...');
+
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${location.host}/ws/terminal`);
+
+      ws.onopen = () => {
+        console.log('WebSocket connected');
+
+        // Fit terminal and get dimensions
+        fitTerminal();
+        const { cols, rows } = terminal;
+
+        // Attach to screen session
+        ws.send(JSON.stringify({
+          type: 'attach',
+          sessionName,
+          cols,
+          rows
+        }));
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+
+          switch (data.type) {
+            case 'output':
+              terminal.write(data.data);
+              break;
+
+            case 'attached':
+              isConnected = true;
+              setStatus('connected', 'Connected');
+              hideOverlay();
+              terminal.focus();
+              break;
+
+            case 'error':
+              console.error('Terminal error:', data.message);
+              showError(data.message);
+              break;
+
+            case 'closed':
+              isConnected = false;
+              setStatus('disconnected', 'Session ended');
+              showError(`Session ended (exit code: ${data.exitCode})`);
+              break;
+          }
+        } catch (err) {
+          // Binary data or non-JSON message
+          console.error('Parse error:', err);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        isConnected = false;
+        setStatus('disconnected', 'Connection error');
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket closed');
+        isConnected = false;
+        setStatus('disconnected', 'Disconnected');
+        showError('Connection lost');
+      };
+    }
+
+    function reconnect() {
+      if (ws) {
+        ws.close();
+      }
+      connect();
+    }
+
+    function fitTerminal() {
+      if (fitAddon && terminal) {
+        try {
+          fitAddon.fit();
+        } catch (e) {
+          console.error('Fit error:', e);
+        }
+      }
+    }
+
+    function setStatus(state, text) {
+      const statusEl = document.getElementById('session-status');
+      statusEl.textContent = text;
+      statusEl.className = 'session-status ' + state;
+    }
+
+    function showOverlay(message, showRetry = false) {
+      const overlay = document.getElementById('connection-overlay');
+      const messageEl = document.getElementById('connection-message');
+      const retryBtn = document.getElementById('retry-btn');
+
+      messageEl.textContent = message;
+      retryBtn.style.display = showRetry ? 'block' : 'none';
+      overlay.classList.remove('hidden');
+    }
+
+    function hideOverlay() {
+      document.getElementById('connection-overlay').classList.add('hidden');
+    }
+
+    function showError(message) {
+      showOverlay(message, true);
+    }
+
+    // Send special keys
+    function sendKey(key) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      let data = '';
+      switch (key) {
+        case 'ctrl+c': data = '\x03'; break;
+        case 'ctrl+d': data = '\x04'; break;
+        case 'ctrl+z': data = '\x1a'; break;
+        case 'tab': data = '\t'; break;
+        case 'escape': data = '\x1b'; break;
+        case 'up': data = '\x1b[A'; break;
+        case 'down': data = '\x1b[B'; break;
+        case 'left': data = '\x1b[D'; break;
+        case 'right': data = '\x1b[C'; break;
+        case 'enter': data = '\r'; break;
+      }
+
+      if (data) {
+        ws.send(JSON.stringify({ type: 'input', data }));
+        terminal.focus();
+      }
+    }
+
+    // Font size controls
+    function changeFontSize(delta) {
+      fontSize = Math.max(8, Math.min(24, fontSize + delta));
+      terminal.options.fontSize = fontSize;
+      localStorage.setItem('maestro_terminal_font_size', fontSize);
+      updateFontSizeDisplay();
+      fitTerminal();
+    }
+
+    function updateFontSizeDisplay() {
+      document.getElementById('font-size-display').textContent = fontSize;
+    }
+
+    // Fullscreen
+    function toggleFullscreen() {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(err => {
+          console.log('Fullscreen error:', err);
+        });
+      } else {
+        document.exitFullscreen();
+      }
+    }
+
+    // Utility: debounce
+    function debounce(fn, wait) {
+      let timeout;
+      return function(...args) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => fn.apply(this, args), wait);
+      };
+    }
+
+    // Handle keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+      // Ctrl+Shift+R for reconnect
+      if (e.ctrlKey && e.shiftKey && e.key === 'R') {
+        e.preventDefault();
+        reconnect();
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: maestro
+    ports:
+      - "7007:5000"
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+      - ./data:/app/data
+    restart: unless-stopped
+
+volumes:
+  node_modules:

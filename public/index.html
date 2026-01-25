@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#0f0f0f">
+  <title>Maestro - Agent Orchestrator</title>
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="header-title">
+        <h1><span>Maestro</span></h1>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-primary" onclick="showProjectModal()">+ Project</button>
+        <button class="btn btn-primary" onclick="showAgentModal()">+ Agent</button>
+        <div class="user-menu">
+          <button class="user-btn" onclick="toggleUserMenu()">
+            <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <circle cx="12" cy="8" r="4"/>
+              <path d="M4 20c0-4 4-6 8-6s8 2 8 6"/>
+            </svg>
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M6 9l6 6 6-6"/>
+            </svg>
+          </button>
+          <div id="user-dropdown" class="user-dropdown">
+            <button onclick="showPasswordModal()">Change Password</button>
+            <button onclick="showSettingsModal()">Settings</button>
+            <button class="danger" onclick="logout()">Logout</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div id="projects-grid" class="projects-grid"></div>
+  </div>
+
+  <!-- Mobile Navigation -->
+  <nav class="mobile-nav">
+    <button class="active" onclick="showDashboard()">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+      </svg>
+      Dashboard
+    </button>
+    <button onclick="showProjectModal()">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path d="M12 4v16m8-8H4"/>
+      </svg>
+      Add
+    </button>
+    <button onclick="showSettingsModal()">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+        <circle cx="12" cy="12" r="3"/>
+      </svg>
+      Settings
+    </button>
+  </nav>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Project Modal -->
+  <div id="project-modal" class="modal-overlay" onclick="closeModalOnOverlay(event)">
+    <div class="modal">
+      <h2>Add Project</h2>
+      <form id="project-form">
+        <div class="form-group">
+          <label>Project Name</label>
+          <input type="text" name="name" required placeholder="e.g., deep-blue-brawl">
+        </div>
+        <div class="form-group">
+          <label>Path</label>
+          <input type="text" name="path" placeholder="/home/projects/my-project">
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <textarea name="description" rows="3" placeholder="What does this project do?"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Color</label>
+          <div id="color-picker" class="color-picker"></div>
+          <input type="hidden" name="color" id="project-color">
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" onclick="hideModals()">Cancel</button>
+          <button type="submit" class="btn btn-primary">Add Project</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Agent Modal -->
+  <div id="agent-modal" class="modal-overlay" onclick="closeModalOnOverlay(event)">
+    <div class="modal">
+      <h2>Add Agent</h2>
+      <form id="agent-form">
+        <div class="form-group">
+          <label>Project</label>
+          <select name="projectId" required id="agent-project-select">
+            <option value="">Select a project...</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Agent Name</label>
+          <input type="text" name="name" required placeholder="e.g., engine, webapp, api">
+        </div>
+        <div class="form-group">
+          <label>Screen Session</label>
+          <input type="text" name="screenSession" placeholder="e.g., project-engine">
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" onclick="hideModals()">Cancel</button>
+          <button type="submit" class="btn btn-primary">Add Agent</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Password Change Modal -->
+  <div id="password-modal" class="modal-overlay" onclick="closeModalOnOverlay(event)">
+    <div class="modal">
+      <h2>Change Password</h2>
+      <form id="password-form">
+        <div class="form-group">
+          <label>Current Password</label>
+          <input type="password" name="currentPassword" required>
+        </div>
+        <div class="form-group">
+          <label>New Password</label>
+          <input type="password" name="newPassword" required minlength="6">
+          <div class="password-requirements">At least 6 characters</div>
+        </div>
+        <div class="form-group">
+          <label>Confirm New Password</label>
+          <input type="password" name="confirmPassword" required>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" onclick="hideModals()">Cancel</button>
+          <button type="submit" class="btn btn-primary">Change Password</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="modal-overlay" onclick="closeModalOnOverlay(event)">
+    <div class="modal">
+      <h2>Settings</h2>
+      <div class="settings-section">
+        <h3>Notifications</h3>
+        <div class="settings-row">
+          <label>Sound notifications</label>
+          <label class="toggle">
+            <input type="checkbox" id="setting-sound" onchange="saveSetting('sound', this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="settings-row">
+          <label>Browser notifications</label>
+          <label class="toggle">
+            <input type="checkbox" id="setting-browser-notif" onchange="toggleBrowserNotifications(this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-primary" onclick="hideModals()">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // State
+    let projects = [];
+    let agents = [];
+    let colors = [];
+    let gitData = {};
+    let selectedColor = null;
+    let ws = null;
+    let settings = {
+      sound: localStorage.getItem('maestro_sound') !== 'false',
+      browserNotif: localStorage.getItem('maestro_browser_notif') === 'true'
+    };
+
+    // Initialize
+    init();
+
+    async function init() {
+      await fetchColors();
+      await fetchData();
+      connectWS();
+      loadSettings();
+      fetchAllGitData();
+    }
+
+    async function fetchColors() {
+      const res = await fetch('/api/colors');
+      colors = await res.json();
+      renderColorPicker();
+    }
+
+    function renderColorPicker() {
+      const picker = document.getElementById('color-picker');
+      picker.innerHTML = colors.map((color, i) => `
+        <div class="color-option ${i === 0 ? 'selected' : ''}"
+             style="background: ${color}"
+             data-color="${color}"
+             onclick="selectColor('${color}', this)"></div>
+      `).join('');
+      selectedColor = colors[0];
+      document.getElementById('project-color').value = selectedColor;
+    }
+
+    function selectColor(color, el) {
+      document.querySelectorAll('.color-option').forEach(o => o.classList.remove('selected'));
+      el.classList.add('selected');
+      selectedColor = color;
+      document.getElementById('project-color').value = color;
+    }
+
+    // WebSocket connection
+    function connectWS() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${location.host}`);
+
+      ws.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        handleWSMessage(data);
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket closed, reconnecting...');
+        setTimeout(connectWS, 2000);
+      };
+
+      ws.onerror = (err) => {
+        console.error('WebSocket error:', err);
+      };
+    }
+
+    function handleWSMessage(data) {
+      switch(data.type) {
+        case 'project_created':
+          projects.unshift(data.project);
+          render();
+          showToast(`Project "${data.project.name}" created`, 'success');
+          break;
+        case 'project_updated':
+          const pIdx = projects.findIndex(p => p.id === data.project.id);
+          if (pIdx !== -1) projects[pIdx] = data.project;
+          render();
+          break;
+        case 'agent_created':
+          agents.unshift(data.agent);
+          render();
+          showToast(`Agent "${data.agent.name}" created`, 'success');
+          break;
+        case 'agent_status_changed':
+          const aIdx = agents.findIndex(a => a.id === data.agent.id);
+          if (aIdx !== -1) {
+            const oldStatus = agents[aIdx].status;
+            agents[aIdx] = data.agent;
+            if (oldStatus !== data.agent.status) {
+              notifyStatusChange(data.agent, oldStatus);
+            }
+          }
+          render();
+          break;
+        case 'agent_deleted':
+          agents = agents.filter(a => a.id != data.agentId);
+          render();
+          break;
+        case 'project_deleted':
+          projects = projects.filter(p => p.id != data.projectId);
+          agents = agents.filter(a => a.project_id != data.projectId);
+          render();
+          break;
+      }
+    }
+
+    function notifyStatusChange(agent, oldStatus) {
+      const projectName = agent.project_name || 'Unknown';
+      const message = `${projectName}/${agent.name}: ${oldStatus} -> ${agent.status}`;
+
+      if (agent.status === 'stopped' && oldStatus === 'running') {
+        showToast(message, 'warning');
+        playSound('stop');
+        sendBrowserNotification('Agent Stopped', message);
+      } else if (agent.status === 'running') {
+        showToast(message, 'success');
+        playSound('start');
+      }
+    }
+
+    async function fetchData() {
+      try {
+        const [projectsRes, agentsRes] = await Promise.all([
+          fetch('/api/projects'),
+          fetch('/api/agents')
+        ]);
+
+        if (projectsRes.status === 401 || agentsRes.status === 401) {
+          window.location.href = '/login.html';
+          return;
+        }
+
+        projects = await projectsRes.json();
+        agents = await agentsRes.json();
+        render();
+      } catch (err) {
+        console.error('Failed to fetch data:', err);
+        showToast('Failed to load data', 'error');
+      }
+    }
+
+    function render() {
+      const grid = document.getElementById('projects-grid');
+
+      if (projects.length === 0) {
+        grid.innerHTML = `
+          <div class="empty-state">
+            <p>No projects yet</p>
+            <button class="btn btn-primary" onclick="showProjectModal()">Add Your First Project</button>
+          </div>
+        `;
+        return;
+      }
+
+      grid.innerHTML = projects.map(project => {
+        const projectAgents = agents.filter(a => a.project_id === project.id);
+        const color = project.color || '#7c3aed';
+        const gitInfo = gitData[project.id];
+
+        return `
+          <div class="card" style="border-left-color: ${color}">
+            <div class="card-header">
+              <div class="card-title">${escapeHtml(project.name)}</div>
+              <button class="btn btn-sm btn-secondary" onclick="deleteProject(${project.id})">
+                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                </svg>
+              </button>
+            </div>
+            ${project.description ? `<div class="card-description">${escapeHtml(project.description)}</div>` : ''}
+            ${project.path ? `<div class="card-path">${escapeHtml(project.path)}</div>` : ''}
+            ${gitInfo && gitInfo.isGitRepo ? `
+              <div class="git-info">
+                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9"/>
+                </svg>
+                <span class="git-branch">${escapeHtml(gitInfo.branch)}</span>
+                ${gitInfo.uncommittedChanges > 0 ? `<span class="git-changes">+${gitInfo.uncommittedChanges}</span>` : ''}
+              </div>
+            ` : ''}
+
+            <div class="agents-header">
+              <span class="agents-title">Agents (${projectAgents.length})</span>
+            </div>
+
+            ${projectAgents.length === 0
+              ? '<div class="no-agents">No agents configured</div>'
+              : `<ul class="agent-list">${projectAgents.map(agent => `
+                <li class="agent-item">
+                  <div class="agent-info">
+                    <span class="status-dot ${agent.status}"></span>
+                    <div>
+                      <div class="agent-name">${escapeHtml(agent.name)}</div>
+                      ${agent.screen_session ? `<div class="agent-session">${escapeHtml(agent.screen_session)}</div>` : ''}
+                    </div>
+                  </div>
+                  <div class="agent-actions">
+                    ${agent.status === 'stopped' ? `
+                      <button class="btn btn-sm btn-primary" onclick="startAgent(${agent.id})" ${!project.path ? 'disabled title="Set project path first"' : ''}>
+                        Start
+                      </button>
+                    ` : `
+                      <button class="btn btn-sm btn-danger" onclick="stopAgent(${agent.id})">
+                        Stop
+                      </button>
+                    `}
+                    ${agent.screen_session && agent.status === 'running' ? `
+                      <a href="/terminal.html?session=${encodeURIComponent(agent.screen_session)}&agent=${agent.id}" class="btn btn-sm btn-terminal">
+                        Terminal
+                      </a>
+                    ` : ''}
+                    <button class="btn btn-sm btn-secondary" onclick="deleteAgent(${agent.id})">
+                      <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path d="M6 18L18 6M6 6l12 12"/>
+                      </svg>
+                    </button>
+                  </div>
+                </li>
+              `).join('')}</ul>`
+            }
+          </div>
+        `;
+      }).join('');
+
+      // Update project select in agent modal
+      const select = document.getElementById('agent-project-select');
+      select.innerHTML = '<option value="">Select a project...</option>' +
+        projects.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+    }
+
+    // Modal functions
+    function showProjectModal() {
+      document.getElementById('project-form').reset();
+      renderColorPicker();
+      document.getElementById('project-modal').classList.add('active');
+    }
+
+    function showAgentModal() {
+      document.getElementById('agent-form').reset();
+      document.getElementById('agent-modal').classList.add('active');
+    }
+
+    function showPasswordModal() {
+      document.getElementById('password-form').reset();
+      document.getElementById('password-modal').classList.add('active');
+      closeUserMenu();
+    }
+
+    function showSettingsModal() {
+      loadSettings();
+      document.getElementById('settings-modal').classList.add('active');
+      closeUserMenu();
+    }
+
+    function hideModals() {
+      document.querySelectorAll('.modal-overlay').forEach(m => m.classList.remove('active'));
+    }
+
+    function closeModalOnOverlay(e) {
+      if (e.target.classList.contains('modal-overlay')) {
+        hideModals();
+      }
+    }
+
+    // User menu
+    function toggleUserMenu() {
+      document.getElementById('user-dropdown').classList.toggle('active');
+    }
+
+    function closeUserMenu() {
+      document.getElementById('user-dropdown').classList.remove('active');
+    }
+
+    // Close user menu when clicking outside
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.user-menu')) {
+        closeUserMenu();
+      }
+    });
+
+    // Form handlers
+    document.getElementById('project-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const form = new FormData(e.target);
+      try {
+        await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: form.get('name'),
+            path: form.get('path'),
+            description: form.get('description'),
+            color: form.get('color')
+          })
+        });
+        e.target.reset();
+        hideModals();
+      } catch (err) {
+        showToast('Failed to create project', 'error');
+      }
+    };
+
+    document.getElementById('agent-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const form = new FormData(e.target);
+      try {
+        await fetch('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            projectId: form.get('projectId'),
+            name: form.get('name'),
+            screenSession: form.get('screenSession'),
+            status: 'stopped'
+          })
+        });
+        e.target.reset();
+        hideModals();
+      } catch (err) {
+        showToast('Failed to create agent', 'error');
+      }
+    };
+
+    document.getElementById('password-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const form = new FormData(e.target);
+
+      if (form.get('newPassword') !== form.get('confirmPassword')) {
+        showToast('Passwords do not match', 'error');
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/auth/change-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            currentPassword: form.get('currentPassword'),
+            newPassword: form.get('newPassword')
+          })
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+          showToast('Password changed successfully', 'success');
+          hideModals();
+        } else {
+          showToast(data.error || 'Failed to change password', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to change password', 'error');
+      }
+    };
+
+    // Actions
+    async function updateStatus(id, status) {
+      try {
+        await fetch(`/api/agents/${id}/status`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status })
+        });
+      } catch (err) {
+        showToast('Failed to update status', 'error');
+      }
+    }
+
+    async function startAgent(id) {
+      try {
+        const res = await fetch(`/api/agents/${id}/start`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+          showToast(data.error || 'Failed to start agent', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to start agent', 'error');
+      }
+    }
+
+    async function stopAgent(id) {
+      if (!confirm('Stop this agent?')) return;
+      try {
+        const res = await fetch(`/api/agents/${id}/stop`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+          showToast(data.error || 'Failed to stop agent', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to stop agent', 'error');
+      }
+    }
+
+    async function fetchAllGitData() {
+      for (const project of projects) {
+        if (project.path) {
+          fetchGitData(project.id);
+        }
+      }
+    }
+
+    async function fetchGitData(projectId) {
+      try {
+        const res = await fetch(`/api/projects/${projectId}/git`);
+        if (res.ok) {
+          gitData[projectId] = await res.json();
+          render();
+        }
+      } catch (err) {
+        // Ignore git errors
+      }
+    }
+
+    async function deleteAgent(id) {
+      if (confirm('Delete this agent?')) {
+        try {
+          await fetch(`/api/agents/${id}`, { method: 'DELETE' });
+        } catch (err) {
+          showToast('Failed to delete agent', 'error');
+        }
+      }
+    }
+
+    async function deleteProject(id) {
+      if (confirm('Delete this project and all its agents?')) {
+        try {
+          await fetch(`/api/projects/${id}`, { method: 'DELETE' });
+        } catch (err) {
+          showToast('Failed to delete project', 'error');
+        }
+      }
+    }
+
+    async function logout() {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+        window.location.href = '/login.html';
+      } catch (err) {
+        window.location.href = '/login.html';
+      }
+    }
+
+    // Toast notifications
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toast-container');
+      const toast = document.createElement('div');
+      toast.className = `toast ${type}`;
+      toast.innerHTML = `
+        <span class="toast-message">${escapeHtml(message)}</span>
+        <button class="toast-close" onclick="this.parentElement.remove()">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      `;
+      container.appendChild(toast);
+
+      setTimeout(() => {
+        toast.remove();
+      }, 5000);
+    }
+
+    // Sound notifications
+    function playSound(type) {
+      if (!settings.sound) return;
+      // Sounds will be added later
+      // const audio = new Audio(`/audio/${type}.mp3`);
+      // audio.play().catch(() => {});
+    }
+
+    // Browser notifications
+    function sendBrowserNotification(title, body) {
+      if (!settings.browserNotif) return;
+      if (Notification.permission !== 'granted') return;
+      if (document.hasFocus()) return;
+
+      new Notification(title, { body, icon: '/favicon.ico' });
+    }
+
+    async function toggleBrowserNotifications(enabled) {
+      if (enabled) {
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') {
+          document.getElementById('setting-browser-notif').checked = false;
+          showToast('Browser notification permission denied', 'warning');
+          return;
+        }
+      }
+      settings.browserNotif = enabled;
+      localStorage.setItem('maestro_browser_notif', enabled);
+    }
+
+    // Settings
+    function loadSettings() {
+      document.getElementById('setting-sound').checked = settings.sound;
+      document.getElementById('setting-browser-notif').checked = settings.browserNotif;
+    }
+
+    function saveSetting(key, value) {
+      settings[key] = value;
+      localStorage.setItem(`maestro_${key}`, value);
+    }
+
+    function showDashboard() {
+      // Just for mobile nav - we're already on dashboard
+    }
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        hideModals();
+      }
+    });
+  </script>
+</body>
+</html>
