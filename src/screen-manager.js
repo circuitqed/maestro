@@ -9,10 +9,11 @@ function listSessions() {
     const sessions = [];
 
     // Parse screen -ls output
-    // Format: "12345.session-name\t(Attached)" or "(Detached)"
+    // Format: "12345.session-name\t(date)\t(Attached)" or "(Detached)"
     const lines = output.split('\n');
     for (const line of lines) {
-      const match = line.match(/^\s*(\d+)\.([^\t]+)\t\(([^)]+)\)/);
+      // Match: pid.name, then capture the last parenthesized state (Attached/Detached)
+      const match = line.match(/^\s*(\d+)\.(\S+)\s+\([^)]+\)\s+\((\w+)\)/);
       if (match) {
         sessions.push({
           pid: match[1],
