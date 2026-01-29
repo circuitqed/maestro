@@ -1,0 +1,37 @@
+# Development Dockerfile - supports live reload
+FROM node:20-slim
+
+WORKDIR /app
+
+# Install build tools for better-sqlite3 and node-pty, plus screen for session management
+RUN apt-get update && apt-get install -y \
+    python3 \
+    make \
+    g++ \
+    screen \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy package files
+COPY server/package*.json ./server/
+COPY client/package*.json ./client/
+
+# Install dependencies
+WORKDIR /app/server
+RUN npm install
+
+WORKDIR /app/client
+RUN npm install
+
+WORKDIR /app
+
+# Ensure data directory exists
+RUN mkdir -p /app/data
+
+# Start script will run both server and client dev servers
+COPY start-dev.sh ./
+RUN chmod +x start-dev.sh
+
+EXPOSE 5000 3000
+
+CMD ["./start-dev.sh"]

@@ -1,0 +1,25 @@
+version: "3.8"
+
+# Development configuration - mounts source code for live editing
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: maestro-dev
+    ports:
+      - "7007:5000"
+      - "3000:3000"  # Vite dev server
+    volumes:
+      - ./server:/app/server
+      - ./client:/app/client
+      - ./data:/app/data
+      - server_node_modules:/app/server/node_modules
+      - client_node_modules:/app/client/node_modules
+    environment:
+      - NODE_ENV=development
+    restart: unless-stopped
+
+volumes:
+  server_node_modules:
+  client_node_modules:

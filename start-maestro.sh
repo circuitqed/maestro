@@ -13,8 +13,8 @@ show_help() {
 }
 
 kill_session() {
-    if screen -list | grep -q "$SESSION_NAME"; then
-        screen -S "$SESSION_NAME" -X quit
+    if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+        tmux kill-session -t "$SESSION_NAME"
         echo "Session '$SESSION_NAME' killed."
     else
         echo "No session '$SESSION_NAME' found."
@@ -22,12 +22,12 @@ kill_session() {
 }
 
 start_or_attach() {
-    if screen -list | grep -q "$SESSION_NAME"; then
+    if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
         echo "Attaching to existing session '$SESSION_NAME'..."
-        screen -r "$SESSION_NAME"
+        tmux attach -t "$SESSION_NAME"
     else
         echo "Starting new session '$SESSION_NAME'..."
-        screen -S "$SESSION_NAME" -c /dev/null bash -c "cd '$PROJECT_DIR' && claude --dangerously-skip-permissions; exec bash"
+        tmux new-session -s "$SESSION_NAME" -c "$PROJECT_DIR" "claude --dangerously-skip-permissions; exec bash"
     fi
 }
 

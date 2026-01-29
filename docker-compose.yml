@@ -6,13 +6,18 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: maestro
+    pid: "host"  # Required for tmux session attachment
     ports:
       - "7007:5000"
     volumes:
-      - .:/app
-      - node_modules:/app/node_modules
       - ./data:/app/data
+      - /tmp:/tmp  # For tmux sockets (/tmp/tmux-<uid>)
+      - /etc/passwd:/etc/passwd:ro
+      - /etc/group:/etc/group:ro
+      - /home/dave:/home/dave
+    environment:
+      - NODE_ENV=production
+      - SESSION_SECRET=${SESSION_SECRET:-maestro-secret-change-in-production}
+      - HOME=/home/dave
+    user: "1005:1005"
     restart: unless-stopped
-
-volumes:
-  node_modules:
