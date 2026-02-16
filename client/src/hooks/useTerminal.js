@@ -7,6 +7,18 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 
 const RECONNECT_DELAYS = [500, 1000, 2000, 5000, 10000]; // Exponential backoff
+const VISIBILITY_RECONNECT_DELAY = 300; // ms to wait after tab becomes visible before reconnecting
+const MAX_QUICK_RETRIES = 3; // Retries for manual reconnect attempts
+const MIN_FONT_SIZE = 10;
+const MAX_FONT_SIZE = 28;
+const FONT_SIZE_KEY = 'terminal-font-size';
+
+function getDefaultFontSize() {
+  const stored = localStorage.getItem(FONT_SIZE_KEY);
+  if (stored) return Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, parseInt(stored, 10)));
+  // Larger default on mobile for readability
+  return window.matchMedia('(max-width: 768px)').matches ? 16 : 14;
+}
 
 function useTerminal(sessionName) {
   const terminalRef = useRef(null);
@@ -24,6 +36,7 @@ function useTerminal(sessionName) {
   const [error, setError] = useState(null);
   const [terminalReady, setTerminalReady] = useState(false);
   const [replaced, setReplaced] = useState(false);
+  const [fontSize, setFontSize] = useState(getDefaultFontSize);
 
   // Fit terminal and notify server of new size
   const fitTerminal = useCallback(() => {
@@ -55,7 +68,7 @@ function useTerminal(sessionName) {
       cursorBlink: true,
       cursorStyle: 'bar',
       cursorWidth: 2,
-      fontSize: 14,
+      fontSize: getDefaultFontSize(),
       fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, Monaco, "DejaVu Sans Mono", "Noto Sans Mono", "Courier New", monospace',
       fontWeight: '400',
       fontWeightBold: '600',
@@ -190,14 +203,27 @@ function useTerminal(sessionName) {
       if (!mountedRef.current) return;
       setConnected(false);
       wsRef.current = null;
-      // Don't auto-reconnect - user can click reconnect button if needed
       console.log(`Terminal WebSocket closed for ${sessionName}`);
     };
 
     ws.onerror = () => {
       connectingRef.current = false;
       if (!mountedRef.current) return;
-      setError('Connection failed');
+
+      // Auto-retry with backoff for initial connections (e.g., visibility reconnect)
+      const attempt = reconnectAttemptRef.current;
+      if (attempt < RECONNECT_DELAYS.length) {
+        const delay = RECONNECT_DELAYS[attempt];
+        reconnectAttemptRef.current = attempt + 1;
+        console.log(`Terminal connection failed, retrying in ${delay}ms (attempt ${attempt + 1})`);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          if (mountedRef.current && currentSessionRef.current === sessionName) {
+            connectWebSocket();
+          }
+        }, delay);
+      } else {
+        setError('Connection failed');
+      }
     };
 
     ws.onmessage = (event) => {
@@ -331,7 +357,44 @@ function useTerminal(sessionName) {
     };
   }, []);
 
-  // No auto-reconnect on visibility change - user can click reconnect button
+  // Auto-reconnect when tab becomes visible (critical for mobile)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (!sessionName || !terminalReady) return;
+      if (replaced) return; // Don't auto-reconnect if replaced by another tab
+
+      // Check if connection is dead or dying
+      const ws = wsRef.current;
+      const isDisconnected = !ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING;
+
+      if (isDisconnected) {
+        console.log(`Tab visible, auto-reconnecting terminal: ${sessionName}`);
+
+        // Small delay to let mobile browser fully resume network
+        setTimeout(() => {
+          if (!mountedRef.current) return;
+          // Re-check - connection might have recovered during the delay
+          const currentWs = wsRef.current;
+          if (!currentWs || currentWs.readyState !== WebSocket.OPEN) {
+            // Clean up any lingering connection state
+            if (currentWs) {
+              currentWs.onclose = null;
+              currentWs.close();
+              wsRef.current = null;
+            }
+            connectingRef.current = false;
+            reconnectAttemptRef.current = 0;
+            setError(null);
+            connectWebSocket();
+          }
+        }, VISIBILITY_RECONNECT_DELAY);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [sessionName, terminalReady, replaced, connectWebSocket]);
 
   // Setup resize observer - only after terminal is ready
   useEffect(() => {
@@ -394,7 +457,27 @@ function useTerminal(sessionName) {
     }
   }, []);
 
-  // Force reconnect (e.g., after being replaced)
+  // Send key sequences through the PTY (for scrolling in tmux/apps)
+  const sendKeys = useCallback((sequence) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'input', data: sequence }));
+    }
+  }, []);
+
+  // Change font size and refit
+  const changeFontSize = useCallback((delta) => {
+    if (!xtermRef.current) return;
+    const newSize = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, xtermRef.current.options.fontSize + delta));
+    xtermRef.current.options.fontSize = newSize;
+    setFontSize(newSize);
+    localStorage.setItem(FONT_SIZE_KEY, String(newSize));
+    // Refit after font size change
+    setTimeout(() => fitTerminal(), 10);
+  }, [fitTerminal]);
+
+  // Force reconnect with retry logic (e.g., after being replaced or mobile tab switch)
+  const quickRetryRef = useRef(0);
+
   const reconnect = useCallback(() => {
     if (!sessionName || !terminalReady) return;
 
@@ -407,6 +490,7 @@ function useTerminal(sessionName) {
     // Close existing connection
     if (wsRef.current) {
       wsRef.current.onclose = null;
+      wsRef.current.onerror = null;
       wsRef.current.close();
       wsRef.current = null;
     }
@@ -414,15 +498,131 @@ function useTerminal(sessionName) {
     // Reset state
     currentSessionRef.current = sessionName;
     reconnectAttemptRef.current = 0;
+    quickRetryRef.current = 0;
     connectingRef.current = false; // Reset connecting lock
     setConnected(false);
     setReady(false);
     setError(null);
     setReplaced(false); // Clear replaced state on manual reconnect
 
-    // Connect
-    connectWebSocket();
-  }, [sessionName, terminalReady, connectWebSocket]);
+    // Connect with retry wrapper
+    const attemptConnect = () => {
+      if (!mountedRef.current) return;
+
+      const ws = new WebSocket(
+        `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/terminal?session=${encodeURIComponent(sessionName)}`
+      );
+      wsRef.current = ws;
+      connectingRef.current = true;
+
+      // Reuse the same handlers as connectWebSocket but add retry on failure
+      ws.onopen = () => {
+        connectingRef.current = false;
+        quickRetryRef.current = 0;
+        if (!mountedRef.current) return;
+        setConnected(true);
+        setError(null);
+        reconnectAttemptRef.current = 0;
+        lastConnectTimeRef.current = Date.now();
+
+        setTimeout(() => {
+          if (!mountedRef.current) return;
+          if (fitAddonRef.current && xtermRef.current) {
+            fitAddonRef.current.fit();
+            ws.send(JSON.stringify({
+              type: 'resize',
+              cols: xtermRef.current.cols,
+              rows: xtermRef.current.rows,
+            }));
+          }
+        }, 100);
+      };
+
+      ws.onclose = () => {
+        connectingRef.current = false;
+        if (!mountedRef.current) return;
+        setConnected(false);
+        wsRef.current = null;
+      };
+
+      ws.onerror = () => {
+        connectingRef.current = false;
+        if (!mountedRef.current) return;
+
+        // Retry a few times with increasing delays (network may still be resuming)
+        if (quickRetryRef.current < MAX_QUICK_RETRIES) {
+          quickRetryRef.current++;
+          const delay = quickRetryRef.current * 500;
+          console.log(`Reconnect attempt failed, retrying in ${delay}ms (${quickRetryRef.current}/${MAX_QUICK_RETRIES})`);
+          setError(`Retrying (${quickRetryRef.current}/${MAX_QUICK_RETRIES})...`);
+          reconnectTimeoutRef.current = setTimeout(attemptConnect, delay);
+        } else {
+          setError('Connection failed');
+        }
+      };
+
+      ws.onmessage = (event) => {
+        if (!mountedRef.current) return;
+        try {
+          const data = JSON.parse(event.data);
+          if (!xtermRef.current) return;
+
+          switch (data.type) {
+            case 'output': {
+              let outputData = data.data;
+              if (data.encoding === 'base64') {
+                const binaryStr = atob(data.data);
+                const bytes = new Uint8Array(binaryStr.length);
+                for (let i = 0; i < binaryStr.length; i++) {
+                  bytes[i] = binaryStr.charCodeAt(i);
+                }
+                outputData = new TextDecoder('utf-8').decode(bytes);
+              }
+              xtermRef.current.write(outputData);
+              break;
+            }
+            case 'ready':
+              setReady(true);
+              setTimeout(() => {
+                fitTerminal();
+                if (wsRef.current?.readyState === WebSocket.OPEN && xtermRef.current) {
+                  wsRef.current.send(JSON.stringify({
+                    type: 'resize',
+                    cols: xtermRef.current.cols,
+                    rows: xtermRef.current.rows,
+                  }));
+                }
+              }, 50);
+              break;
+            case 'request_resize':
+              if (xtermRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({
+                  type: 'resize',
+                  cols: xtermRef.current.cols,
+                  rows: xtermRef.current.rows,
+                }));
+              }
+              break;
+            case 'error':
+              xtermRef.current.write(`\r\n\x1b[31mError: ${data.message}\x1b[0m\r\n`);
+              break;
+            case 'exit':
+              xtermRef.current.write(`\r\n\x1b[33mSession ended (code: ${data.code})\x1b[0m\r\n`);
+              break;
+            case 'replaced':
+              xtermRef.current.write(`\r\n\x1b[33m${data.message}\x1b[0m\r\n`);
+              currentSessionRef.current = null;
+              setReplaced(true);
+              break;
+          }
+        } catch (err) {
+          // Ignore parse errors
+        }
+      };
+    };
+
+    attemptConnect();
+  }, [sessionName, terminalReady, fitTerminal]);
 
   return {
     initTerminal,
@@ -430,9 +630,12 @@ function useTerminal(sessionName) {
     ready,
     error,
     replaced,
+    fontSize,
     fitTerminal,
     sendInput,
+    sendKeys,
     focusTerminal,
+    changeFontSize,
     reconnect,
   };
 }

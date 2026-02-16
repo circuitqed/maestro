@@ -37,6 +37,7 @@
 
 .terminal-container .xterm-viewport {
   overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch;
 }
 
 .terminal-container .xterm-screen {
