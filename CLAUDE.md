@@ -142,7 +142,9 @@ Connect to: `ws://host/ws/terminal?session=<tmux-session-name>`
 ## Terminal UX
 
 - **Desktop (>= 768px):** Full-height resizable side panel using react-resizable-panels
-- **Mobile (< 768px):** Full-screen modal overlay
+- **Mobile (< 768px):** Full-screen modal overlay with visual viewport tracking (keyboard-aware)
+- **Text selection:** "Select" button (both desktop header and mobile toolbar) opens buffer as native selectable text overlay
+- **CanvasAddon:** Must be disposed separately (try-catch) before terminal.dispose() to avoid crash
 
 ## Database Schema
 
@@ -223,6 +225,23 @@ tmux new-session -d -s my-agent 'claude'
 - `Ctrl+b c` - New window
 - `Ctrl+b n/p` - Next/previous window
 - `Ctrl+b [` - Scroll mode (q to exit)
+
+## Playwright Browser Testing
+
+All Claude Code agents have Playwright MCP tools available via `~/.claude.json`. This enables any agent to interactively test web UIs.
+
+**Config** (in `~/.claude.json` mcpServers):
+```json
+"playwright": {
+  "type": "stdio",
+  "command": "npx",
+  "args": ["-y", "@playwright/mcp@latest", "--headless", "--browser", "chromium"]
+}
+```
+
+**Available tools:** `browser_navigate`, `browser_click`, `browser_snapshot`, `browser_take_screenshot`, `browser_type`, `browser_evaluate`, `browser_fill_form`, etc.
+
+**Testing maestro itself:** Requires session cookie injection since login is password-protected. Use `cookie-signature` to sign a session ID with the secret from `server/index.js`.
 
 ## Future Ideas
 - Start/stop tmux sessions from UI

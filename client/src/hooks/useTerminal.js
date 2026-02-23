@@ -24,6 +24,7 @@ function useTerminal(sessionName) {
   const terminalRef = useRef(null);
   const xtermRef = useRef(null);
   const fitAddonRef = useRef(null);
+  const canvasAddonRef = useRef(null);
   const wsRef = useRef(null);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimeoutRef = useRef(null);
@@ -136,6 +137,7 @@ function useTerminal(sessionName) {
     try {
       const canvasAddon = new CanvasAddon();
       xterm.loadAddon(canvasAddon);
+      canvasAddonRef.current = canvasAddon;
     } catch (e) {
       // Canvas addon may fail in some environments, terminal still works
       console.warn('CanvasAddon failed to load, using default renderer');
@@ -485,8 +487,15 @@ function useTerminal(sessionName) {
     return () => {
       mountedRef.current = false;
       if (copyFlashTimeoutRef.current) clearTimeout(copyFlashTimeoutRef.current);
+      // Dispose CanvasAddon first to avoid crash during terminal disposal
+      // (CanvasAddon.dispose tries to recreate the default renderer on a
+      // partially-destroyed terminal, triggering 'onShowLinkUnderline' error)
+      if (canvasAddonRef.current) {
+        try { canvasAddonRef.current.dispose(); } catch (e) { /* ignore */ }
+        canvasAddonRef.current = null;
+      }
       if (xtermRef.current) {
-        xtermRef.current.dispose();
+        try { xtermRef.current.dispose(); } catch (e) { /* ignore */ }
         xtermRef.current = null;
       }
       if (wsRef.current) {
@@ -582,6 +591,22 @@ function useTerminal(sessionName) {
     } catch {
       return false;
     }
+  }, []);
+
+  // Get terminal buffer text for selection overlay
+  const getBufferText = useCallback(() => {
+    if (!xtermRef.current) return '';
+    const buffer = xtermRef.current.buffer.active;
+    const lines = [];
+    for (let i = 0; i <= buffer.baseY + buffer.cursorY; i++) {
+      const line = buffer.getLine(i);
+      if (line) lines.push(line.translateToString(true));
+    }
+    // Trim trailing empty lines
+    while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+      lines.pop();
+    }
+    return lines.join('\n');
   }, []);
 
   // Change font size and refit
@@ -762,6 +787,7 @@ function useTerminal(sessionName) {
     pasteClipboard,
     changeFontSize,
     reconnect,
+    getBufferText,
   };
 }
 

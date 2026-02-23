@@ -15,9 +15,13 @@ services:
       - /etc/passwd:/etc/passwd:ro
       - /etc/group:/etc/group:ro
       - /home/dave:/home/dave
+      - /home/projects:/home/projects
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - NODE_ENV=production
       - SESSION_SECRET=${SESSION_SECRET:-maestro-secret-change-in-production}
       - HOME=/home/dave
     user: "1005:1005"
+    group_add:
+      - "119"  # docker group - needed for /var/run/docker.sock access
     restart: unless-stopped

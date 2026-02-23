@@ -1,13 +1,30 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import Terminal from './Terminal';
 
 function TerminalModal({ sessionName, onClose }) {
+  const [viewportHeight, setViewportHeight] = useState(
+    window.visualViewport?.height ?? window.innerHeight
+  );
+
   // Prevent body scroll when modal is open
   useEffect(() => {
     document.body.style.overflow = 'hidden';
     return () => {
       document.body.style.overflow = '';
     };
+  }, []);
+
+  // Track visual viewport height to resize when mobile keyboard opens/closes
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+
+    const handleResize = () => {
+      setViewportHeight(vv.height);
+    };
+
+    vv.addEventListener('resize', handleResize);
+    return () => vv.removeEventListener('resize', handleResize);
   }, []);
 
   // Handle escape key
@@ -22,7 +39,10 @@ function TerminalModal({ sessionName, onClose }) {
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 bg-gray-900 flex flex-col">
+    <div
+      className="fixed left-0 right-0 top-0 z-50 bg-gray-900 flex flex-col"
+      style={{ height: viewportHeight }}
+    >
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 bg-gray-800 border-b border-gray-700">
         <div className="flex items-center gap-3">
@@ -41,7 +61,7 @@ function TerminalModal({ sessionName, onClose }) {
       </div>
 
       {/* Terminal */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-hidden">
         <Terminal sessionName={sessionName} />
       </div>
     </div>

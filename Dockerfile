@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y \
     g++ \
     tmux \
     git \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Install server dependencies (use npm install to build native modules for this arch)

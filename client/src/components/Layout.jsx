@@ -52,7 +52,9 @@ function Layout() {
     return (
       <div className="h-screen flex flex-col bg-gray-900">
         <Header />
-        <Dashboard />
+        <div className="flex-1 min-h-0 overflow-auto">
+          <Dashboard />
+        </div>
         {terminalOpen && activeTerminal && (
           <TerminalModal onClose={closeTerminal} sessionName={activeTerminal} />
         )}
@@ -79,7 +81,9 @@ function Layout() {
           </Panel>
         </PanelGroup>
       ) : (
-        <Dashboard />
+        <div className="flex-1 min-h-0 overflow-auto">
+          <Dashboard />
+        </div>
       )}
     </div>
   );

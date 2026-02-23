@@ -17,12 +17,23 @@ const TerminalPanel = forwardRef(function TerminalPanel({ sessionName, onClose }
     terminalRef.current?.reconnect();
   };
 
+  const handleSelect = () => {
+    terminalRef.current?.enterSelectMode();
+  };
+
   return (
     <div className="flex-1 flex flex-col min-h-0 min-w-0 w-full bg-gray-900 border-l border-gray-700">
       {/* Header - session name as title */}
       <div className="flex-shrink-0 flex items-center justify-between px-3 py-1.5 bg-gray-800 border-b border-gray-700">
         <span className="text-white font-medium text-sm truncate">{sessionName}</span>
         <div className="flex items-center gap-2">
+          <button
+            onClick={handleSelect}
+            className="px-2 py-1 text-xs bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors"
+            title="Select &amp; copy text"
+          >
+            Select
+          </button>
           <button
             onClick={handleReconnect}
             className="px-2 py-1 text-xs bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors"

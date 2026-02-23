@@ -23,11 +23,26 @@ const Terminal = forwardRef(function Terminal({ sessionName, showStatusBar = tru
     initTerminal, connected, ready, error, replaced, fontSize, copyFlash,
     fitTerminal, sendInput, sendKeys, scrollWheel, focusTerminal,
     copySelection, copyScreen, pasteClipboard, changeFontSize, reconnect,
+    getBufferText,
   } = useTerminal(sessionName);
   const isMobile = useMediaQuery('(max-width: 767px)');
   const scrollIntervalRef = useRef(null);
   const [scrollControlsVisible, setScrollControlsVisible] = useState(false);
   const hideTimeoutRef = useRef(null);
+  const [selectMode, setSelectMode] = useState(false);
+  const [bufferText, setBufferText] = useState('');
+  const bufferEndRef = useRef(null);
+
+  const enterSelectMode = useCallback(() => {
+    const text = getBufferText();
+    setBufferText(text);
+    setSelectMode(true);
+    setTimeout(() => {
+      if (bufferEndRef.current) {
+        bufferEndRef.current.scrollTop = bufferEndRef.current.scrollHeight;
+      }
+    }, 50);
+  }, [getBufferText]);
 
   // Expose methods to parent via ref
   useImperativeHandle(ref, () => ({
@@ -37,7 +52,8 @@ const Terminal = forwardRef(function Terminal({ sessionName, showStatusBar = tru
     ready,
     replaced,
     reconnect,
-  }), [sendInput, focusTerminal, connected, ready, replaced, reconnect]);
+    enterSelectMode,
+  }), [sendInput, focusTerminal, connected, ready, replaced, reconnect, enterSelectMode]);
 
   useEffect(() => {
     if (containerRef.current) {
@@ -272,6 +288,40 @@ const Terminal = forwardRef(function Terminal({ sessionName, showStatusBar = tru
         </button>
       </div>
 
+      {/* Text selection overlay - renders buffer as native selectable text */}
+      {selectMode && (
+        <div
+          className="absolute inset-0 z-50 flex flex-col"
+          style={{ backgroundColor: '#0d1117' }}
+        >
+          <div className="flex items-center justify-between px-3 py-2 bg-gray-800 border-b border-gray-700/50">
+            <span className="text-xs text-gray-400">{isMobile ? 'Long-press to select text' : 'Click and drag to select text'}</span>
+            <button
+              onTouchStart={(e) => { e.preventDefault(); setSelectMode(false); }}
+              onClick={() => setSelectMode(false)}
+              className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded"
+            >
+              Done
+            </button>
+          </div>
+          <pre
+            className="flex-1 min-h-0 p-3 text-sm leading-relaxed whitespace-pre-wrap break-all"
+            style={{
+              fontFamily: '"JetBrains Mono", "Fira Code", Menlo, Monaco, monospace',
+              fontSize: `${fontSize}px`,
+              color: '#e6edf3',
+              userSelect: 'text',
+              WebkitUserSelect: 'text',
+              overflowY: 'scroll',
+              WebkitOverflowScrolling: 'touch',
+            }}
+            ref={bufferEndRef}
+          >
+            {bufferText}
+          </pre>
+        </div>
+      )}
+
       {/* Mobile toolbar - special keys + copy/paste */}
       {isMobile && (
         <div className="flex-shrink-0 flex items-center gap-1.5 px-2 py-1.5 bg-gray-800 border-t border-gray-700/50 overflow-x-auto">
@@ -307,10 +357,10 @@ const Terminal = forwardRef(function Terminal({ sessionName, showStatusBar = tru
           </button>
           <div className="w-px h-6 bg-gray-600 flex-shrink-0" />
           <button
-            onTouchStart={(e) => { e.preventDefault(); copySelection(); }}
-            className={`${toolBtn} ${copyFlash ? '!bg-green-600 !text-white' : ''}`}
+            onTouchStart={(e) => { e.preventDefault(); enterSelectMode(); }}
+            className={toolBtn}
           >
-            {copyFlash ? 'Copied' : 'Copy'}
+            Select
           </button>
           <button
             onTouchStart={(e) => { e.preventDefault(); copyScreen(); }}
