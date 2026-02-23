@@ -37,6 +37,16 @@ function useTerminal(sessionName) {
   const [terminalReady, setTerminalReady] = useState(false);
   const [replaced, setReplaced] = useState(false);
   const [fontSize, setFontSize] = useState(getDefaultFontSize);
+  const copyFlashTimeoutRef = useRef(null);
+  const [copyFlash, setCopyFlash] = useState(false);
+  const flashCopyRef = useRef(null);
+
+  // Keep flash trigger ref up-to-date (so event listeners in initTerminal can use it)
+  flashCopyRef.current = () => {
+    setCopyFlash(true);
+    if (copyFlashTimeoutRef.current) clearTimeout(copyFlashTimeoutRef.current);
+    copyFlashTimeoutRef.current = setTimeout(() => setCopyFlash(false), 1200);
+  };
 
   // Fit terminal and notify server of new size
   const fitTerminal = useCallback(() => {
@@ -151,6 +161,49 @@ function useTerminal(sessionName) {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'resize', cols, rows }));
       }
+    });
+
+    // Auto-copy selection to clipboard on mouse up (Shift+drag to select in tmux)
+    container.addEventListener('mouseup', () => {
+      setTimeout(() => {
+        const sel = xterm.getSelection();
+        if (sel) {
+          navigator.clipboard.writeText(sel).then(() => {
+            if (flashCopyRef.current) flashCopyRef.current();
+          }).catch(() => {});
+        }
+      }, 10);
+    });
+
+    // Keyboard shortcuts for copy/paste
+    const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+    xterm.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') return true;
+
+      // Copy: Ctrl+Shift+C or Cmd+C (Mac)
+      if ((event.ctrlKey && event.shiftKey && event.code === 'KeyC') ||
+          (isMac && event.metaKey && event.code === 'KeyC')) {
+        const sel = xterm.getSelection();
+        if (sel) {
+          navigator.clipboard.writeText(sel).then(() => {
+            if (flashCopyRef.current) flashCopyRef.current();
+          }).catch(() => {});
+        }
+        return false;
+      }
+
+      // Paste: Ctrl+Shift+V or Cmd+V (Mac)
+      if ((event.ctrlKey && event.shiftKey && event.code === 'KeyV') ||
+          (isMac && event.metaKey && event.code === 'KeyV')) {
+        navigator.clipboard.readText().then(text => {
+          if (text && wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: 'input', data: text }));
+          }
+        }).catch(() => {});
+        return false;
+      }
+
+      return true;
     });
 
     // Signal that terminal is ready
@@ -431,6 +484,7 @@ function useTerminal(sessionName) {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      if (copyFlashTimeoutRef.current) clearTimeout(copyFlashTimeoutRef.current);
       if (xtermRef.current) {
         xtermRef.current.dispose();
         xtermRef.current = null;
@@ -461,6 +515,72 @@ function useTerminal(sessionName) {
   const sendKeys = useCallback((sequence) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'input', data: sequence }));
+    }
+  }, []);
+
+  // Simulate mouse wheel on the xterm element - this sends wheel events through
+  // xterm.js's mouse handling, which converts them to escape sequences for tmux.
+  // Same mechanism as desktop mouse wheel scrolling.
+  const scrollWheel = useCallback((direction) => {
+    const el = xtermRef.current?.element;
+    if (!el) return;
+    el.dispatchEvent(new WheelEvent('wheel', {
+      deltaY: direction * 120,
+      bubbles: true,
+      cancelable: true,
+    }));
+  }, []);
+
+  // Copy terminal selection to clipboard
+  const copySelection = useCallback(async () => {
+    if (!xtermRef.current) return false;
+    const selection = xtermRef.current.getSelection();
+    if (!selection) return false;
+    try {
+      await navigator.clipboard.writeText(selection);
+      if (flashCopyRef.current) flashCopyRef.current();
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  // Paste from clipboard into terminal
+  const pasteClipboard = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'input', data: text }));
+        return true;
+      }
+    } catch {
+      // Clipboard access denied
+    }
+    return false;
+  }, []);
+
+  // Copy visible terminal screen to clipboard
+  const copyScreen = useCallback(async () => {
+    if (!xtermRef.current) return false;
+    const buffer = xtermRef.current.buffer.active;
+    const rows = xtermRef.current.rows;
+    const startRow = buffer.viewportY;
+    const lines = [];
+    for (let i = startRow; i < startRow + rows; i++) {
+      const line = buffer.getLine(i);
+      if (line) lines.push(line.translateToString(true));
+    }
+    while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+      lines.pop();
+    }
+    const text = lines.join('\n');
+    if (!text) return false;
+    try {
+      await navigator.clipboard.writeText(text);
+      if (flashCopyRef.current) flashCopyRef.current();
+      return true;
+    } catch {
+      return false;
     }
   }, []);
 
@@ -631,10 +751,15 @@ function useTerminal(sessionName) {
     error,
     replaced,
     fontSize,
+    copyFlash,
     fitTerminal,
     sendInput,
     sendKeys,
+    scrollWheel,
     focusTerminal,
+    copySelection,
+    copyScreen,
+    pasteClipboard,
     changeFontSize,
     reconnect,
   };

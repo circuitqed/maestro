@@ -1,18 +1,30 @@
 import React, { useEffect, useRef, useImperativeHandle, forwardRef, useState, useCallback } from 'react';
 import useTerminal from '../hooks/useTerminal';
+import useMediaQuery from '../hooks/useMediaQuery';
 import '@xterm/xterm/css/xterm.css';
 
-// Escape sequences for terminal key events
+// Control characters / escape sequences
 const KEYS = {
+  TAB: '\t',
+  CTRL_B: '\x02',
+  CTRL_C: '\x03',
+  CTRL_O: '\x0f',
+  ESCAPE: '\x1b',
   PAGE_UP: '\x1b[5~',
   PAGE_DOWN: '\x1b[6~',
-  // tmux prefix (Ctrl+b) then q to exit copy mode
-  EXIT_COPY_MODE: 'q',
 };
 
 const Terminal = forwardRef(function Terminal({ sessionName, showStatusBar = true }, ref) {
   const containerRef = useRef(null);
-  const { initTerminal, connected, ready, error, replaced, fontSize, fitTerminal, sendInput, sendKeys, focusTerminal, changeFontSize, reconnect } = useTerminal(sessionName);
+  const scrollUpRef = useRef(null);
+  const scrollDownRef = useRef(null);
+  const escBtnRef = useRef(null);
+  const {
+    initTerminal, connected, ready, error, replaced, fontSize, copyFlash,
+    fitTerminal, sendInput, sendKeys, scrollWheel, focusTerminal,
+    copySelection, copyScreen, pasteClipboard, changeFontSize, reconnect,
+  } = useTerminal(sessionName);
+  const isMobile = useMediaQuery('(max-width: 767px)');
   const scrollIntervalRef = useRef(null);
   const [scrollControlsVisible, setScrollControlsVisible] = useState(false);
   const hideTimeoutRef = useRef(null);
@@ -48,18 +60,83 @@ const Terminal = forwardRef(function Terminal({ sessionName, showStatusBar = tru
     hideTimeoutRef.current = setTimeout(() => setScrollControlsVisible(false), 4000);
   }, []);
 
-  // Continuous scroll on hold - sends PgUp/PgDown through the PTY
-  const startScrolling = useCallback((key) => {
-    sendKeys(key);
-    showControls();
-    scrollIntervalRef.current = setInterval(() => sendKeys(key), 200);
-  }, [sendKeys, showControls]);
-
   const stopScrolling = useCallback(() => {
     if (scrollIntervalRef.current) {
       clearInterval(scrollIntervalRef.current);
       scrollIntervalRef.current = null;
     }
+  }, []);
+
+  // Use native DOM event listeners for scroll buttons - React synthetic events
+  // rely on event delegation which can be broken by xterm.js stopPropagation calls
+  const scrollWheelRef = useRef(scrollWheel);
+  const sendKeysRef = useRef(sendKeys);
+  const showControlsRef = useRef(showControls);
+  const stopScrollingRef = useRef(stopScrolling);
+  scrollWheelRef.current = scrollWheel;
+  sendKeysRef.current = sendKeys;
+  showControlsRef.current = showControls;
+  stopScrollingRef.current = stopScrolling;
+
+  useEffect(() => {
+    const upBtn = scrollUpRef.current;
+    const downBtn = scrollDownRef.current;
+    const escBtn = escBtnRef.current;
+    if (!upBtn || !downBtn || !escBtn) return;
+
+    const startScroll = (direction) => {
+      scrollWheelRef.current(direction);
+      showControlsRef.current();
+      scrollIntervalRef.current = setInterval(() => scrollWheelRef.current(direction), 100);
+    };
+
+    const handleUpStart = (e) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      startScroll(-1);
+    };
+    const handleDownStart = (e) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      startScroll(1);
+    };
+    const handleEnd = (e) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      stopScrollingRef.current();
+    };
+    const handleEsc = (e) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      sendKeysRef.current(KEYS.ESCAPE);
+      showControlsRef.current();
+    };
+
+    // Use capture phase + native listeners to guarantee we get the event
+    const opts = { capture: true, passive: false };
+    upBtn.addEventListener('touchstart', handleUpStart, opts);
+    upBtn.addEventListener('touchend', handleEnd, opts);
+    upBtn.addEventListener('mousedown', handleUpStart, opts);
+    upBtn.addEventListener('mouseup', handleEnd, opts);
+    downBtn.addEventListener('touchstart', handleDownStart, opts);
+    downBtn.addEventListener('touchend', handleEnd, opts);
+    downBtn.addEventListener('mousedown', handleDownStart, opts);
+    downBtn.addEventListener('mouseup', handleEnd, opts);
+    escBtn.addEventListener('touchstart', handleEsc, opts);
+    escBtn.addEventListener('mousedown', handleEsc, opts);
+
+    return () => {
+      upBtn.removeEventListener('touchstart', handleUpStart, opts);
+      upBtn.removeEventListener('touchend', handleEnd, opts);
+      upBtn.removeEventListener('mousedown', handleUpStart, opts);
+      upBtn.removeEventListener('mouseup', handleEnd, opts);
+      downBtn.removeEventListener('touchstart', handleDownStart, opts);
+      downBtn.removeEventListener('touchend', handleEnd, opts);
+      downBtn.removeEventListener('mousedown', handleDownStart, opts);
+      downBtn.removeEventListener('mouseup', handleEnd, opts);
+      escBtn.removeEventListener('touchstart', handleEsc, opts);
+      escBtn.removeEventListener('mousedown', handleEsc, opts);
+    };
   }, []);
 
   // Cleanup on unmount
@@ -70,8 +147,11 @@ const Terminal = forwardRef(function Terminal({ sessionName, showStatusBar = tru
     };
   }, []);
 
+  // Shared style for toolbar buttons
+  const toolBtn = 'h-9 px-2.5 flex items-center justify-center bg-gray-700 active:bg-gray-500 text-gray-200 rounded text-xs font-mono font-medium select-none whitespace-nowrap';
+
   return (
-    <div className="h-full w-full flex flex-col" style={{ backgroundColor: '#0d1117' }}>
+    <div className="h-full w-full flex flex-col relative" style={{ backgroundColor: '#0d1117' }}>
       {/* Status bar */}
       {showStatusBar && (
         <div className="flex-shrink-0 flex items-center justify-between px-3 py-1.5 bg-gray-800/50 border-b border-gray-700/50 text-xs">
@@ -99,6 +179,9 @@ const Terminal = forwardRef(function Terminal({ sessionName, showStatusBar = tru
                 </svg>
               </button>
             </div>
+            {copyFlash && (
+              <span className="text-green-400 font-medium animate-pulse">Copied!</span>
+            )}
             <span className="text-gray-600">|</span>
             {error && <span className="text-red-400">{error}</span>}
             {replaced ? (
@@ -137,56 +220,112 @@ const Terminal = forwardRef(function Terminal({ sessionName, showStatusBar = tru
         </div>
       )}
 
-      {/* Terminal container with scroll controls */}
+      {/* Terminal container */}
       <div className="flex-1 min-h-0 min-w-0 overflow-hidden relative" onTouchStart={showControls}>
         <div
           ref={containerRef}
           className="terminal-container"
           style={{ position: 'absolute', inset: 0 }}
         />
+      </div>
 
-        {/* Floating scroll controls - sends PgUp/PgDown through the PTY */}
-        <div
-          className={`absolute right-2 top-1/2 -translate-y-1/2 flex flex-col gap-1.5 z-10 transition-opacity duration-300 ${
-            scrollControlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'
-          }`}
+      {/* Floating scroll controls - positioned at top level, outside terminal container
+          to avoid xterm.js touch event interception */}
+      <div
+        className={`absolute right-2 flex flex-col gap-1.5 transition-opacity duration-300 ${
+          scrollControlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        }`}
+        style={{
+          top: '50%',
+          transform: 'translateY(-50%)',
+          zIndex: 9999,
+          touchAction: 'manipulation',
+        }}
+      >
+        <button
+          ref={scrollUpRef}
+          className="w-10 h-14 flex items-center justify-center bg-gray-700/80 hover:bg-gray-600/90 text-gray-300 rounded-lg active:bg-gray-500/90 select-none"
+          style={{ touchAction: 'manipulation' }}
+          title="Page Up"
         >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+          </svg>
+        </button>
+        <button
+          ref={escBtnRef}
+          className="w-10 h-9 flex items-center justify-center bg-blue-700/80 hover:bg-blue-600/90 text-blue-200 rounded-lg active:bg-blue-500/90 select-none text-xs font-medium"
+          style={{ touchAction: 'manipulation' }}
+          title="Escape"
+        >
+          ESC
+        </button>
+        <button
+          ref={scrollDownRef}
+          className="w-10 h-14 flex items-center justify-center bg-gray-700/80 hover:bg-gray-600/90 text-gray-300 rounded-lg active:bg-gray-500/90 select-none"
+          style={{ touchAction: 'manipulation' }}
+          title="Page Down"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Mobile toolbar - special keys + copy/paste */}
+      {isMobile && (
+        <div className="flex-shrink-0 flex items-center gap-1.5 px-2 py-1.5 bg-gray-800 border-t border-gray-700/50 overflow-x-auto">
           <button
-            onTouchStart={(e) => { e.preventDefault(); startScrolling(KEYS.PAGE_UP); }}
-            onTouchEnd={stopScrolling}
-            onMouseDown={() => startScrolling(KEYS.PAGE_UP)}
-            onMouseUp={stopScrolling}
-            onMouseLeave={stopScrolling}
-            className="w-10 h-14 flex items-center justify-center bg-gray-700/80 hover:bg-gray-600/90 text-gray-300 rounded-lg backdrop-blur-sm active:bg-gray-500/90 select-none"
-            title="Page Up"
+            onTouchStart={(e) => { e.preventDefault(); sendKeys(KEYS.TAB); }}
+            className={toolBtn}
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-            </svg>
+            Tab
           </button>
           <button
-            onTouchStart={(e) => { e.preventDefault(); sendKeys(KEYS.EXIT_COPY_MODE); showControls(); }}
-            onClick={() => { sendKeys(KEYS.EXIT_COPY_MODE); showControls(); }}
-            className="w-10 h-9 flex items-center justify-center bg-blue-700/80 hover:bg-blue-600/90 text-blue-200 rounded-lg backdrop-blur-sm active:bg-blue-500/90 select-none text-xs font-medium"
-            title="Exit scroll mode (q)"
+            onTouchStart={(e) => { e.preventDefault(); sendKeys(KEYS.CTRL_B); }}
+            className={toolBtn}
           >
-            ESC
+            ^B
           </button>
           <button
-            onTouchStart={(e) => { e.preventDefault(); startScrolling(KEYS.PAGE_DOWN); }}
-            onTouchEnd={stopScrolling}
-            onMouseDown={() => startScrolling(KEYS.PAGE_DOWN)}
-            onMouseUp={stopScrolling}
-            onMouseLeave={stopScrolling}
-            className="w-10 h-14 flex items-center justify-center bg-gray-700/80 hover:bg-gray-600/90 text-gray-300 rounded-lg backdrop-blur-sm active:bg-gray-500/90 select-none"
-            title="Page Down"
+            onTouchStart={(e) => { e.preventDefault(); sendKeys(KEYS.CTRL_C); }}
+            className={toolBtn}
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
+            ^C
+          </button>
+          <button
+            onTouchStart={(e) => { e.preventDefault(); sendKeys(KEYS.CTRL_O); }}
+            className={toolBtn}
+          >
+            ^O
+          </button>
+          <button
+            onTouchStart={(e) => { e.preventDefault(); sendKeys(KEYS.ESCAPE); }}
+            className={toolBtn}
+          >
+            Esc
+          </button>
+          <div className="w-px h-6 bg-gray-600 flex-shrink-0" />
+          <button
+            onTouchStart={(e) => { e.preventDefault(); copySelection(); }}
+            className={`${toolBtn} ${copyFlash ? '!bg-green-600 !text-white' : ''}`}
+          >
+            {copyFlash ? 'Copied' : 'Copy'}
+          </button>
+          <button
+            onTouchStart={(e) => { e.preventDefault(); copyScreen(); }}
+            className={`${toolBtn} ${copyFlash ? '!bg-green-600 !text-white' : ''}`}
+          >
+            {copyFlash ? 'Copied' : 'Screen'}
+          </button>
+          <button
+            onTouchStart={(e) => { e.preventDefault(); pasteClipboard(); }}
+            className={toolBtn}
+          >
+            Paste
           </button>
         </div>
-      </div>
+      )}
     </div>
   );
 });
