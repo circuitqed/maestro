@@ -25,6 +25,7 @@ function ProjectCard({ project, agents }) {
   const [expanded, setExpanded] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showAddAgent, setShowAddAgent] = useState(false);
+  const [showAddShell, setShowAddShell] = useState(false);
 
   const busyCount = agents.filter((a) => a.status === 'running' || a.status === 'busy').length;
   const idleCount = agents.filter((a) => a.status === 'idle').length;
@@ -84,6 +85,15 @@ function ProjectCard({ project, agents }) {
               )}
               {/* Status badges */}
               <div className="flex items-center gap-2 ml-auto flex-shrink-0">
+                {project.contributors?.length > 1 && (
+                  <span className="text-gray-500 text-xs flex items-center gap-0.5" title={`${project.contributors.length} contributors`}>
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                            d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                    </svg>
+                    {project.contributors.length}
+                  </span>
+                )}
                 <span className="text-gray-500 text-xs">{agents.length}</span>
                 {busyCount > 0 && (
                   <span className="flex items-center gap-1 text-blue-400 text-xs">
@@ -155,11 +165,28 @@ function ProjectCard({ project, agents }) {
 
           {/* Action buttons */}
           <div className="flex items-center gap-1 flex-shrink-0">
+            {/* Add shell button */}
+            <button
+              onClick={() => {
+                setExpanded(true);
+                setShowAddShell(!showAddShell);
+                setShowAddAgent(false);
+              }}
+              className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+              title="Add shell"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+            </button>
+
             {/* Add agent button */}
             <button
               onClick={() => {
                 setExpanded(true);
                 setShowAddAgent(!showAddAgent);
+                setShowAddShell(false);
               }}
               className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
               title="Add agent"
@@ -195,6 +222,11 @@ function ProjectCard({ project, agents }) {
       {/* Expanded content - Agents */}
       {expanded && (
         <div className="px-4 pb-4">
+          {/* Add shell form */}
+          {showAddShell && (
+            <AddAgentForm type="shell" projectId={project.id} onClose={() => setShowAddShell(false)} />
+          )}
+
           {/* Add agent form */}
           {showAddAgent && (
             <AddAgentForm projectId={project.id} onClose={() => setShowAddAgent(false)} />

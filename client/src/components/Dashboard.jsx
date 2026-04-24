@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import ProjectCard from './ProjectCard';
 import AgentCard from './AgentCard';
+import AddAgentForm from './AddAgentForm';
 
 // Collapsible section component
 function Section({ title, count, defaultCollapsed = false, children, variant = 'default' }) {
@@ -41,12 +42,11 @@ function Section({ title, count, defaultCollapsed = false, children, variant = '
 }
 
 function Dashboard() {
-  const { projects, agents, createProject, createAgent } = useApp();
+  const { projects, agents, createProject } = useApp();
   const [view, setView] = useState(() => localStorage.getItem('dashboardView') || 'projects');
   const [showAddProject, setShowAddProject] = useState(false);
   const [showAddAgent, setShowAddAgent] = useState(false);
   const [newProject, setNewProject] = useState({ name: '', path: '', description: '' });
-  const [newAgent, setNewAgent] = useState({ projectId: '', name: '', screenSession: '' });
   const [error, setError] = useState('');
 
   // Persist view preference
@@ -61,18 +61,6 @@ function Dashboard() {
       await createProject(newProject);
       setNewProject({ name: '', path: '', description: '' });
       setShowAddProject(false);
-    } catch (err) {
-      setError(err.message);
-    }
-  };
-
-  const handleAddAgent = async (e) => {
-    e.preventDefault();
-    setError('');
-    try {
-      await createAgent(newAgent);
-      setNewAgent({ projectId: '', name: '', screenSession: '' });
-      setShowAddAgent(false);
     } catch (err) {
       setError(err.message);
     }
@@ -205,56 +193,13 @@ function Dashboard() {
 
       {/* Add Agent Form (Agents view only) */}
       {view === 'agents' && showAddAgent && (
-        <form onSubmit={handleAddAgent} className="bg-gray-800 rounded-lg p-4 mb-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-            <input
-              type="text"
-              placeholder="Agent name"
-              value={newAgent.name}
-              onChange={(e) => setNewAgent({ ...newAgent, name: e.target.value })}
-              className="px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white
-                         focus:outline-none focus:ring-2 focus:ring-primary-500"
-              required
-            />
-            <select
-              value={newAgent.projectId}
-              onChange={(e) => setNewAgent({ ...newAgent, projectId: e.target.value })}
-              className="px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white
-                         focus:outline-none focus:ring-2 focus:ring-primary-500"
-            >
-              <option value="">No project</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-            <input
-              type="text"
-              placeholder="tmux session name"
-              value={newAgent.screenSession}
-              onChange={(e) => setNewAgent({ ...newAgent, screenSession: e.target.value })}
-              className="px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white
-                         focus:outline-none focus:ring-2 focus:ring-primary-500"
-            />
-          </div>
-          {error && <p className="text-red-400 text-sm mb-2">{error}</p>}
-          <div className="flex gap-2">
-            <button
-              type="submit"
-              className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded transition-colors"
-            >
-              Create
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowAddAgent(false)}
-              className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm rounded transition-colors"
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
+        <div className="bg-gray-800 rounded-lg p-4 mb-4">
+          <AddAgentForm
+            onClose={() => setShowAddAgent(false)}
+            showProjectSelector
+            projects={projects}
+          />
+        </div>
       )}
 
       {/* Projects View */}

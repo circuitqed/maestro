@@ -1,5 +1,13 @@
 node_modules/
-data/*.db
+data/
+server/data/
 *.log
 .env
 .DS_Store
+
+# Build output
+client/dist/
+
+# Playwright + test artifacts
+.playwright-mcp/
+*.png
