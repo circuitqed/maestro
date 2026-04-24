@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import fs from 'fs';
 import { requireAuth } from '../middleware/auth.js';
 import {
   getAgents,
@@ -136,6 +137,13 @@ router.post('/:id/start', async (req, res) => {
       if (project && project.path) {
         workingDir = project.path;
       }
+    }
+
+    // tmux silently falls back to $HOME when `-c <dir>` doesn't exist — catch it here instead
+    if (workingDir && !fs.existsSync(workingDir)) {
+      return res.status(400).json({
+        error: `Project path does not exist: ${workingDir}. Update the project settings.`,
+      });
     }
 
     const provider = getProvider(agent.config?.provider);
