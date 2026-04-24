@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import ProviderIcon from './ProviderIcon';
 
 const STATUS_COLORS = {
   running: 'bg-blue-500',
@@ -44,6 +45,7 @@ function AgentCard({ agent }) {
   };
 
   const isRunning = agent.status === 'running' || agent.status === 'idle' || agent.status === 'busy';
+  const provider = agent.config?.provider || 'claude';
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 hover:bg-gray-750 transition-colors">
@@ -55,6 +57,7 @@ function AgentCard({ agent }) {
             }`}
             title={agent.status}
           />
+          <ProviderIcon provider={provider} className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
           <h3 className="font-medium text-white truncate">{agent.name}</h3>
         </div>
         <button
@@ -122,7 +125,7 @@ function AgentCard({ agent }) {
           <div className="fixed inset-0 bg-black/50 z-40" onClick={() => setShowConfirm(false)} />
           <div className="fixed inset-0 flex items-center justify-center z-50 p-4">
             <div className="bg-gray-800 rounded-lg p-6 max-w-sm w-full shadow-xl">
-              <h4 className="text-lg font-semibold text-white mb-2">Delete Agent?</h4>
+              <h4 className="text-lg font-semibold text-white mb-2">Delete {provider === 'shell' ? 'Shell' : 'Agent'}?</h4>
               <p className="text-gray-400 mb-4">
                 This will delete "{agent.name}". This cannot be undone.
               </p>

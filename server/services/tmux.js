@@ -68,38 +68,34 @@ export async function createSession(sessionName, workingDir = null, command = nu
 }
 
 /**
- * Start a Claude agent session
+ * Start a provider agent session with a given command
  * @param {string} sessionName - Name for the tmux session
+ * @param {string} command - Shell command to run (e.g. "bash -lc 'claude --dangerously-skip-permissions; exec bash'")
  * @param {string} workingDir - Project path as working directory
  */
-export async function startAgentSession(sessionName, workingDir = null) {
-  // Check if session already exists
+export async function startProviderSession(sessionName, command, workingDir = null) {
   if (await sessionExists(sessionName)) {
     return { name: sessionName, created: false, alreadyRunning: true };
   }
 
-  // Find claude binary - check common paths
-  const claudePaths = [
-    '/home/dave/.local/bin/claude',
-    '/usr/local/bin/claude',
-    '~/.local/bin/claude',
-  ];
-
-  // Build the tmux command to run claude with full path
-  // Use bash -l to get login shell environment, then run claude
   let tmuxCmd = `tmux new-session -d -s "${sessionName}"`;
 
   if (workingDir) {
     tmuxCmd += ` -c "${workingDir}"`;
   }
 
-  // Run claude with full path, fall back to bash if it exits
-  // Use bash -lc to source profile and get proper PATH
-  const claudeCmd = claudePaths[0]; // Use known path
-  tmuxCmd += ` "bash -lc '${claudeCmd} --dangerously-skip-permissions; exec bash'"`;
+  tmuxCmd += ` "${command}"`;
 
   await execAsync(tmuxCmd);
   return { name: sessionName, created: true };
+}
+
+/**
+ * Start a Claude agent session (backward compatibility)
+ */
+export async function startAgentSession(sessionName, workingDir = null) {
+  const command = "bash -lc '/home/dave/.local/bin/claude --dangerously-skip-permissions; exec bash'";
+  return startProviderSession(sessionName, command, workingDir);
 }
 
 /**

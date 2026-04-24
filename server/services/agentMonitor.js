@@ -2,6 +2,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { getAgents, updateAgentStatus } from './db.js';
 import { sessionExists } from './tmux.js';
+import { getProvider } from './providers.js';
 
 const execAsync = promisify(exec);
 
@@ -123,15 +124,22 @@ async function syncAgentStates() {
 
       const exists = await sessionExists(agent.screen_session);
 
+      const provider = getProvider(agent.config?.provider);
+
       if (exists) {
-        // Register for monitoring if not already
-        if (!agentActivity.has(agent.id) && agent.status !== 'stopped') {
+        // Register for monitoring if not already (skip non-monitorable providers like shell)
+        if (provider.monitorable && !agentActivity.has(agent.id) && agent.status !== 'stopped') {
           registerAgent(agent.id, agent.screen_session);
         }
 
-        // Check pane content for activity (fallback detection)
+        // Mark running non-monitorable agents that aren't already tracked
+        if (!provider.monitorable && agent.status === 'stopped') {
+          updateAgentStatus(agent.id, 'running');
+        }
+
+        // Check pane content for activity (fallback detection, monitorable agents only)
         const info = agentActivity.get(agent.id);
-        if (info) {
+        if (info && provider.monitorable) {
           await checkPaneActivity(agent.id, info);
         }
       } else {
