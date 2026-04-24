@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 
 const COLOR_PALETTE = [
@@ -17,14 +17,38 @@ const COLOR_PALETTE = [
 ];
 
 function ProjectSettings({ project, onClose }) {
-  const { updateProject, deleteProject } = useApp();
+  const { updateProject, deleteProject, user, addContributor, removeContributor } = useApp();
   const [showEdit, setShowEdit] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showContributors, setShowContributors] = useState(false);
+  const [availableUsers, setAvailableUsers] = useState([]);
+  const [contribError, setContribError] = useState('');
   const [editData, setEditData] = useState({
     name: project.name,
     path: project.path || '',
     description: project.description || '',
   });
+
+  const isOwner = project.contributors?.some(c => c.id === user?.id && c.project_role === 'owner');
+  const isAdmin = user?.role === 'admin';
+  const canManage = isOwner || isAdmin;
+
+  const loadAvailableUsers = async () => {
+    try {
+      const res = await fetch(`/api/projects/${project.id}/available-users`);
+      if (res.ok) {
+        setAvailableUsers(await res.json());
+      }
+    } catch (err) {
+      console.error('Failed to load available users:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (showContributors && canManage) {
+      loadAvailableUsers();
+    }
+  }, [showContributors]);
 
   const handleColorChange = async (color) => {
     await updateProject(project.id, { color });
@@ -40,11 +64,34 @@ function ProjectSettings({ project, onClose }) {
     onClose();
   };
 
+  const handleAddContributor = async (userId) => {
+    setContribError('');
+    try {
+      await addContributor(project.id, userId);
+      await loadAvailableUsers();
+    } catch (err) {
+      setContribError(err.message);
+    }
+  };
+
+  const handleRemoveContributor = async (userId) => {
+    setContribError('');
+    try {
+      await removeContributor(project.id, userId);
+      await loadAvailableUsers();
+    } catch (err) {
+      setContribError(err.message);
+    }
+  };
+
+  const contributors = project.contributors || [];
+  const owners = contributors.filter(c => c.project_role === 'owner');
+
   return (
     <>
       <div className="fixed inset-0 z-10" onClick={onClose} />
-      <div className="absolute right-0 top-full mt-1 w-64 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-20">
-        {!showEdit ? (
+      <div className="absolute right-0 top-full mt-1 w-72 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-20 max-h-96 overflow-y-auto">
+        {!showEdit && !showContributors ? (
           <>
             {/* Color picker */}
             <div className="p-3 border-b border-gray-700">
@@ -65,28 +112,110 @@ function ProjectSettings({ project, onClose }) {
 
             {/* Menu items */}
             <div className="py-1">
+              {canManage && (
+                <button
+                  onClick={() => setShowEdit(true)}
+                  className="w-full px-3 py-2 text-left text-sm text-gray-300 hover:bg-gray-700 flex items-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                          d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
+                  Edit details
+                </button>
+              )}
               <button
-                onClick={() => setShowEdit(true)}
+                onClick={() => setShowContributors(true)}
                 className="w-full px-3 py-2 text-left text-sm text-gray-300 hover:bg-gray-700 flex items-center gap-2"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                        d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
                 </svg>
-                Edit details
+                Contributors ({contributors.length})
               </button>
-              <button
-                onClick={() => setShowDeleteConfirm(true)}
-                className="w-full px-3 py-2 text-left text-sm text-red-400 hover:bg-gray-700 flex items-center gap-2"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-                Delete project
-              </button>
+              {canManage && (
+                <button
+                  onClick={() => setShowDeleteConfirm(true)}
+                  className="w-full px-3 py-2 text-left text-sm text-red-400 hover:bg-gray-700 flex items-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                  Delete project
+                </button>
+              )}
             </div>
           </>
+        ) : showContributors ? (
+          /* Contributors view */
+          <div className="p-3">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-sm font-medium text-white">Contributors</div>
+              <button onClick={() => setShowContributors(false)} className="text-xs text-gray-400 hover:text-white">
+                Back
+              </button>
+            </div>
+
+            {contribError && (
+              <div className="bg-red-900/50 border border-red-500 text-red-200 px-2 py-1 rounded text-xs mb-2">
+                {contribError}
+              </div>
+            )}
+
+            <div className="space-y-1 mb-3">
+              {contributors.map((c) => (
+                <div key={c.id} className="flex items-center justify-between py-1.5 px-2 rounded bg-gray-700/50">
+                  <div className="flex items-center gap-2">
+                    <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium ${
+                      c.project_role === 'owner' ? 'bg-primary-600 text-white' : 'bg-gray-600 text-gray-300'
+                    }`}>
+                      {c.username[0].toUpperCase()}
+                    </div>
+                    <span className="text-sm text-white">{c.username}</span>
+                    <span className="text-xs text-gray-500 capitalize">{c.project_role}</span>
+                  </div>
+                  {canManage && c.project_role !== 'owner' && (
+                    <button
+                      onClick={() => handleRemoveContributor(c.id)}
+                      className="text-xs text-red-400 hover:text-red-300"
+                    >
+                      Remove
+                    </button>
+                  )}
+                  {canManage && c.project_role === 'owner' && owners.length > 1 && (
+                    <button
+                      onClick={() => handleRemoveContributor(c.id)}
+                      className="text-xs text-red-400 hover:text-red-300"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {canManage && availableUsers.length > 0 && (
+              <div>
+                <div className="text-xs text-gray-400 mb-1">Add contributor</div>
+                <div className="space-y-1 max-h-32 overflow-y-auto">
+                  {availableUsers.map((u) => (
+                    <button
+                      key={u.id}
+                      onClick={() => handleAddContributor(u.id)}
+                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm text-gray-300 hover:bg-gray-700 transition-colors"
+                    >
+                      <svg className="w-3 h-3 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                      </svg>
+                      {u.username}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         ) : (
           /* Edit form */
           <div className="p-3">

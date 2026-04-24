@@ -25,6 +25,7 @@ export const PROJECT_COLORS = [
 
 export async function initDb() {
   db = new Database(dbPath);
+  db.pragma('foreign_keys = ON');
 
   // Initialize tables
   db.exec(`
@@ -62,6 +63,24 @@ export async function initDb() {
       agent_id INTEGER,
       message TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'user',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS project_contributors (
+      project_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      role TEXT NOT NULL DEFAULT 'contributor',
+      added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (project_id, user_id),
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
   `);
 
   // Migrations
@@ -77,7 +96,42 @@ export async function initDb() {
     db.exec('ALTER TABLE agents ADD COLUMN last_seen_at DATETIME');
   } catch (e) { /* Column already exists */ }
 
+  try {
+    db.exec('ALTER TABLE projects ADD COLUMN created_by INTEGER');
+  } catch (e) { /* Column already exists */ }
+
+  try {
+    db.exec('ALTER TABLE activity_log ADD COLUMN user_id INTEGER');
+  } catch (e) { /* Column already exists */ }
+
+  // Migrate from single-password to multi-user
+  migrateToMultiUser();
+
   return db;
+}
+
+function migrateToMultiUser() {
+  const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
+  if (userCount > 0) return;
+
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'password_hash'").get();
+  if (!row) return;
+
+  const result = db.prepare(
+    "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')"
+  ).run('dave', row.value);
+  const userId = result.lastInsertRowid;
+
+  const projects = db.prepare('SELECT id FROM projects').all();
+  const insertContrib = db.prepare(
+    "INSERT INTO project_contributors (project_id, user_id, role) VALUES (?, ?, 'owner')"
+  );
+  for (const project of projects) {
+    insertContrib.run(project.id, userId);
+  }
+
+  db.prepare('UPDATE projects SET created_by = ? WHERE created_by IS NULL').run(userId);
+  db.prepare("DELETE FROM settings WHERE key = 'password_hash'").run();
 }
 
 // Projects
@@ -89,14 +143,21 @@ export function getProject(id) {
   return db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
 }
 
-export function createProject(name, projectPath, description, color) {
+export function createProject(name, projectPath, description, color, userId = null) {
   if (!color) {
     const count = db.prepare('SELECT COUNT(*) as count FROM projects').get().count;
     color = PROJECT_COLORS[count % PROJECT_COLORS.length];
   }
-  const stmt = db.prepare('INSERT INTO projects (name, path, description, color) VALUES (?, ?, ?, ?)');
-  const result = stmt.run(name, projectPath, description, color);
-  return { id: result.lastInsertRowid, name, path: projectPath, description, color };
+  const stmt = db.prepare('INSERT INTO projects (name, path, description, color, created_by) VALUES (?, ?, ?, ?, ?)');
+  const result = stmt.run(name, projectPath, description, color, userId);
+  const projectId = result.lastInsertRowid;
+
+  if (userId) {
+    db.prepare("INSERT INTO project_contributors (project_id, user_id, role) VALUES (?, ?, 'owner')")
+      .run(projectId, userId);
+  }
+
+  return { id: projectId, name, path: projectPath, description, color, created_by: userId };
 }
 
 export function updateProject(id, updates) {
@@ -117,26 +178,40 @@ export function deleteProject(id) {
 }
 
 // Agents
+function parseAgentConfig(row) {
+  if (!row) return row;
+  try {
+    row.config = typeof row.config === 'string' ? JSON.parse(row.config) : (row.config || {});
+  } catch {
+    row.config = {};
+  }
+  // Normalize legacy configs to include provider
+  if (!row.config.provider) {
+    row.config.provider = row.config.type === 'shell' ? 'shell' : 'claude';
+  }
+  return row;
+}
+
 export function getAgents() {
   return db.prepare(`
     SELECT a.*, p.name as project_name, p.color as project_color
     FROM agents a
     LEFT JOIN projects p ON a.project_id = p.id
     ORDER BY a.created_at DESC
-  `).all();
+  `).all().map(parseAgentConfig);
 }
 
 export function getAgent(id) {
-  return db.prepare(`
+  return parseAgentConfig(db.prepare(`
     SELECT a.*, p.name as project_name, p.color as project_color
     FROM agents a
     LEFT JOIN projects p ON a.project_id = p.id
     WHERE a.id = ?
-  `).get(id);
+  `).get(id));
 }
 
 export function getAgentsByProject(projectId) {
-  return db.prepare('SELECT * FROM agents WHERE project_id = ? ORDER BY created_at DESC').all(projectId);
+  return db.prepare('SELECT * FROM agents WHERE project_id = ? ORDER BY created_at DESC').all(projectId).map(parseAgentConfig);
 }
 
 export function createAgent(projectId, name, screenSession, status = 'stopped', config = {}) {
@@ -171,9 +246,9 @@ export function setSetting(key, value) {
 }
 
 // Activity log
-export function logActivity(eventType, projectId, agentId, message) {
-  db.prepare('INSERT INTO activity_log (event_type, project_id, agent_id, message) VALUES (?, ?, ?, ?)')
-    .run(eventType, projectId, agentId, message);
+export function logActivity(eventType, projectId, agentId, message, userId = null) {
+  db.prepare('INSERT INTO activity_log (event_type, project_id, agent_id, message, user_id) VALUES (?, ?, ?, ?, ?)')
+    .run(eventType, projectId, agentId, message, userId);
 }
 
 export function getRecentActivity(limit = 50) {
@@ -185,4 +260,112 @@ export function getRecentActivity(limit = 50) {
     ORDER BY al.timestamp DESC
     LIMIT ?
   `).all(limit);
+}
+
+// Users
+export function createUser(username, passwordHash, role = 'user') {
+  const stmt = db.prepare('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)');
+  const result = stmt.run(username, passwordHash, role);
+  return { id: result.lastInsertRowid, username, role };
+}
+
+export function getUserByUsername(username) {
+  return db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+}
+
+export function getUserById(id) {
+  return db.prepare('SELECT id, username, role, created_at FROM users WHERE id = ?').get(id);
+}
+
+export function getUsers() {
+  return db.prepare('SELECT id, username, role, created_at FROM users ORDER BY created_at').all();
+}
+
+export function updateUser(id, updates) {
+  const fields = [];
+  const values = [];
+  if (updates.password_hash !== undefined) { fields.push('password_hash = ?'); values.push(updates.password_hash); }
+  if (updates.role !== undefined) { fields.push('role = ?'); values.push(updates.role); }
+  if (fields.length === 0) return getUserById(id);
+  values.push(id);
+  db.prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  return getUserById(id);
+}
+
+export function deleteUser(id) {
+  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+}
+
+export function getAdminCount() {
+  return db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'admin'").get().count;
+}
+
+export function getUserCount() {
+  return db.prepare('SELECT COUNT(*) as count FROM users').get().count;
+}
+
+// Project contributors
+export function getProjectsForUser(userId) {
+  return db.prepare(`
+    SELECT p.*, pc.role as user_role
+    FROM projects p
+    INNER JOIN project_contributors pc ON p.id = pc.project_id
+    WHERE pc.user_id = ?
+    ORDER BY p.created_at DESC
+  `).all(userId);
+}
+
+export function getAgentsForUser(userId) {
+  return db.prepare(`
+    SELECT a.*, p.name as project_name, p.color as project_color
+    FROM agents a
+    LEFT JOIN projects p ON a.project_id = p.id
+    INNER JOIN project_contributors pc ON a.project_id = pc.project_id
+    WHERE pc.user_id = ?
+    ORDER BY a.created_at DESC
+  `).all(userId).map(parseAgentConfig);
+}
+
+export function addProjectContributor(projectId, userId, role = 'contributor') {
+  db.prepare(
+    'INSERT OR REPLACE INTO project_contributors (project_id, user_id, role) VALUES (?, ?, ?)'
+  ).run(projectId, userId, role);
+}
+
+export function removeProjectContributor(projectId, userId) {
+  db.prepare('DELETE FROM project_contributors WHERE project_id = ? AND user_id = ?')
+    .run(projectId, userId);
+}
+
+export function getProjectContributors(projectId) {
+  return db.prepare(`
+    SELECT u.id, u.username, u.role as user_role, pc.role as project_role, pc.added_at
+    FROM project_contributors pc
+    INNER JOIN users u ON pc.user_id = u.id
+    WHERE pc.project_id = ?
+    ORDER BY pc.role DESC, u.username
+  `).all(projectId);
+}
+
+export function userHasProjectAccess(userId, projectId) {
+  const row = db.prepare(
+    'SELECT 1 FROM project_contributors WHERE project_id = ? AND user_id = ?'
+  ).get(projectId, userId);
+  return !!row;
+}
+
+export function isProjectOwner(userId, projectId) {
+  const row = db.prepare(
+    "SELECT 1 FROM project_contributors WHERE project_id = ? AND user_id = ? AND role = 'owner'"
+  ).get(projectId, userId);
+  return !!row;
+}
+
+export function getOrphanedProjectIds() {
+  return db.prepare(`
+    SELECT p.id FROM projects p
+    WHERE NOT EXISTS (
+      SELECT 1 FROM project_contributors pc WHERE pc.project_id = p.id
+    )
+  `).all().map(r => r.id);
 }

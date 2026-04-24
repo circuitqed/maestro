@@ -4,7 +4,7 @@ import LoginForm from './components/LoginForm';
 import Layout from './components/Layout';
 
 function AppContent() {
-  const { authenticated, loading } = useApp();
+  const { authenticated, setupRequired, loading } = useApp();
 
   if (loading) {
     return (
@@ -17,7 +17,7 @@ function AppContent() {
     );
   }
 
-  if (!authenticated) {
+  if (!authenticated || setupRequired) {
     return <LoginForm />;
   }
 

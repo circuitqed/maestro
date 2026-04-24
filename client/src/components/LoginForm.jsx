@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 
 function LoginForm() {
-  const { login, passwordRequired } = useApp();
+  const { login, setup, setupRequired } = useApp();
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -13,7 +14,11 @@ function LoginForm() {
     setLoading(true);
 
     try {
-      await login(password);
+      if (setupRequired) {
+        await setup(username, password);
+      } else {
+        await login(username, password);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -31,12 +36,12 @@ function LoginForm() {
 
         <form onSubmit={handleSubmit} className="bg-gray-800 rounded-lg p-6 shadow-xl">
           <h2 className="text-xl font-semibold text-white mb-4">
-            {passwordRequired ? 'Login' : 'Set Password'}
+            {setupRequired ? 'Create Admin Account' : 'Login'}
           </h2>
 
-          {!passwordRequired && (
+          {setupRequired && (
             <p className="text-gray-400 text-sm mb-4">
-              Set a password to secure your Maestro dashboard.
+              Create the first admin account for Maestro.
             </p>
           )}
 
@@ -45,6 +50,24 @@ function LoginForm() {
               {error}
             </div>
           )}
+
+          <div className="mb-4">
+            <label htmlFor="username" className="block text-gray-300 text-sm font-medium mb-2">
+              Username
+            </label>
+            <input
+              type="text"
+              id="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded text-white
+                         focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              placeholder="Enter username"
+              required
+              autoFocus
+              autoComplete="username"
+            />
+          </div>
 
           <div className="mb-4">
             <label htmlFor="password" className="block text-gray-300 text-sm font-medium mb-2">
@@ -57,9 +80,9 @@ function LoginForm() {
               onChange={(e) => setPassword(e.target.value)}
               className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded text-white
                          focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              placeholder={passwordRequired ? 'Enter password' : 'Choose a password'}
+              placeholder={setupRequired ? 'Choose a password' : 'Enter password'}
               required
-              autoFocus
+              autoComplete={setupRequired ? 'new-password' : 'current-password'}
             />
           </div>
 
@@ -69,7 +92,7 @@ function LoginForm() {
             className="w-full py-2 px-4 bg-primary-600 hover:bg-primary-700 text-white font-medium
                        rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? 'Please wait...' : passwordRequired ? 'Login' : 'Set Password'}
+            {loading ? 'Please wait...' : setupRequired ? 'Create Account' : 'Login'}
           </button>
         </form>
       </div>

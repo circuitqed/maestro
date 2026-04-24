@@ -5,7 +5,8 @@ const AppContext = createContext(null);
 
 export function AppProvider({ children }) {
   const [authenticated, setAuthenticated] = useState(false);
-  const [passwordRequired, setPasswordRequired] = useState(false);
+  const [user, setUser] = useState(null);
+  const [setupRequired, setSetupRequired] = useState(false);
   const [loading, setLoading] = useState(true);
   const [projects, setProjects] = useState([]);
   const [agents, setAgents] = useState([]);
@@ -39,7 +40,8 @@ export function AppProvider({ children }) {
       const res = await fetch('/api/auth/session');
       const data = await res.json();
       setAuthenticated(data.authenticated);
-      setPasswordRequired(data.passwordRequired);
+      setUser(data.user);
+      setSetupRequired(data.setupRequired || false);
     } catch (err) {
       console.error('Auth check failed:', err);
     } finally {
@@ -47,11 +49,11 @@ export function AppProvider({ children }) {
     }
   };
 
-  const login = async (password) => {
+  const login = async (username, password) => {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     });
 
     if (!res.ok) {
@@ -59,13 +61,35 @@ export function AppProvider({ children }) {
       throw new Error(data.error || 'Login failed');
     }
 
+    const data = await res.json();
     setAuthenticated(true);
+    setUser(data.user);
+    return true;
+  };
+
+  const setup = async (username, password) => {
+    const res = await fetch('/api/auth/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Setup failed');
+    }
+
+    const data = await res.json();
+    setAuthenticated(true);
+    setUser(data.user);
+    setSetupRequired(false);
     return true;
   };
 
   const logout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
     setAuthenticated(false);
+    setUser(null);
     setProjects([]);
     setAgents([]);
   };
@@ -204,6 +228,71 @@ export function AppProvider({ children }) {
     await loadAgents();
   };
 
+  // User management (admin)
+  const loadUsers = async () => {
+    const res = await fetch('/api/auth/users');
+    if (!res.ok) throw new Error('Failed to load users');
+    return res.json();
+  };
+
+  const createNewUser = async (userData) => {
+    const res = await fetch('/api/auth/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(userData),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Failed to create user');
+    }
+    return res.json();
+  };
+
+  const deleteUserAccount = async (id) => {
+    const res = await fetch(`/api/auth/users/${id}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Failed to delete user');
+    }
+    return res.json();
+  };
+
+  const updateUserAccount = async (id, updates) => {
+    const res = await fetch(`/api/auth/users/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Failed to update user');
+    }
+    return res.json();
+  };
+
+  // Contributor management
+  const addContributor = async (projectId, userId) => {
+    const res = await fetch(`/api/projects/${projectId}/contributors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId }),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Failed to add contributor');
+    }
+    await loadProjects();
+  };
+
+  const removeContributor = async (projectId, userId) => {
+    const res = await fetch(`/api/projects/${projectId}/contributors/${userId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Failed to remove contributor');
+    }
+    await loadProjects();
+  };
+
   // Track close timeout to cancel it if opening a new terminal
   const closeTimeoutRef = React.useRef(null);
 
@@ -229,9 +318,11 @@ export function AppProvider({ children }) {
   const value = {
     // Auth
     authenticated,
-    passwordRequired,
+    user,
+    setupRequired,
     loading,
     login,
+    setup,
     logout,
 
     // Data
@@ -249,6 +340,16 @@ export function AppProvider({ children }) {
     startAgent,
     stopAgent,
     deleteAgent,
+
+    // User management
+    loadUsers,
+    createNewUser,
+    deleteUserAccount,
+    updateUserAccount,
+
+    // Contributor management
+    addContributor,
+    removeContributor,
 
     // Terminal
     activeTerminal,

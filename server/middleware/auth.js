@@ -1,24 +1,37 @@
-import { getSetting } from '../services/db.js';
+import { getUserById, getUserCount } from '../services/db.js';
 
 export function requireAuth(req, res, next) {
-  // Check if password is configured
-  const passwordHash = getSetting('password_hash');
-
-  // If no password is set, allow access (first-time setup)
-  if (!passwordHash) {
+  // If no users exist yet (fresh install), allow access for initial setup
+  const userCount = getUserCount();
+  if (userCount === 0) {
     return next();
   }
 
-  // Check if user is authenticated
-  if (req.session && req.session.authenticated) {
-    return next();
+  if (!req.session || !req.session.user_id) {
+    return res.status(401).json({ error: 'Authentication required' });
   }
 
-  return res.status(401).json({ error: 'Authentication required' });
+  const user = getUserById(req.session.user_id);
+  if (!user) {
+    req.session.destroy(() => {});
+    return res.status(401).json({ error: 'User not found' });
+  }
+
+  req.user = user;
+  next();
+}
+
+export function requireAdmin(req, res, next) {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
 }
 
 export function optionalAuth(req, res, next) {
-  // Always allow, just attach auth status
-  req.isAuthenticated = !!(req.session && req.session.authenticated);
+  if (req.session && req.session.user_id) {
+    req.user = getUserById(req.session.user_id);
+  }
+  req.isAuthenticated = !!req.user;
   next();
 }

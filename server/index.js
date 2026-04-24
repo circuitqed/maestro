@@ -9,7 +9,7 @@ import authRoutes from './routes/auth.js';
 import projectsRoutes from './routes/projects.js';
 import agentsRoutes from './routes/agents.js';
 import { setupTerminalWS } from './services/terminal.js';
-import { initDb } from './services/db.js';
+import { initDb, getUserCount } from './services/db.js';
 import SQLiteStore from './services/sessionStore.js';
 import { startMonitoring, onStateChange, getAllAgentStates, registerAgent } from './services/agentMonitor.js';
 
@@ -63,7 +63,8 @@ const notifyClients = new Set();
 server.on('upgrade', (request, socket, head) => {
   sessionParser(request, {}, () => {
     // Check authentication for WebSocket
-    if (!request.session?.authenticated) {
+    const userCount = getUserCount();
+    if (userCount > 0 && !request.session?.user_id) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;

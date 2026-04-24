@@ -9,6 +9,14 @@ import {
   updateProject,
   deleteProject,
   getAgentsByProject,
+  getProjectsForUser,
+  getProjectContributors,
+  addProjectContributor,
+  removeProjectContributor,
+  userHasProjectAccess,
+  isProjectOwner,
+  getUserById,
+  getUsers,
   PROJECT_COLORS,
 } from '../services/db.js';
 
@@ -76,16 +84,25 @@ async function getGitInfo(projectPath) {
   }
 }
 
-// List all projects (with git info)
+// List projects (scoped to user's contributions, admins see all)
 router.get('/', async (req, res) => {
   try {
-    const projects = getProjects();
+    let projects;
+    if (req.user) {
+      if (req.user.role === 'admin') {
+        projects = getProjects();
+      } else {
+        projects = getProjectsForUser(req.user.id);
+      }
+    } else {
+      projects = getProjects(); // fresh install, no users yet
+    }
 
-    // Add git info to each project
     const projectsWithGit = await Promise.all(
       projects.map(async (project) => {
         const gitInfo = await getGitInfo(project.path);
-        return { ...project, git: gitInfo };
+        const contributors = getProjectContributors(project.id);
+        return { ...project, git: gitInfo, contributors };
       })
     );
 
@@ -107,8 +124,12 @@ router.get('/:id', async (req, res) => {
     if (!project) {
       return res.status(404).json({ error: 'Project not found' });
     }
+    if (req.user && req.user.role !== 'admin' && !userHasProjectAccess(req.user.id, project.id)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
     const gitInfo = await getGitInfo(project.path);
-    res.json({ ...project, git: gitInfo });
+    const contributors = getProjectContributors(project.id);
+    res.json({ ...project, git: gitInfo, contributors });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -127,22 +148,28 @@ router.get('/:id/agents', (req, res) => {
 // Create project
 router.post('/', (req, res) => {
   try {
-    const { name, path, description, color } = req.body;
+    const { name, description, color } = req.body;
+    const path = req.body.path || `/home/projects/${name.toLowerCase().replace(/[^a-z0-9-]/g, '-')}`;
     if (!name) {
       return res.status(400).json({ error: 'Project name is required' });
     }
-    const project = createProject(name, path, description, color);
+    const userId = req.user ? req.user.id : null;
+    const project = createProject(name, path, description, color, userId);
     res.status(201).json(project);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Update project
+// Update project (owner or admin only)
 router.patch('/:id', (req, res) => {
   try {
+    const projectId = parseInt(req.params.id);
+    if (req.user && req.user.role !== 'admin' && !isProjectOwner(req.user.id, projectId)) {
+      return res.status(403).json({ error: 'Only the project owner or an admin can edit this project' });
+    }
     const { name, path, description, color } = req.body;
-    const project = updateProject(req.params.id, { name, path, description, color });
+    const project = updateProject(projectId, { name, path, description, color });
     if (!project) {
       return res.status(404).json({ error: 'Project not found' });
     }
@@ -152,11 +179,81 @@ router.patch('/:id', (req, res) => {
   }
 });
 
-// Delete project
+// Delete project (owner or admin only)
 router.delete('/:id', (req, res) => {
   try {
-    deleteProject(req.params.id);
+    const projectId = parseInt(req.params.id);
+    if (req.user && req.user.role !== 'admin' && !isProjectOwner(req.user.id, projectId)) {
+      return res.status(403).json({ error: 'Only the project owner or an admin can delete this project' });
+    }
+    deleteProject(projectId);
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add contributor to project (owner or admin only)
+router.post('/:id/contributors', (req, res) => {
+  try {
+    const projectId = parseInt(req.params.id);
+    if (req.user && req.user.role !== 'admin' && !isProjectOwner(req.user.id, projectId)) {
+      return res.status(403).json({ error: 'Only the project owner or an admin can manage contributors' });
+    }
+
+    const { userId } = req.body;
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    const targetUser = getUserById(userId);
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    addProjectContributor(projectId, userId, 'contributor');
+    const contributors = getProjectContributors(projectId);
+    res.json({ success: true, contributors });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove contributor from project (owner or admin only)
+router.delete('/:id/contributors/:userId', (req, res) => {
+  try {
+    const projectId = parseInt(req.params.id);
+    if (req.user && req.user.role !== 'admin' && !isProjectOwner(req.user.id, projectId)) {
+      return res.status(403).json({ error: 'Only the project owner or an admin can manage contributors' });
+    }
+
+    const targetUserId = parseInt(req.params.userId);
+    const contributors = getProjectContributors(projectId);
+    const owners = contributors.filter(c => c.project_role === 'owner');
+    const isOwnerTarget = owners.some(o => o.id === targetUserId);
+    if (isOwnerTarget && owners.length <= 1) {
+      return res.status(400).json({ error: 'Cannot remove the last project owner' });
+    }
+
+    removeProjectContributor(projectId, targetUserId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get all users (for contributor picker)
+router.get('/:id/available-users', (req, res) => {
+  try {
+    const projectId = parseInt(req.params.id);
+    if (req.user && req.user.role !== 'admin' && !isProjectOwner(req.user.id, projectId)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const allUsers = getUsers();
+    const contributors = getProjectContributors(projectId);
+    const contributorIds = new Set(contributors.map(c => c.id));
+    const available = allUsers.filter(u => !contributorIds.has(u.id));
+    res.json(available);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
