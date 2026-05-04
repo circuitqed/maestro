@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import fs from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { requireAuth } from '../middleware/auth.js';
@@ -152,6 +153,13 @@ router.post('/', (req, res) => {
     const path = req.body.path || `/home/projects/${name.toLowerCase().replace(/[^a-z0-9-]/g, '-')}`;
     if (!name) {
       return res.status(400).json({ error: 'Project name is required' });
+    }
+    try {
+      fs.mkdirSync(path, { recursive: true });
+    } catch (mkErr) {
+      return res.status(400).json({
+        error: `Could not create project directory ${path}: ${mkErr.message}`,
+      });
     }
     const userId = req.user ? req.user.id : null;
     const project = createProject(name, path, description, color, userId);
