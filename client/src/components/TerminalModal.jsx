@@ -27,9 +27,10 @@ function ViewToggle({ mode, onChange }) {
 
 function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClose }) {
   const { setViewMode } = useApp();
-  const [viewportHeight, setViewportHeight] = useState(
-    window.visualViewport?.height ?? window.innerHeight
-  );
+  const [viewport, setViewport] = useState(() => ({
+    height: window.visualViewport?.height ?? window.innerHeight,
+    offsetTop: window.visualViewport?.offsetTop ?? 0,
+  }));
 
   // Prevent body scroll when modal is open
   useEffect(() => {
@@ -39,17 +40,22 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
     };
   }, []);
 
-  // Track visual viewport height to resize when mobile keyboard opens/closes
+  // Track the visual viewport so the modal follows the area above the mobile
+  // keyboard. We need BOTH height and offsetTop: when the keyboard opens, iOS
+  // scrolls the page and the visual viewport gains an offset — a fixed element
+  // pinned to the layout-viewport top would otherwise slide off the top of the
+  // screen, taking the input box with it.
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
 
-    const handleResize = () => {
-      setViewportHeight(vv.height);
+    const update = () => setViewport({ height: vv.height, offsetTop: vv.offsetTop });
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    return () => {
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
     };
-
-    vv.addEventListener('resize', handleResize);
-    return () => vv.removeEventListener('resize', handleResize);
   }, []);
 
   // Handle escape key
@@ -64,9 +70,12 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 bg-gray-900">
-      {/* Inner container sized to visual viewport so content fits above keyboard */}
-      <div className="flex flex-col" style={{ height: viewportHeight }}>
+    <div
+      className="fixed left-0 right-0 z-50 bg-gray-900 overflow-hidden"
+      style={{ top: viewport.offsetTop, height: viewport.height }}
+    >
+      {/* Inner container fills the visible area above the keyboard */}
+      <div className="flex flex-col h-full w-full overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between gap-2 px-4 py-3 bg-gray-800 border-b border-gray-700">
           <div className="flex items-center gap-3 min-w-0">

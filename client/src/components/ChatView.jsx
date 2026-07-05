@@ -9,17 +9,6 @@ const RECONNECT_DELAYS = [500, 1000, 2000, 5000, 10000]; // Exponential backoff
 // Record classification helpers
 // ---------------------------------------------------------------------------
 
-function isRealUserPrompt(rec) {
-  if (!rec || rec.type !== 'user' || rec.isMeta) return false;
-  const content = rec.message?.content;
-  if (typeof content === 'string') return content.trim().length > 0;
-  if (Array.isArray(content)) {
-    if (content.some((b) => b && b.type === 'tool_result')) return false;
-    return content.some((b) => b && b.type === 'text');
-  }
-  return false;
-}
-
 function summarizeToolInput(name, input) {
   if (!input || typeof input !== 'object') return '';
   const n = (name || '').toLowerCase();
@@ -97,7 +86,7 @@ const markdownComponents = {
 
 function Markdown({ children }) {
   return (
-    <div className="text-sm text-gray-100 break-words">
+    <div className="text-sm text-gray-100 break-words min-w-0 max-w-full overflow-hidden">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
         {children || ''}
       </ReactMarkdown>
@@ -199,6 +188,45 @@ function ToolResultCard({ result }) {
   );
 }
 
+// Derive a short activity label from the transcript so the indicator can say
+// what the agent is doing (running a tool it hasn't returned from, else generic).
+function deriveActivity(records) {
+  const resultIds = new Set();
+  for (const r of records) {
+    const c = r.message?.content;
+    if (Array.isArray(c)) {
+      for (const b of c) {
+        if (b && b.type === 'tool_result' && b.tool_use_id) resultIds.add(b.tool_use_id);
+      }
+    }
+  }
+  let pendingTool = null;
+  for (const r of records) {
+    const c = r.message?.content;
+    if (Array.isArray(c)) {
+      for (const b of c) {
+        if (b && b.type === 'tool_use' && b.id && !resultIds.has(b.id)) pendingTool = b.name;
+      }
+    }
+  }
+  return pendingTool ? `Running ${pendingTool}…` : 'Working…';
+}
+
+function WorkingIndicator({ label }) {
+  return (
+    <div className="flex justify-start">
+      <div className="flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-800/70 px-3 py-2">
+        <span className="flex gap-1" aria-hidden="true">
+          <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-bounce [animation-delay:-0.3s]" />
+          <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-bounce [animation-delay:-0.15s]" />
+          <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-bounce" />
+        </span>
+        <span className="text-xs text-gray-400">{label}</span>
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Record renderers
 // ---------------------------------------------------------------------------
@@ -213,7 +241,7 @@ function renderAssistant(rec) {
         : [];
   return (
     <div className="flex justify-start">
-      <div className="max-w-[92%] space-y-1">
+      <div className="min-w-0 max-w-[92%] space-y-1">
         {blocks.map((block, i) => {
           const key = `${rec.uuid}-${i}`;
           if (!block) return null;
@@ -247,7 +275,7 @@ function renderUserPrompt(rec) {
         : '';
   return (
     <div className="flex justify-end">
-      <div className="max-w-[85%] rounded-lg bg-blue-600/20 border border-blue-500/30 px-3 py-2">
+      <div className="min-w-0 max-w-[85%] rounded-lg bg-blue-600/20 border border-blue-500/30 px-3 py-2">
         <div className="text-[10px] uppercase tracking-wide text-blue-300/70 mb-0.5">you</div>
         <Markdown>{text}</Markdown>
       </div>
@@ -262,7 +290,7 @@ function renderToolResults(rec) {
   if (results.length === 0) return null;
   return (
     <div className="flex justify-start">
-      <div className="max-w-[92%] w-full space-y-1">
+      <div className="min-w-0 max-w-[92%] w-full space-y-1">
         {results.map((r, i) => (
           <ToolResultCard key={`${rec.uuid}-${i}`} result={r} />
         ))}
@@ -288,7 +316,7 @@ function renderRecord(rec) {
 // ---------------------------------------------------------------------------
 
 function ChatView({ agentId, session }) {
-  const { sendAgentInput } = useApp();
+  const { sendAgentInput, agentStates } = useApp();
 
   const [records, setRecords] = useState([]);
   const [connected, setConnected] = useState(false);
@@ -399,21 +427,31 @@ function ChatView({ agentId, session }) {
     atBottomRef.current = distanceFromBottom < 80;
   }, []);
 
+  // --- Working / activity indicator ----------------------------------------
+  // The pane monitor (agentStates) reports 'busy' while the agent produces
+  // output — the reliable "is it working" signal even with no terminal attached.
+  // pendingSent bridges the brief gap right after sending, before the monitor
+  // catches up.
+  const isBusy = agentStates?.[agentId] === 'busy';
+  const activityLabel = useMemo(() => deriveActivity(records), [records]);
+  const isWorking = isBusy || pendingSent;
+
   useEffect(() => {
     if (atBottomRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [records]);
+  }, [records, isWorking, activityLabel]);
 
-  // --- Clear the "sent" hint once a new user prompt lands -------------------
-  const realUserCount = useMemo(() => records.filter(isRealUserPrompt).length, [records]);
-  const prevRealUserCountRef = useRef(0);
+  // Clear the transient "just sent" flag once the agent is observably working
+  // or has produced a reply (covers fast turns the pane monitor may not catch).
+  const assistantCount = useMemo(() => records.filter((r) => r.type === 'assistant').length, [records]);
+  const prevAssistantRef = useRef(0);
   useEffect(() => {
-    if (realUserCount > prevRealUserCountRef.current) {
+    if (isBusy || assistantCount > prevAssistantRef.current) {
       setPendingSent(false);
     }
-    prevRealUserCountRef.current = realUserCount;
-  }, [realUserCount]);
+    prevAssistantRef.current = assistantCount;
+  }, [isBusy, assistantCount]);
 
   // --- Sending --------------------------------------------------------------
   const handleSend = useCallback(async () => {
@@ -459,16 +497,19 @@ function ChatView({ agentId, session }) {
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2"
+        className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden px-3 py-3 space-y-2"
       >
-        {renderedRecords.length === 0 ? (
+        {renderedRecords.length === 0 && !isWorking ? (
           <div className="h-full flex items-center justify-center text-center text-sm text-gray-500 px-4">
             {connected
               ? 'No messages yet. Send something below to get started.'
               : 'Connecting to transcript…'}
           </div>
         ) : (
-          renderedRecords
+          <>
+            {renderedRecords}
+            {isWorking && <WorkingIndicator label={activityLabel} />}
+          </>
         )}
       </div>
 
@@ -488,9 +529,6 @@ function ChatView({ agentId, session }) {
       {/* Send box */}
       <div className="flex-shrink-0 border-t border-gray-700 bg-gray-800 p-2">
         {sendError && <div className="text-xs text-red-400 mb-1">{sendError}</div>}
-        {pendingSent && !sendError && (
-          <div className="text-xs text-gray-500 mb-1">Sent — waiting for the agent…</div>
-        )}
         <div className="flex items-end gap-2">
           <textarea
             value={input}
