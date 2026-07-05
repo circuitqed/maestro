@@ -90,6 +90,15 @@ export async function initDb() {
       status TEXT DEFAULT 'unknown',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS project_host_paths (
+      project_id INTEGER NOT NULL,
+      host_id INTEGER NOT NULL,
+      path TEXT NOT NULL,
+      PRIMARY KEY (project_id, host_id),
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (host_id) REFERENCES hosts(id) ON DELETE CASCADE
+    );
   `);
 
   // Migrations
@@ -226,6 +235,37 @@ export function deleteHost(id) {
 
 export function countAgentsOnHost(hostId) {
   return db.prepare('SELECT COUNT(*) as count FROM agents WHERE host_id = ?').get(hostId).count;
+}
+
+// Per-host project paths (projects.path is the LOCAL host path; remote hosts
+// keep their own path here keyed by (project_id, host_id))
+export function getProjectHostPath(projectId, hostId) {
+  return db.prepare(
+    'SELECT * FROM project_host_paths WHERE project_id = ? AND host_id = ?'
+  ).get(projectId, hostId);
+}
+
+export function setProjectHostPath(projectId, hostId, projectPath) {
+  db.prepare(
+    'INSERT OR REPLACE INTO project_host_paths (project_id, host_id, path) VALUES (?, ?, ?)'
+  ).run(projectId, hostId, projectPath);
+  return getProjectHostPath(projectId, hostId);
+}
+
+export function deleteProjectHostPath(projectId, hostId) {
+  db.prepare('DELETE FROM project_host_paths WHERE project_id = ? AND host_id = ?')
+    .run(projectId, hostId);
+}
+
+export function getProjectHostPaths(projectId) {
+  return db.prepare(`
+    SELECT php.project_id, php.host_id, php.path,
+           h.name AS host_name, h.ssh_target AS host_ssh_target
+    FROM project_host_paths php
+    INNER JOIN hosts h ON php.host_id = h.id
+    WHERE php.project_id = ?
+    ORDER BY h.created_at
+  `).all(projectId);
 }
 
 // Agents

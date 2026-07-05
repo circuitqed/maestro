@@ -11,6 +11,7 @@ import {
   updateAgent,
   updateAgentStatus,
   setAgentClaudeSessionId,
+  setProjectHostPath,
   deleteAgent,
   getAgentsForUser,
   userHasProjectAccess,
@@ -19,6 +20,7 @@ import { getTmuxSessions, startProviderSession, createSession, killSession, sess
 import { registerAgent, unregisterAgent } from '../services/agentMonitor.js';
 import { getProvider, getProviderList } from '../services/providers.js';
 import { isRemote, isValidSessionName, execOnHost, shellQuote } from '../services/hosts.js';
+import { resolveWorkingDir, ensureDirOnHost } from '../services/projectPaths.js';
 import { pinnedTranscriptExists } from '../services/transcript.js';
 import { resolveTranscriptFile } from '../services/transcript.js';
 
@@ -33,6 +35,12 @@ function checkAgentAccess(req, res, agent) {
   if (agent.project_id && userHasProjectAccess(req.user.id, agent.project_id)) return true;
   res.status(403).json({ error: 'Access denied' });
   return false;
+}
+
+// Working directories get spliced into shell commands (mkdir/tmux -c); require
+// a non-empty absolute path so we never fall back to $HOME or expand a tilde.
+function isValidProjectPath(p) {
+  return typeof p === 'string' && p.trim().length > 0 && p.trim().startsWith('/');
 }
 
 // List agents (scoped to user's accessible projects)
@@ -98,22 +106,46 @@ router.get('/:id', (req, res) => {
 });
 
 // Create agent
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   try {
-    const { projectId, name, screenSession, status, config, hostId } = req.body;
+    const { projectId, name, screenSession, status, config, hostId, workingDir } = req.body;
     if (!name) {
       return res.status(400).json({ error: 'Agent name is required' });
     }
     if (screenSession && !isValidSessionName(screenSession)) {
       return res.status(400).json({ error: 'Invalid session name (allowed: letters, numbers, . _ -)' });
     }
-    if (hostId !== undefined && hostId !== null && !getHost(hostId)) {
-      return res.status(400).json({ error: 'Unknown host' });
+    let host = null;
+    if (hostId !== undefined && hostId !== null) {
+      host = getHost(hostId);
+      if (!host) {
+        return res.status(400).json({ error: 'Unknown host' });
+      }
     }
     if (projectId && req.user && req.user.role !== 'admin' && !userHasProjectAccess(req.user.id, projectId)) {
       return res.status(403).json({ error: 'Access denied to this project' });
     }
-    const agent = createAgent(projectId, name, screenSession, status, config, hostId ?? null);
+
+    // Optionally pin a per-host working directory for a remote agent so it is
+    // immediately startable. Validate + create the dir on that host first; only
+    // persist the mapping (and the agent) once the host accepts it.
+    if (projectId && host && isRemote(host) && typeof workingDir === 'string' && workingDir.trim()) {
+      const dir = workingDir.trim();
+      if (!isValidProjectPath(dir)) {
+        return res.status(400).json({ error: 'Working directory must be an absolute path' });
+      }
+      try {
+        await ensureDirOnHost(host, dir);
+      } catch (err) {
+        const detail = (err.stderr || err.message || '').toString().trim().split('\n')[0];
+        return res.status(400).json({
+          error: `Could not create working directory ${dir} on host ${host.name}: ${detail || 'command failed'}`,
+        });
+      }
+      setProjectHostPath(projectId, host.id, dir);
+    }
+
+    const agent = createAgent(projectId, name, screenSession, status, config, host ? host.id : null);
     res.status(201).json(agent);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -181,12 +213,18 @@ router.post('/:id/start', async (req, res) => {
       return res.status(400).json({ error: 'Agent references an unknown host' });
     }
 
-    // Get project path for working directory
+    // Resolve the working directory for this agent's (project, host):
+    // local host => project.path; remote host => the per-host configured path.
     let workingDir = null;
     if (agent.project_id) {
       const project = getProject(agent.project_id);
-      if (project && project.path) {
-        workingDir = project.path;
+      if (project) {
+        workingDir = resolveWorkingDir(project, host);
+        if (workingDir === null && isRemote(host)) {
+          return res.status(400).json({
+            error: `No working directory is set for project "${project.name}" on host ${host.name}. Set a working directory for this host in the project settings before starting the agent.`,
+          });
+        }
       }
     }
 

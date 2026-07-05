@@ -170,6 +170,41 @@ export function AppProvider({ children }) {
     await loadAgents();
   };
 
+  // Per-host project working directories
+  const getProjectPaths = async (projectId) => {
+    const res = await fetch(`/api/projects/${projectId}/paths`);
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Failed to load project paths');
+    }
+    return res.json();
+  };
+
+  const setProjectHostPath = async (projectId, hostId, path, create = false) => {
+    const res = await fetch(`/api/projects/${projectId}/paths/${hostId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, create }),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Failed to set project path');
+    }
+    const result = await res.json();
+    await loadProjects();
+    return result;
+  };
+
+  const deleteProjectHostPath = async (projectId, hostId) => {
+    const res = await fetch(`/api/projects/${projectId}/paths/${hostId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Failed to delete project path');
+    }
+    await loadProjects();
+    return res.json();
+  };
+
   const createAgent = async (agentData) => {
     const res = await fetch('/api/agents', {
       method: 'POST',
@@ -440,6 +475,9 @@ export function AppProvider({ children }) {
     createProject,
     updateProject,
     deleteProject,
+    getProjectPaths,
+    setProjectHostPath,
+    deleteProjectHostPath,
     createAgent,
     updateAgent,
     updateAgentStatus,

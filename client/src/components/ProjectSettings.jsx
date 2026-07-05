@@ -17,12 +17,18 @@ const COLOR_PALETTE = [
 ];
 
 function ProjectSettings({ project, onClose }) {
-  const { updateProject, deleteProject, user, addContributor, removeContributor } = useApp();
+  const { updateProject, deleteProject, user, addContributor, removeContributor, getProjectPaths, setProjectHostPath } = useApp();
   const [showEdit, setShowEdit] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showContributors, setShowContributors] = useState(false);
+  const [showPaths, setShowPaths] = useState(false);
   const [availableUsers, setAvailableUsers] = useState([]);
   const [contribError, setContribError] = useState('');
+  const [pathRows, setPathRows] = useState([]);
+  const [pathEdits, setPathEdits] = useState({});
+  const [pathError, setPathError] = useState('');
+  const [pathSaving, setPathSaving] = useState(null);
+  const [pathSaved, setPathSaved] = useState(null);
   const [editData, setEditData] = useState({
     name: project.name,
     path: project.path || '',
@@ -49,6 +55,43 @@ function ProjectSettings({ project, onClose }) {
       loadAvailableUsers();
     }
   }, [showContributors]);
+
+  const loadPaths = async () => {
+    try {
+      const rows = await getProjectPaths(project.id);
+      setPathRows(rows);
+      const edits = {};
+      rows.forEach((r) => { edits[r.hostId] = r.path || ''; });
+      setPathEdits(edits);
+    } catch (err) {
+      setPathError(err.message);
+    }
+  };
+
+  useEffect(() => {
+    if (showPaths && canManage) {
+      setPathError('');
+      loadPaths();
+    }
+  }, [showPaths]);
+
+  const handleSavePath = async (row) => {
+    setPathError('');
+    setPathSaving(row.hostId);
+    try {
+      const value = (pathEdits[row.hostId] || '').trim();
+      // Remote rows create the directory on the host (create=true); the local
+      // row just updates projects.path.
+      await setProjectHostPath(project.id, row.hostId, value, !row.isLocal);
+      await loadPaths();
+      setPathSaved(row.hostId);
+      setTimeout(() => setPathSaved(null), 2000);
+    } catch (err) {
+      setPathError(err.message);
+    } finally {
+      setPathSaving(null);
+    }
+  };
 
   const handleColorChange = async (color) => {
     await updateProject(project.id, { color });
@@ -91,7 +134,7 @@ function ProjectSettings({ project, onClose }) {
     <>
       <div className="fixed inset-0 z-10" onClick={onClose} />
       <div className="absolute right-0 top-full mt-1 w-72 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-20 max-h-96 overflow-y-auto">
-        {!showEdit && !showContributors ? (
+        {!showEdit && !showContributors && !showPaths ? (
           <>
             {/* Color picker */}
             <div className="p-3 border-b border-gray-700">
@@ -134,6 +177,18 @@ function ProjectSettings({ project, onClose }) {
                 </svg>
                 Contributors ({contributors.length})
               </button>
+              {canManage && (
+                <button
+                  onClick={() => setShowPaths(true)}
+                  className="w-full px-3 py-2 text-left text-sm text-gray-300 hover:bg-gray-700 flex items-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                          d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                  </svg>
+                  Working directories
+                </button>
+              )}
               {canManage && (
                 <button
                   onClick={() => setShowDeleteConfirm(true)}
@@ -215,6 +270,63 @@ function ProjectSettings({ project, onClose }) {
                 </div>
               </div>
             )}
+          </div>
+        ) : showPaths ? (
+          /* Working directories view */
+          <div className="p-3">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-sm font-medium text-white">Working directories</div>
+              <button onClick={() => setShowPaths(false)} className="text-xs text-gray-400 hover:text-white">
+                Back
+              </button>
+            </div>
+
+            {pathError && (
+              <div className="bg-red-900/50 border border-red-500 text-red-200 px-2 py-1 rounded text-xs mb-2">
+                {pathError}
+              </div>
+            )}
+
+            <div className="space-y-3">
+              {pathRows.map((row) => (
+                <div key={row.hostId}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs text-gray-300">
+                      {row.hostName}
+                      <span className="text-gray-500 ml-1">
+                        {row.isLocal ? '(local)' : `(${row.sshTarget})`}
+                      </span>
+                    </span>
+                    {pathSaved === row.hostId && (
+                      <span className="text-xs text-green-400">Saved</span>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={pathEdits[row.hostId] ?? ''}
+                      onChange={(e) => setPathEdits({ ...pathEdits, [row.hostId]: e.target.value })}
+                      placeholder={row.isLocal ? '/home/projects/...' : `/path/on/${row.hostName}`}
+                      className="flex-1 px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-white font-mono text-xs
+                                 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                    />
+                    <button
+                      onClick={() => handleSavePath(row)}
+                      disabled={pathSaving === row.hostId}
+                      className="px-2.5 py-1.5 bg-primary-600 hover:bg-primary-700 text-white text-xs rounded transition-colors disabled:opacity-50"
+                    >
+                      {pathSaving === row.hostId ? '...' : 'Save'}
+                    </button>
+                  </div>
+                  {!row.isLocal && (
+                    <p className="text-xs text-gray-500 mt-1">Created on the host when saved</p>
+                  )}
+                </div>
+              ))}
+              {pathRows.length === 0 && (
+                <p className="text-xs text-gray-500">No hosts configured.</p>
+              )}
+            </div>
           </div>
         ) : (
           /* Edit form */

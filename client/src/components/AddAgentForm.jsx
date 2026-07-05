@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import ProviderIcon from './ProviderIcon';
 
@@ -16,13 +16,16 @@ function sanitizeSessionName(name) {
 }
 
 function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector = false, projects = [] }) {
-  const { createAgent, hosts } = useApp();
+  const { createAgent, hosts, getProjectPaths } = useApp();
   const [provider, setProvider] = useState(type === 'shell' ? 'shell' : 'claude');
   const [name, setName] = useState('');
   const [screenSession, setScreenSession] = useState('');
   const [sessionEdited, setSessionEdited] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState(projectId || '');
   const [selectedHostId, setSelectedHostId] = useState(null);
+  const [workingDir, setWorkingDir] = useState('');
+  const [workingDirEdited, setWorkingDirEdited] = useState(false);
+  const [existingHostPath, setExistingHostPath] = useState(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [flags, setFlags] = useState('');
   const [model, setModel] = useState('');
@@ -37,6 +40,35 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
   const showHostSelector = hosts.length > 1;
   const localHost = hosts.find((h) => !h.ssh_target);
   const effectiveHostId = selectedHostId ?? localHost?.id ?? null;
+
+  const effectiveProjectId = showProjectSelector ? selectedProjectId : projectId;
+  const selectedHost = hosts.find((h) => h.id === effectiveHostId);
+  const isRemoteHost = !!selectedHost?.ssh_target;
+
+  // When a project + remote host are selected, load the project's existing
+  // working directory for that host to prefill the field.
+  useEffect(() => {
+    let cancelled = false;
+    setExistingHostPath(null);
+    if (!effectiveProjectId || !isRemoteHost) return;
+    getProjectPaths(effectiveProjectId)
+      .then((paths) => {
+        if (cancelled) return;
+        const entry = paths.find((p) => p.hostId === Number(effectiveHostId));
+        const existing = entry?.path || null;
+        setExistingHostPath(existing);
+        if (!workingDirEdited) {
+          setWorkingDir(existing || '');
+        }
+      })
+      .catch(() => {
+        // Non-fatal: leave the field empty so the user can type a path.
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveProjectId, effectiveHostId, isRemoteHost]);
 
   const handleNameChange = (value) => {
     setName(value);
@@ -69,6 +101,9 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
       };
       if (showHostSelector && effectiveHostId != null) {
         payload.hostId = Number(effectiveHostId);
+      }
+      if (isRemoteHost && workingDir.trim()) {
+        payload.workingDir = workingDir.trim();
       }
 
       await createAgent(payload);
@@ -125,7 +160,10 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
         <div className="mb-2">
           <select
             value={effectiveHostId ?? ''}
-            onChange={(e) => setSelectedHostId(Number(e.target.value))}
+            onChange={(e) => {
+              setSelectedHostId(Number(e.target.value));
+              setWorkingDirEdited(false);
+            }}
             className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white
                        focus:outline-none focus:ring-1 focus:ring-primary-500"
           >
@@ -135,6 +173,31 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
               </option>
             ))}
           </select>
+        </div>
+      )}
+
+      {/* Working directory on the selected remote host */}
+      {isRemoteHost && (
+        <div className="mb-2">
+          <div className="text-xs text-gray-400 mb-1">
+            Working directory on {selectedHost?.name}
+          </div>
+          <input
+            type="text"
+            placeholder={`/path/on/${selectedHost?.name || 'host'}`}
+            value={workingDir}
+            onChange={(e) => {
+              setWorkingDir(e.target.value);
+              setWorkingDirEdited(true);
+            }}
+            className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-white
+                       focus:outline-none focus:ring-1 focus:ring-primary-500 font-mono text-xs"
+          />
+          {!existingHostPath && !workingDir.trim() && (
+            <p className="text-xs text-amber-400/80 mt-1">
+              No working directory set for {selectedHost?.name}; the agent won&apos;t start until one is set.
+            </p>
+          )}
         </div>
       )}
 

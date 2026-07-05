@@ -18,11 +18,42 @@ import {
   isProjectOwner,
   getUserById,
   getUsers,
+  getHosts,
+  getHost,
+  getProjectHostPaths,
+  setProjectHostPath,
+  deleteProjectHostPath,
   PROJECT_COLORS,
 } from '../services/db.js';
+import { isRemote } from '../services/hosts.js';
+import { ensureDirOnHost } from '../services/projectPaths.js';
 
 const execAsync = promisify(exec);
 const router = Router();
+
+// Working directories get spliced into shell commands (mkdir/tmux -c); require
+// a non-empty absolute path so we never fall back to $HOME or expand a tilde.
+function isValidProjectPath(p) {
+  return typeof p === 'string' && p.trim().length > 0 && p.trim().startsWith('/');
+}
+
+// Build the per-host paths view for a project: one entry for every host row.
+// Local host => projects.path; remote host => project_host_paths path or null.
+function buildProjectPaths(project) {
+  const hosts = getHosts();
+  const rows = getProjectHostPaths(project.id);
+  const byHost = new Map(rows.map((r) => [r.host_id, r.path]));
+  return hosts.map((h) => {
+    const local = !isRemote(h);
+    return {
+      hostId: h.id,
+      hostName: h.name,
+      sshTarget: h.ssh_target || null,
+      isLocal: local,
+      path: local ? (project.path || null) : (byHost.get(h.id) || null),
+    };
+  });
+}
 
 // Apply auth middleware to all routes
 router.use(requireAuth);
@@ -244,6 +275,91 @@ router.delete('/:id/contributors/:userId', (req, res) => {
     }
 
     removeProjectContributor(projectId, targetUserId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List per-host working directories for a project (one entry per host)
+router.get('/:id/paths', (req, res) => {
+  try {
+    const projectId = parseInt(req.params.id);
+    const project = getProject(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    if (req.user && req.user.role !== 'admin' && !userHasProjectAccess(req.user.id, projectId)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    res.json(buildProjectPaths(project));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Set the working directory for a project on a specific host (owner or admin only)
+router.put('/:id/paths/:hostId', async (req, res) => {
+  try {
+    const projectId = parseInt(req.params.id);
+    if (req.user && req.user.role !== 'admin' && !isProjectOwner(req.user.id, projectId)) {
+      return res.status(403).json({ error: 'Only the project owner or an admin can edit this project' });
+    }
+    const project = getProject(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    const host = getHost(parseInt(req.params.hostId));
+    if (!host) {
+      return res.status(400).json({ error: 'Unknown host' });
+    }
+
+    const { path: newPath, create } = req.body;
+    if (!isValidProjectPath(newPath)) {
+      return res.status(400).json({ error: 'Path must be a non-empty absolute path' });
+    }
+    const dir = newPath.trim();
+
+    if (create) {
+      try {
+        await ensureDirOnHost(host, dir);
+      } catch (err) {
+        const detail = (err.stderr || err.message || '').toString().trim().split('\n')[0];
+        return res.status(400).json({
+          error: `Could not create directory ${dir} on host ${host.name}: ${detail || 'command failed'}`,
+        });
+      }
+    }
+
+    if (isRemote(host)) {
+      setProjectHostPath(projectId, host.id, dir);
+    } else {
+      // Local host path lives on projects.path
+      updateProject(projectId, { path: dir });
+    }
+
+    const refreshed = getProject(projectId);
+    res.json(buildProjectPaths(refreshed));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove a project's per-host working directory (owner or admin only)
+router.delete('/:id/paths/:hostId', (req, res) => {
+  try {
+    const projectId = parseInt(req.params.id);
+    if (req.user && req.user.role !== 'admin' && !isProjectOwner(req.user.id, projectId)) {
+      return res.status(403).json({ error: 'Only the project owner or an admin can edit this project' });
+    }
+    const host = getHost(parseInt(req.params.hostId));
+    if (!host) {
+      return res.status(400).json({ error: 'Unknown host' });
+    }
+    if (!isRemote(host)) {
+      return res.status(400).json({ error: 'The local host path is managed via the project path and cannot be removed here' });
+    }
+    deleteProjectHostPath(projectId, host.id);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
