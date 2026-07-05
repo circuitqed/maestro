@@ -17,6 +17,9 @@ function Layout() {
     // Don't capture if terminal is closed
     if (!terminalOpen || !activeTerminal) return;
 
+    // Only capture for the terminal view (chat has its own textarea)
+    if (activeTerminal.mode && activeTerminal.mode !== 'terminal') return;
+
     // Don't capture if user is in an input field
     const activeElement = document.activeElement;
     const isInputField = activeElement && (
@@ -58,8 +61,10 @@ function Layout() {
         {terminalOpen && activeTerminal && (
           <TerminalModal
             onClose={closeTerminal}
+            agentId={activeTerminal.agentId}
             sessionName={activeTerminal.session}
             hostId={activeTerminal.hostId}
+            mode={activeTerminal.mode}
           />
         )}
       </div>
@@ -83,8 +88,10 @@ function Layout() {
           <Panel defaultSize={65} minSize={30} style={{ display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
             <TerminalPanel
               ref={terminalRef}
+              agentId={activeTerminal.agentId}
               sessionName={activeTerminal.session}
               hostId={activeTerminal.hostId}
+              mode={activeTerminal.mode}
               onClose={closeTerminal}
             />
           </Panel>

@@ -10,7 +10,7 @@ const STATUS_COLORS = {
 };
 
 function AgentCard({ agent }) {
-  const { deleteAgent, startAgent, stopAgent, openTerminal, updateAgent } = useApp();
+  const { deleteAgent, startAgent, stopAgent, openAgentView, updateAgent } = useApp();
   const [showConfirm, setShowConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -63,7 +63,7 @@ function AgentCard({ agent }) {
         await startAgent(agent.id);
         // Open terminal after starting
         if (agent.screen_session) {
-          openTerminal(agent.screen_session, agent.host_id ?? null);
+          openAgentView(agent, 'terminal');
         }
       }
     } catch (err) {
@@ -75,7 +75,13 @@ function AgentCard({ agent }) {
 
   const handleOpenTerminal = () => {
     if (agent.screen_session) {
-      openTerminal(agent.screen_session, agent.host_id ?? null);
+      openAgentView(agent, 'terminal');
+    }
+  };
+
+  const handleOpenChat = () => {
+    if (agent.screen_session) {
+      openAgentView(agent, 'chat');
     }
   };
 
@@ -189,6 +195,20 @@ function AgentCard({ agent }) {
         >
           {loading ? '...' : isRunning ? 'Stop' : 'Start'}
         </button>
+
+        {agent.screen_session && provider === 'claude' && (
+          <button
+            onClick={handleOpenChat}
+            className="px-3 py-1.5 text-sm font-medium bg-gray-700 text-gray-300
+                       hover:bg-gray-600 rounded transition-colors"
+            title="Open chat view"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
+          </button>
+        )}
 
         {agent.screen_session && (
           <button

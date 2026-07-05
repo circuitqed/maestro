@@ -356,14 +356,57 @@ export function AppProvider({ children }) {
   // Track close timeout to cancel it if opening a new terminal
   const closeTimeoutRef = React.useRef(null);
 
+  // Open an agent in either the "terminal" or "chat" view. activeTerminal is an
+  // object: { agentId, session, hostId, mode }.
+  const openAgentView = useCallback((agent, mode = 'terminal') => {
+    // Cancel any pending close timeout
+    if (closeTimeoutRef.current) {
+      clearTimeout(closeTimeoutRef.current);
+      closeTimeoutRef.current = null;
+    }
+    setActiveTerminal({
+      agentId: agent.id,
+      session: agent.screen_session,
+      hostId: agent.host_id ?? null,
+      mode,
+    });
+    setTerminalOpen(true);
+  }, []);
+
+  // Back-compat: open a terminal by raw session name (no associated agent id).
   const openTerminal = useCallback((sessionName, hostId = null) => {
     // Cancel any pending close timeout
     if (closeTimeoutRef.current) {
       clearTimeout(closeTimeoutRef.current);
       closeTimeoutRef.current = null;
     }
-    setActiveTerminal({ session: sessionName, hostId });
+    setActiveTerminal({ agentId: null, session: sessionName, hostId, mode: 'terminal' });
     setTerminalOpen(true);
+  }, []);
+
+  // Swap the rendered view for the currently open agent panel in place.
+  const setViewMode = useCallback((mode) => {
+    setActiveTerminal((prev) => (prev ? { ...prev, mode } : prev));
+  }, []);
+
+  // Inject text into an agent's tmux session (used by the chat send box).
+  const sendAgentInput = useCallback(async (agentId, text) => {
+    const res = await fetch(`/api/agents/${agentId}/input`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) {
+      let message = 'Failed to send input';
+      try {
+        const data = await res.json();
+        message = data.error || message;
+      } catch {
+        // ignore JSON parse errors
+      }
+      throw new Error(message);
+    }
+    return res.json();
   }, []);
 
   const closeTerminal = useCallback(() => {
@@ -419,10 +462,13 @@ export function AppProvider({ children }) {
     deleteHost,
     testHost,
 
-    // Terminal
+    // Terminal / agent views
     activeTerminal,
     terminalOpen,
     openTerminal,
+    openAgentView,
+    setViewMode,
+    sendAgentInput,
     closeTerminal,
 
     // Notifications

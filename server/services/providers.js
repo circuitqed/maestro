@@ -23,7 +23,16 @@ const PROVIDERS = {
       const binary = config.binaryPath || (host && host.ssh_target ? 'claude' : '/home/dave/.local/bin/claude');
       const flags = config.flags ?? this.defaultFlags;
       const nameFlag = agentName ? `--name ${quoteForBashLc(agentName)} ` : '';
-      return `bash -lc '${binary} ${nameFlag}${flags}; exec bash'`;
+      // Pin the transcript session id when the caller supplies one. The id is a
+      // validated UUID (hex + dashes only), so it needs no quoting; guard anyway.
+      // First start creates the session with --session-id; a restart must --resume
+      // the same id instead (Claude rejects a --session-id that already exists).
+      const sid = config.claudeSessionId;
+      const validSid = sid && /^[0-9a-fA-F-]{36}$/.test(sid);
+      const sessionFlag = validSid
+        ? (config.claudeResume ? `--resume ${sid} ` : `--session-id ${sid} `)
+        : '';
+      return `bash -lc '${binary} ${nameFlag}${sessionFlag}${flags}; exec bash'`;
     },
   },
   codex: {

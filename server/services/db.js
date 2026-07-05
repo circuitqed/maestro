@@ -117,6 +117,10 @@ export async function initDb() {
     db.exec('ALTER TABLE agents ADD COLUMN host_id INTEGER');
   } catch (e) { /* Column already exists */ }
 
+  try {
+    db.exec('ALTER TABLE agents ADD COLUMN claude_session_id TEXT');
+  } catch (e) { /* Column already exists */ }
+
   // Seed the local host row (ssh_target NULL => local) on first run
   const hostCount = db.prepare('SELECT COUNT(*) as count FROM hosts').get().count;
   if (hostCount === 0) {
@@ -293,6 +297,11 @@ export function updateAgent(id, { name } = {}) {
 export function updateAgentLastSeen(id) {
   const now = new Date().toISOString();
   db.prepare('UPDATE agents SET last_seen_at = ? WHERE id = ?').run(now, id);
+}
+
+export function setAgentClaudeSessionId(id, sessionId) {
+  db.prepare('UPDATE agents SET claude_session_id = ? WHERE id = ?').run(sessionId, id);
+  return getAgent(id);
 }
 
 export function deleteAgent(id) {

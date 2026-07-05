@@ -10,6 +10,7 @@ import projectsRoutes from './routes/projects.js';
 import agentsRoutes from './routes/agents.js';
 import hostsRoutes from './routes/hosts.js';
 import { setupTerminalWS } from './services/terminal.js';
+import { setupTranscriptWS } from './services/transcript.js';
 import { initDb, getUserCount } from './services/db.js';
 import SQLiteStore from './services/sessionStore.js';
 import { startMonitoring, onStateChange, getAllAgentStates, registerAgent } from './services/agentMonitor.js';
@@ -58,6 +59,9 @@ app.get('*', (req, res) => {
 // WebSocket server for terminal
 const terminalWss = new WebSocketServer({ noServer: true });
 
+// WebSocket server for read-only agent transcript (pretty chat view)
+const transcriptWss = new WebSocketServer({ noServer: true });
+
 // WebSocket server for notifications
 const notifyWss = new WebSocketServer({ noServer: true });
 const notifyClients = new Set();
@@ -76,6 +80,10 @@ server.on('upgrade', (request, socket, head) => {
       terminalWss.handleUpgrade(request, socket, head, (ws) => {
         terminalWss.emit('connection', ws, request);
       });
+    } else if (request.url.startsWith('/ws/transcript')) {
+      transcriptWss.handleUpgrade(request, socket, head, (ws) => {
+        transcriptWss.emit('connection', ws, request);
+      });
     } else if (request.url.startsWith('/ws/notifications')) {
       notifyWss.handleUpgrade(request, socket, head, (ws) => {
         notifyWss.emit('connection', ws, request);
@@ -87,6 +95,7 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 setupTerminalWS(terminalWss);
+setupTranscriptWS(transcriptWss);
 
 // Setup notifications WebSocket
 notifyWss.on('connection', (ws) => {

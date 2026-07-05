@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import fs from 'fs';
+import { randomUUID } from 'crypto';
 import { requireAuth } from '../middleware/auth.js';
 import {
   getAgents,
@@ -9,14 +10,17 @@ import {
   createAgent,
   updateAgent,
   updateAgentStatus,
+  setAgentClaudeSessionId,
   deleteAgent,
   getAgentsForUser,
   userHasProjectAccess,
 } from '../services/db.js';
-import { getTmuxSessions, startProviderSession, createSession, killSession, sessionExists } from '../services/tmux.js';
+import { getTmuxSessions, startProviderSession, createSession, killSession, sessionExists, sendText } from '../services/tmux.js';
 import { registerAgent, unregisterAgent } from '../services/agentMonitor.js';
 import { getProvider, getProviderList } from '../services/providers.js';
 import { isRemote, isValidSessionName, execOnHost, shellQuote } from '../services/hosts.js';
+import { pinnedTranscriptExists } from '../services/transcript.js';
+import { resolveTranscriptFile } from '../services/transcript.js';
 
 const router = Router();
 
@@ -209,12 +213,40 @@ router.post('/:id/start', async (req, res) => {
 
     const provider = getProvider(agent.config?.provider);
 
+    // For the claude provider, pin a transcript session id so the chat view can
+    // locate the exact JSONL file (and so a restart resumes the same transcript).
+    // This must NEVER cause a start to fail — on any error we simply skip pinning
+    // and rely on the newest-mtime transcript locator fallback.
+    let claudeSessionId = null;
+    let claudeResume = false;
+    if (provider.id === 'claude') {
+      try {
+        if (agent.claude_session_id) {
+          claudeSessionId = agent.claude_session_id;
+          // Claude rejects --session-id when the transcript already exists and
+          // rejects --resume when it doesn't, so choose by the file's presence:
+          // resume a real prior conversation, otherwise (re)create the session.
+          claudeResume = await pinnedTranscriptExists(host, claudeSessionId);
+        } else {
+          claudeSessionId = randomUUID();
+          setAgentClaudeSessionId(agent.id, claudeSessionId);
+        }
+      } catch (err) {
+        claudeSessionId = null; // fall back to the locator
+        claudeResume = false;
+      }
+    }
+
     let result;
     try {
       if (provider.id === 'shell') {
         result = await createSession(agent.screen_session, workingDir, null, host);
       } else {
-        const command = provider.buildCommand(agent.config || {}, agent.name, host);
+        const command = provider.buildCommand(
+          { ...(agent.config || {}), claudeSessionId, claudeResume },
+          agent.name,
+          host
+        );
         result = await startProviderSession(agent.screen_session, command, workingDir, host);
       }
     } catch (err) {
@@ -266,6 +298,57 @@ router.post('/:id/stop', async (req, res) => {
     unregisterAgent(agent.id);
     const updatedAgent = updateAgentStatus(req.params.id, 'stopped');
     res.json({ success: true, message: result.killed ? 'Agent stopped' : 'Session not found', agent: updatedAgent });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Inject text into the agent's tmux session (used by the chat view send box)
+router.post('/:id/input', async (req, res) => {
+  try {
+    const agent = getAgent(req.params.id);
+    if (!agent) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+    if (!checkAgentAccess(req, res, agent)) return;
+
+    const { text } = req.body;
+    if (typeof text !== 'string' || text.trim().length === 0) {
+      return res.status(400).json({ error: 'text is required' });
+    }
+
+    if (!agent.screen_session || !isValidSessionName(agent.screen_session)) {
+      return res.status(400).json({ error: 'Agent has no valid session' });
+    }
+
+    const host = agent.host_id ? getHost(agent.host_id) : null;
+    if (agent.host_id && !host) {
+      return res.status(400).json({ error: 'Agent references an unknown host' });
+    }
+
+    await sendText(agent.screen_session, text, host);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Transcript availability metadata for the chat view
+router.get('/:id/transcript/meta', async (req, res) => {
+  try {
+    const agent = getAgent(req.params.id);
+    if (!agent) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+    if (!checkAgentAccess(req, res, agent)) return;
+
+    const host = agent.host_id ? getHost(agent.host_id) : null;
+    if (agent.host_id && !host) {
+      return res.status(400).json({ error: 'Agent references an unknown host' });
+    }
+
+    const filePath = await resolveTranscriptFile(agent, host);
+    res.json({ available: !!filePath, sessionId: agent.claude_session_id || null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -10,7 +10,7 @@ const STATUS_COLORS = {
 };
 
 function AgentRow({ agent }) {
-  const { startAgent, stopAgent, deleteAgent, openTerminal } = useApp();
+  const { startAgent, stopAgent, deleteAgent, openAgentView } = useApp();
   const [showMenu, setShowMenu] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -21,7 +21,7 @@ function AgentRow({ agent }) {
       await startAgent(agent.id);
       // Open terminal after starting
       if (agent.screen_session) {
-        openTerminal(agent.screen_session, agent.host_id ?? null);
+        openAgentView(agent, 'terminal');
       }
     } catch (err) {
       console.error('Failed to start agent:', err);
@@ -48,7 +48,13 @@ function AgentRow({ agent }) {
 
   const handleOpenTerminal = () => {
     if (agent.screen_session) {
-      openTerminal(agent.screen_session, agent.host_id ?? null);
+      openAgentView(agent, 'terminal');
+    }
+  };
+
+  const handleOpenChat = () => {
+    if (agent.screen_session) {
+      openAgentView(agent, 'chat');
     }
   };
 
@@ -102,6 +108,20 @@ function AgentRow({ agent }) {
         >
           {loading ? '...' : isRunning ? 'Stop' : 'Start'}
         </button>
+
+        {/* Chat button (Claude agents only) */}
+        {agent.screen_session && provider === 'claude' && (
+          <button
+            onClick={handleOpenChat}
+            className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded transition-colors"
+            title="Open chat view"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
+          </button>
+        )}
 
         {/* Terminal button */}
         {agent.screen_session && (

@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { execOnHost, shellQuote } from './hosts.js';
 
 /**
@@ -122,4 +123,27 @@ export async function killSession(sessionName, host = null) {
  */
 export async function sendKeys(sessionName, keys, host = null) {
   await execOnHost(host, `tmux send-keys -t ${shellQuote(sessionName)} "${keys}"`);
+}
+
+/**
+ * Inject a literal block of text into a tmux session as if typed, then press Enter.
+ *
+ * Unlike sendKeys (which interpolates the argument as tmux KEY NAMES, so "Enter"
+ * or "C-c" would be interpreted), this pastes `text` verbatim via the tmux paste
+ * buffer — words like "Enter", newlines, quotes, and shell metacharacters are all
+ * inert. `text` is passed as a single shell-quoted argument so it cannot break out
+ * at the local sh (or the remote ssh login shell) layer. A per-call named buffer
+ * avoids racing on tmux's global buffer stack when multiple sends overlap.
+ *
+ * @param {string} sessionName - Target tmux session
+ * @param {string} text - Literal text to inject (no trailing newline needed)
+ * @param {object|null} host - Host row (null => local)
+ */
+export async function sendText(sessionName, text, host = null) {
+  const buf = `maestro-${randomUUID()}`;
+  const cmd =
+    `tmux set-buffer -b ${shellQuote(buf)} -- ${shellQuote(text)} && ` +
+    `tmux paste-buffer -d -b ${shellQuote(buf)} -t ${shellQuote(sessionName)} && ` +
+    `tmux send-keys -t ${shellQuote(sessionName)} Enter`;
+  await execOnHost(host, cmd);
 }
