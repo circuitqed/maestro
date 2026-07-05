@@ -149,6 +149,7 @@ export function setupTranscriptWS(wss) {
   wss.on('connection', async (ws, request) => {
     let child = null;
     let closed = false;
+    let pollTimer = null;
 
     const killChild = () => {
       if (child) {
@@ -161,16 +162,19 @@ export function setupTranscriptWS(wss) {
       }
     };
 
+    const cleanup = () => {
+      closed = true;
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      killChild();
+    };
+
     // Attach teardown BEFORE any await so a ws that closes during transcript
-    // resolution still tears down the (later-spawned) child.
-    ws.on('close', () => {
-      closed = true;
-      killChild();
-    });
-    ws.on('error', () => {
-      closed = true;
-      killChild();
-    });
+    // resolution (or while polling/waiting for the file) still tears down.
+    ws.on('close', cleanup);
+    ws.on('error', cleanup);
 
     try {
       const url = new URL(request.url, 'http://localhost');
@@ -189,72 +193,93 @@ export function setupTranscriptWS(wss) {
         return fail(ws, 'Unknown host');
       }
 
-      const filePath = await resolveTranscriptFile(agent, host);
-      if (!filePath) {
-        return fail(ws, 'No transcript found yet');
-      }
+      // Spawn a follow-tail on a resolved transcript path and stream its records.
+      const startTail = (filePath) => {
+        if (closed || ws.readyState !== ws.OPEN) return;
 
-      // ws may have closed while we were resolving the file.
-      if (closed || ws.readyState !== ws.OPEN) {
-        return;
-      }
+        const { file, args } = tailSpawnArgs(host, filePath);
+        child = spawn(file, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
-      const { file, args } = tailSpawnArgs(host, filePath);
-      child = spawn(file, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-
-      // The connection may have closed between the readyState check and spawn.
-      if (closed) {
-        killChild();
-        return;
-      }
-
-      let buffer = '';
-      child.stdout.setEncoding('utf8');
-      child.stdout.on('data', (chunk) => {
-        buffer += chunk;
-
-        // Guard against a single pathological line that never terminates.
-        if (buffer.length > MAX_LINE_BYTES && buffer.indexOf('\n') === -1) {
-          buffer = '';
+        // The connection may have closed between the check and spawn.
+        if (closed) {
+          killChild();
           return;
         }
 
-        let idx;
-        while ((idx = buffer.indexOf('\n')) !== -1) {
-          const line = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 1);
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          let record;
-          try {
-            record = JSON.parse(trimmed);
-          } catch {
-            continue; // skip malformed / partial lines
+        let buffer = '';
+        child.stdout.setEncoding('utf8');
+        child.stdout.on('data', (chunk) => {
+          buffer += chunk;
+
+          // Guard against a single pathological line that never terminates.
+          if (buffer.length > MAX_LINE_BYTES && buffer.indexOf('\n') === -1) {
+            buffer = '';
+            return;
           }
+
+          let idx;
+          while ((idx = buffer.indexOf('\n')) !== -1) {
+            const line = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 1);
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            let record;
+            try {
+              record = JSON.parse(trimmed);
+            } catch {
+              continue; // skip malformed / partial lines
+            }
+            if (ws.readyState === ws.OPEN) {
+              ws.send(JSON.stringify({ type: 'record', record }));
+            }
+          }
+        });
+
+        // tail/ssh diagnostics go to stderr; not fatal on their own.
+        child.stderr.on('data', () => {});
+
+        child.on('exit', () => {
+          child = null;
           if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ type: 'record', record }));
+            ws.send(JSON.stringify({ type: 'end' }));
           }
-        }
-      });
+        });
 
-      // tail/ssh diagnostics go to stderr; not fatal on their own.
-      child.stderr.on('data', () => {});
+        child.on('error', (err) => {
+          child = null;
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify({ type: 'error', message: err.message }));
+          }
+        });
+      };
 
-      child.on('exit', () => {
-        child = null;
-        if (ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify({ type: 'end' }));
-        }
-      });
+      const filePath = await resolveTranscriptFile(agent, host);
+      if (closed || ws.readyState !== ws.OPEN) return;
 
-      child.on('error', (err) => {
-        child = null;
-        if (ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify({ type: 'error', message: err.message }));
-        }
-      });
+      if (filePath) {
+        startTail(filePath);
+      } else {
+        // No transcript yet: a freshly started Claude agent only writes its JSONL
+        // after the first turn. Don't error — keep the socket open (the client
+        // shows an empty "send a message" state) and poll until the file appears,
+        // then start tailing so the first exchange streams in seamlessly.
+        pollTimer = setInterval(async () => {
+          if (closed || child) return;
+          let fp = null;
+          try {
+            fp = await resolveTranscriptFile(agent, host);
+          } catch {
+            return;
+          }
+          if (fp && !closed && !child) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+            startTail(fp);
+          }
+        }, 2000);
+      }
     } catch (err) {
-      killChild();
+      cleanup();
       fail(ws, err.message);
     }
   });
