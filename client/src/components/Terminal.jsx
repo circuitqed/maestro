@@ -14,7 +14,7 @@ const KEYS = {
   PAGE_DOWN: '\x1b[6~',
 };
 
-const Terminal = forwardRef(function Terminal({ sessionName, showStatusBar = true }, ref) {
+const Terminal = forwardRef(function Terminal({ sessionName, hostId, showStatusBar = true }, ref) {
   const containerRef = useRef(null);
   const scrollUpRef = useRef(null);
   const scrollDownRef = useRef(null);
@@ -24,7 +24,7 @@ const Terminal = forwardRef(function Terminal({ sessionName, showStatusBar = tru
     fitTerminal, sendInput, sendKeys, scrollWheel, focusTerminal,
     copySelection, copyScreen, pasteClipboard, changeFontSize, reconnect,
     getBufferText,
-  } = useTerminal(sessionName);
+  } = useTerminal(sessionName, hostId);
   const isMobile = useMediaQuery('(max-width: 767px)');
   const scrollIntervalRef = useRef(null);
   const [scrollControlsVisible, setScrollControlsVisible] = useState(false);

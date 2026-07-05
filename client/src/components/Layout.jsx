@@ -56,7 +56,11 @@ function Layout() {
           <Dashboard />
         </div>
         {terminalOpen && activeTerminal && (
-          <TerminalModal onClose={closeTerminal} sessionName={activeTerminal} />
+          <TerminalModal
+            onClose={closeTerminal}
+            sessionName={activeTerminal.session}
+            hostId={activeTerminal.hostId}
+          />
         )}
       </div>
     );
@@ -77,7 +81,12 @@ function Layout() {
             <div className="w-1 h-8 bg-gray-600 group-hover:bg-primary-400 rounded-full transition-colors" />
           </PanelResizeHandle>
           <Panel defaultSize={65} minSize={30} style={{ display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
-            <TerminalPanel ref={terminalRef} sessionName={activeTerminal} onClose={closeTerminal} />
+            <TerminalPanel
+              ref={terminalRef}
+              sessionName={activeTerminal.session}
+              hostId={activeTerminal.hostId}
+              onClose={closeTerminal}
+            />
           </Panel>
         </PanelGroup>
       ) : (

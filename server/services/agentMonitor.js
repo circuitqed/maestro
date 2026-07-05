@@ -1,13 +1,10 @@
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import { getAgents, updateAgentStatus } from './db.js';
-import { sessionExists } from './tmux.js';
+import { getTmuxSessions } from './tmux.js';
 import { getProvider } from './providers.js';
-
-const execAsync = promisify(exec);
+import { execOnHost, isRemote } from './hosts.js';
 
 // Agent activity tracking
-// Map of agentId -> { lastActivity: Date, state: 'busy'|'idle', sessionName: string, lastContent: string }
+// Map of agentId -> { lastActivity: Date, state: 'busy'|'idle', sessionName: string, hostId: number|null, host: object|null, lastContent: string }
 const agentActivity = new Map();
 const stateListeners = new Set();
 
@@ -18,10 +15,11 @@ const IDLE_THRESHOLD = 5000; // 5 seconds
  * Called when terminal output is received for a session
  * This is the key function - it gets called from the terminal service
  */
-export function recordActivity(sessionName) {
-  // Find agent by session name
+export function recordActivity(sessionName, hostId = null) {
+  const normalizedHostId = hostId || null;
+  // Find agent by session name + host (same-named sessions can exist on different hosts)
   for (const [agentId, info] of agentActivity) {
-    if (info.sessionName === sessionName) {
+    if (info.sessionName === sessionName && (info.hostId || null) === normalizedHostId) {
       const wasIdle = info.state === 'idle';
       info.lastActivity = Date.now();
 
@@ -38,11 +36,14 @@ export function recordActivity(sessionName) {
 
 /**
  * Register an agent for monitoring
+ * @param {object|null} host - Host row (null => local)
  */
-export function registerAgent(agentId, sessionName) {
+export function registerAgent(agentId, sessionName, host = null) {
   if (!agentActivity.has(agentId)) {
     agentActivity.set(agentId, {
       sessionName,
+      hostId: isRemote(host) ? host.id : null, // local hosts normalize to null
+      host: host || null,
       lastActivity: Date.now(),
       state: 'busy', // Assume busy when first registered
       lastContent: '', // For pane content change detection
@@ -80,9 +81,10 @@ function checkIdleAgents() {
 /**
  * Capture tmux pane content to detect activity
  */
-async function capturePaneContent(sessionName) {
+async function capturePaneContent(sessionName, host = null) {
   try {
-    const { stdout } = await execAsync(
+    const { stdout } = await execOnHost(
+      host,
       `tmux capture-pane -t "${sessionName}" -p -S -20 2>/dev/null`
     );
     return stdout;
@@ -95,7 +97,7 @@ async function capturePaneContent(sessionName) {
  * Check tmux pane for changes (fallback when no terminal connected)
  */
 async function checkPaneActivity(agentId, info) {
-  const content = await capturePaneContent(info.sessionName);
+  const content = await capturePaneContent(info.sessionName, info.host);
   if (content === null) return;
 
   // Check if content changed
@@ -113,49 +115,97 @@ async function checkPaneActivity(agentId, info) {
 }
 
 /**
- * Check if sessions still exist and sync state
+ * Check if sessions still exist and sync state.
+ *
+ * Agents are grouped by host so each host's tmux server is probed exactly once
+ * per tick (via getTmuxSessions) instead of once per agent. This means a down
+ * remote host costs a single connect timeout rather than one per agent, and —
+ * critically — an unreachable host (a sleeping Mac mini) leaves its agents'
+ * state untouched instead of falsely flipping them all to 'stopped' (which they
+ * could never recover from, since the re-register guard skips 'stopped' rows).
  */
+let syncInProgress = false;
+
 async function syncAgentStates() {
+  if (syncInProgress) return; // prior tick still running (e.g. a slow/unreachable host)
+  syncInProgress = true;
   try {
     const agents = getAgents();
 
+    // Group agents by host (host_id 0/null => local)
+    const groups = new Map();
     for (const agent of agents) {
       if (!agent.screen_session) continue;
-
-      const exists = await sessionExists(agent.screen_session);
-
-      const provider = getProvider(agent.config?.provider);
-
-      if (exists) {
-        // Register for monitoring if not already (skip non-monitorable providers like shell)
-        if (provider.monitorable && !agentActivity.has(agent.id) && agent.status !== 'stopped') {
-          registerAgent(agent.id, agent.screen_session);
-        }
-
-        // Mark running non-monitorable agents that aren't already tracked
-        if (!provider.monitorable && agent.status === 'stopped') {
-          updateAgentStatus(agent.id, 'running');
-        }
-
-        // Check pane content for activity (fallback detection, monitorable agents only)
-        const info = agentActivity.get(agent.id);
-        if (info && provider.monitorable) {
-          await checkPaneActivity(agent.id, info);
-        }
-      } else {
-        // Session gone - mark as stopped
-        if (agent.status !== 'stopped') {
-          updateAgentStatus(agent.id, 'stopped');
-          const info = agentActivity.get(agent.id);
-          if (info) {
-            emitStateChange(agent.id, agent.screen_session, 'stopped', info.state);
-          }
-          unregisterAgent(agent.id);
-        }
+      const hostKey = agent.host_id || 0;
+      if (!groups.has(hostKey)) {
+        const host = agent.host_id
+          ? { id: agent.host_id, ssh_target: agent.host_ssh_target, path_prefix: agent.host_path_prefix }
+          : null;
+        groups.set(hostKey, { host, agents: [] });
       }
+      groups.get(hostKey).agents.push(agent);
     }
+
+    // Probe each host concurrently so a slow/unreachable host (a sleeping Mac
+    // mini) never delays monitoring of agents on other hosts. Host groups touch
+    // disjoint agents, and better-sqlite3 writes run synchronously on this
+    // thread, so only the ssh awaits interleave — the DB writes stay serialized.
+    await Promise.all([...groups.values()].map(({ host, agents: hostAgents }) =>
+      syncHostGroup(host, hostAgents)
+    ));
   } catch (err) {
     console.error('Error syncing agent states:', err);
+  } finally {
+    syncInProgress = false;
+  }
+}
+
+/**
+ * Reconcile one host's agents against a single tmux probe of that host.
+ */
+async function syncHostGroup(host, hostAgents) {
+  // One probe per host. getTmuxSessions returns [] for a reachable host with
+  // no server (exit 1) but throws on transport failure — so a throw means
+  // "unreachable", and we skip the host's agents rather than mark them stopped.
+  let sessionNames;
+  try {
+    const sessions = await getTmuxSessions(host);
+    sessionNames = new Set(sessions.map((s) => s.name));
+  } catch {
+    return; // host unreachable — leave its agents' state untouched this tick
+  }
+
+  for (const agent of hostAgents) {
+    const provider = getProvider(agent.config?.provider);
+    const exists = sessionNames.has(agent.screen_session);
+
+    if (exists) {
+      // Register for monitoring if not already (skip non-monitorable providers like shell)
+      if (provider.monitorable && !agentActivity.has(agent.id) && agent.status !== 'stopped') {
+        registerAgent(agent.id, agent.screen_session, host);
+      }
+
+      // Mark running non-monitorable agents that aren't already tracked
+      if (!provider.monitorable && agent.status === 'stopped') {
+        updateAgentStatus(agent.id, 'running');
+      }
+
+      // Check pane content for activity (fallback detection, monitorable agents only)
+      const info = agentActivity.get(agent.id);
+      if (info && provider.monitorable) {
+        await checkPaneActivity(agent.id, info);
+      }
+    } else {
+      // Session gone - mark as stopped
+      if (agent.status !== 'stopped') {
+        updateAgentStatus(agent.id, 'stopped');
+        const info = agentActivity.get(agent.id);
+        if (info) {
+          emitStateChange(agent.id, agent.screen_session, 'stopped', info.state);
+        }
+        unregisterAgent(agent.id);
+      }
+    }
   }
 }
 

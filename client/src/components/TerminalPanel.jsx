@@ -1,7 +1,7 @@
 import React, { forwardRef, useRef, useImperativeHandle } from 'react';
 import Terminal from './Terminal';
 
-const TerminalPanel = forwardRef(function TerminalPanel({ sessionName, onClose }, ref) {
+const TerminalPanel = forwardRef(function TerminalPanel({ sessionName, hostId, onClose }, ref) {
   const terminalRef = useRef(null);
 
   // Expose terminal methods to parent
@@ -55,7 +55,7 @@ const TerminalPanel = forwardRef(function TerminalPanel({ sessionName, onClose }
 
       {/* Terminal - flex-1 with min-h-0 and min-w-0 to allow proper sizing */}
       <div className="flex-1 min-h-0 min-w-0 w-full">
-        <Terminal ref={terminalRef} sessionName={sessionName} showStatusBar={false} />
+        <Terminal ref={terminalRef} sessionName={sessionName} hostId={hostId} showStatusBar={false} />
       </div>
     </div>
   );

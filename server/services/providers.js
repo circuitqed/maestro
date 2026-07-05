@@ -3,6 +3,13 @@
  * Each provider defines how to build the tmux command for its CLI.
  */
 
+// Quote `s` for splicing into a `bash -lc '...'` template: sh-single-quote,
+// then re-escape every ' for the outer SQ context.
+function quoteForBashLc(s) {
+  const sqQuoted = `'${String(s).replace(/'/g, `'\\''`)}'`;
+  return sqQuoted.replace(/'/g, `'\\''`);
+}
+
 const PROVIDERS = {
   claude: {
     id: 'claude',
@@ -11,10 +18,12 @@ const PROVIDERS = {
     defaultFlags: '--dangerously-skip-permissions',
     envVars: ['ANTHROPIC_API_KEY'],
     monitorable: true,
-    buildCommand(config) {
-      const binary = config.binaryPath || '/home/dave/.local/bin/claude';
+    buildCommand(config, agentName, host) {
+      // Remote hosts rely on the PATH prefix (see hosts.js); local uses the absolute path
+      const binary = config.binaryPath || (host && host.ssh_target ? 'claude' : '/home/dave/.local/bin/claude');
       const flags = config.flags ?? this.defaultFlags;
-      return `bash -lc '${binary} ${flags}; exec bash'`;
+      const nameFlag = agentName ? `--name ${quoteForBashLc(agentName)} ` : '';
+      return `bash -lc '${binary} ${nameFlag}${flags}; exec bash'`;
     },
   },
   codex: {

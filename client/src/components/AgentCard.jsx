@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import ProviderIcon from './ProviderIcon';
 
@@ -10,9 +10,44 @@ const STATUS_COLORS = {
 };
 
 function AgentCard({ agent }) {
-  const { deleteAgent, startAgent, stopAgent, openTerminal } = useApp();
+  const { deleteAgent, startAgent, stopAgent, openTerminal, updateAgent } = useApp();
   const [showConfirm, setShowConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState(agent.name);
+  const editInputRef = useRef(null);
+
+  useEffect(() => {
+    if (editing && editInputRef.current) {
+      editInputRef.current.focus();
+      editInputRef.current.select();
+    }
+  }, [editing]);
+
+  const startEdit = () => {
+    setEditName(agent.name);
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setEditing(false);
+    setEditName(agent.name);
+  };
+
+  const saveEdit = async () => {
+    const trimmed = editName.trim();
+    if (!trimmed || trimmed === agent.name) {
+      cancelEdit();
+      return;
+    }
+    try {
+      await updateAgent(agent.id, { name: trimmed });
+      setEditing(false);
+    } catch (err) {
+      console.error('Failed to rename agent:', err);
+      cancelEdit();
+    }
+  };
 
   const handleDelete = async () => {
     await deleteAgent(agent.id);
@@ -28,7 +63,7 @@ function AgentCard({ agent }) {
         await startAgent(agent.id);
         // Open terminal after starting
         if (agent.screen_session) {
-          openTerminal(agent.screen_session);
+          openTerminal(agent.screen_session, agent.host_id ?? null);
         }
       }
     } catch (err) {
@@ -40,7 +75,7 @@ function AgentCard({ agent }) {
 
   const handleOpenTerminal = () => {
     if (agent.screen_session) {
-      openTerminal(agent.screen_session);
+      openTerminal(agent.screen_session, agent.host_id ?? null);
     }
   };
 
@@ -58,18 +93,53 @@ function AgentCard({ agent }) {
             title={agent.status}
           />
           <ProviderIcon provider={provider} className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
-          <h3 className="font-medium text-white truncate">{agent.name}</h3>
+          {editing ? (
+            <input
+              ref={editInputRef}
+              type="text"
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              onBlur={saveEdit}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') saveEdit();
+                else if (e.key === 'Escape') cancelEdit();
+              }}
+              className="font-medium text-white bg-gray-900 border border-gray-600 rounded px-1.5 py-0.5 text-sm flex-1 min-w-0 focus:outline-none focus:border-blue-500"
+            />
+          ) : (
+            <h3
+              className="font-medium text-white truncate cursor-text hover:text-blue-300"
+              onDoubleClick={startEdit}
+              title="Double-click to rename"
+            >
+              {agent.name}
+            </h3>
+          )}
         </div>
-        <button
-          onClick={() => setShowConfirm(true)}
-          className="p-1 text-gray-500 hover:text-red-400 transition-colors ml-2"
-          title="Delete agent"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-          </svg>
-        </button>
+        {!editing && (
+          <div className="flex items-center ml-2">
+            <button
+              onClick={startEdit}
+              className="p-1 text-gray-500 hover:text-blue-400 transition-colors"
+              title="Rename agent (takes effect on next start)"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+            </button>
+            <button
+              onClick={() => setShowConfirm(true)}
+              className="p-1 text-gray-500 hover:text-red-400 transition-colors"
+              title="Delete agent"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </button>
+          </div>
+        )}
       </div>
 
       {agent.project_name && (
@@ -87,8 +157,24 @@ function AgentCard({ agent }) {
         </div>
       )}
 
-      {agent.screen_session && (
-        <p className="text-gray-500 text-xs font-mono truncate mb-3">{agent.screen_session}</p>
+      {(agent.screen_session || agent.host_ssh_target) && (
+        <div className="flex items-center gap-2 mb-3 min-w-0">
+          {agent.screen_session && (
+            <p className="text-gray-500 text-xs font-mono truncate">{agent.screen_session}</p>
+          )}
+          {agent.host_ssh_target && (
+            <span
+              className="flex items-center gap-1 rounded bg-gray-700 text-[10px] text-gray-300 px-1.5 py-0.5 flex-shrink-0"
+              title={agent.host_ssh_target}
+            >
+              <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+              </svg>
+              {agent.host_name}
+            </span>
+          )}
+        </div>
       )}
 
       <div className="flex items-center gap-2">

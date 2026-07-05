@@ -20,7 +20,12 @@ function getDefaultFontSize() {
   return window.matchMedia('(max-width: 768px)').matches ? 16 : 14;
 }
 
-function useTerminal(sessionName) {
+function useTerminal(sessionName, hostId) {
+  // Query-string suffix targeting a specific host (absent => local attach)
+  const hostParam = typeof hostId === 'number' ? `&host=${hostId}` : '';
+  // Key used to detect session switches (same session name may exist on multiple hosts)
+  const sessionKey = sessionName ? `${sessionName}${hostParam}` : sessionName;
+
   const terminalRef = useRef(null);
   const xtermRef = useRef(null);
   const fitAddonRef = useRef(null);
@@ -226,7 +231,7 @@ function useTerminal(sessionName) {
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/terminal?session=${encodeURIComponent(sessionName)}`;
+    const wsUrl = `${protocol}//${window.location.host}/ws/terminal?session=${encodeURIComponent(sessionName)}${hostParam}`;
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
@@ -272,7 +277,7 @@ function useTerminal(sessionName) {
         reconnectAttemptRef.current = attempt + 1;
         console.log(`Terminal connection failed, retrying in ${delay}ms (attempt ${attempt + 1})`);
         reconnectTimeoutRef.current = setTimeout(() => {
-          if (mountedRef.current && currentSessionRef.current === sessionName) {
+          if (mountedRef.current && currentSessionRef.current === sessionKey) {
             connectWebSocket();
           }
         }, delay);
@@ -345,13 +350,13 @@ function useTerminal(sessionName) {
         // Ignore parse errors
       }
     };
-  }, [sessionName, terminalReady, fitTerminal]);
+  }, [sessionName, sessionKey, hostParam, terminalReady, fitTerminal]);
 
-  // Handle initial connection - only depends on sessionName and terminalReady
+  // Handle initial connection - only depends on sessionKey and terminalReady
   useEffect(() => {
     if (!sessionName || !terminalReady) return;
 
-    const isSessionChange = currentSessionRef.current && currentSessionRef.current !== sessionName;
+    const isSessionChange = currentSessionRef.current && currentSessionRef.current !== sessionKey;
 
     if (isSessionChange) {
       console.log(`Switching terminal from ${currentSessionRef.current} to ${sessionName}`);
@@ -385,7 +390,7 @@ function useTerminal(sessionName) {
     }
 
     // Update current session ref
-    currentSessionRef.current = sessionName;
+    currentSessionRef.current = sessionKey;
 
     // Connect if not already connected
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
@@ -395,7 +400,7 @@ function useTerminal(sessionName) {
 
       return () => clearTimeout(connectTimer);
     }
-  }, [sessionName, terminalReady]); // Removed connectWebSocket dependency
+  }, [sessionKey, terminalReady]); // Removed connectWebSocket dependency
 
   // Cleanup only on unmount
   useEffect(() => {
@@ -641,7 +646,7 @@ function useTerminal(sessionName) {
     }
 
     // Reset state
-    currentSessionRef.current = sessionName;
+    currentSessionRef.current = sessionKey;
     reconnectAttemptRef.current = 0;
     quickRetryRef.current = 0;
     connectingRef.current = false; // Reset connecting lock
@@ -655,7 +660,7 @@ function useTerminal(sessionName) {
       if (!mountedRef.current) return;
 
       const ws = new WebSocket(
-        `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/terminal?session=${encodeURIComponent(sessionName)}`
+        `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/terminal?session=${encodeURIComponent(sessionName)}${hostParam}`
       );
       wsRef.current = ws;
       connectingRef.current = true;
@@ -767,7 +772,7 @@ function useTerminal(sessionName) {
     };
 
     attemptConnect();
-  }, [sessionName, terminalReady, fitTerminal]);
+  }, [sessionName, sessionKey, hostParam, terminalReady, fitTerminal]);
 
   return {
     initTerminal,

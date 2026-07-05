@@ -10,6 +10,7 @@ export function AppProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [projects, setProjects] = useState([]);
   const [agents, setAgents] = useState([]);
+  const [hosts, setHosts] = useState([]);
   const [activeTerminal, setActiveTerminal] = useState(null);
   const [terminalOpen, setTerminalOpen] = useState(false);
 
@@ -32,6 +33,7 @@ export function AppProvider({ children }) {
     if (authenticated) {
       loadProjects();
       loadAgents();
+      loadHosts();
     }
   }, [authenticated]);
 
@@ -114,6 +116,16 @@ export function AppProvider({ children }) {
     }
   };
 
+  const loadHosts = async () => {
+    try {
+      const res = await fetch('/api/hosts');
+      const data = await res.json();
+      setHosts(data);
+    } catch (err) {
+      console.error('Failed to load hosts:', err);
+    }
+  };
+
   const createProject = async (projectData) => {
     const res = await fetch('/api/projects', {
       method: 'POST',
@@ -168,6 +180,22 @@ export function AppProvider({ children }) {
     if (!res.ok) {
       const data = await res.json();
       throw new Error(data.error || 'Failed to create agent');
+    }
+
+    await loadAgents();
+    return res.json();
+  };
+
+  const updateAgent = async (id, updates) => {
+    const res = await fetch(`/api/agents/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Failed to update agent');
     }
 
     await loadAgents();
@@ -293,16 +321,48 @@ export function AppProvider({ children }) {
     await loadProjects();
   };
 
+  // Host management
+  const createHost = async (hostData) => {
+    const res = await fetch('/api/hosts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(hostData),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Failed to create host');
+    }
+    await loadHosts();
+    return res.json();
+  };
+
+  const deleteHost = async (id) => {
+    const res = await fetch(`/api/hosts/${id}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Failed to delete host');
+    }
+    await loadHosts();
+  };
+
+  const testHost = async (id) => {
+    const res = await fetch(`/api/hosts/${id}/test`, { method: 'POST' });
+    const result = await res.json();
+    // Reload hosts to pick up the persisted status change
+    await loadHosts();
+    return result;
+  };
+
   // Track close timeout to cancel it if opening a new terminal
   const closeTimeoutRef = React.useRef(null);
 
-  const openTerminal = useCallback((sessionName) => {
+  const openTerminal = useCallback((sessionName, hostId = null) => {
     // Cancel any pending close timeout
     if (closeTimeoutRef.current) {
       clearTimeout(closeTimeoutRef.current);
       closeTimeoutRef.current = null;
     }
-    setActiveTerminal(sessionName);
+    setActiveTerminal({ session: sessionName, hostId });
     setTerminalOpen(true);
   }, []);
 
@@ -328,14 +388,17 @@ export function AppProvider({ children }) {
     // Data
     projects,
     agents,
+    hosts,
     loadProjects,
     loadAgents,
+    loadHosts,
 
     // CRUD
     createProject,
     updateProject,
     deleteProject,
     createAgent,
+    updateAgent,
     updateAgentStatus,
     startAgent,
     stopAgent,
@@ -350,6 +413,11 @@ export function AppProvider({ children }) {
     // Contributor management
     addContributor,
     removeContributor,
+
+    // Host management
+    createHost,
+    deleteHost,
+    testHost,
 
     // Terminal
     activeTerminal,

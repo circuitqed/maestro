@@ -81,6 +81,15 @@ export async function initDb() {
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS hosts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      ssh_target TEXT,
+      path_prefix TEXT,
+      status TEXT DEFAULT 'unknown',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   // Migrations
@@ -103,6 +112,16 @@ export async function initDb() {
   try {
     db.exec('ALTER TABLE activity_log ADD COLUMN user_id INTEGER');
   } catch (e) { /* Column already exists */ }
+
+  try {
+    db.exec('ALTER TABLE agents ADD COLUMN host_id INTEGER');
+  } catch (e) { /* Column already exists */ }
+
+  // Seed the local host row (ssh_target NULL => local) on first run
+  const hostCount = db.prepare('SELECT COUNT(*) as count FROM hosts').get().count;
+  if (hostCount === 0) {
+    db.prepare('INSERT INTO hosts (name, ssh_target) VALUES (?, NULL)').run('oracle');
+  }
 
   // Migrate from single-password to multi-user
   migrateToMultiUser();
@@ -177,6 +196,34 @@ export function deleteProject(id) {
   db.prepare('DELETE FROM projects WHERE id = ?').run(id);
 }
 
+// Hosts
+export function getHosts() {
+  return db.prepare('SELECT * FROM hosts ORDER BY created_at').all();
+}
+
+export function getHost(id) {
+  return db.prepare('SELECT * FROM hosts WHERE id = ?').get(id);
+}
+
+export function createHost(name, sshTarget, pathPrefix = null) {
+  const result = db.prepare('INSERT INTO hosts (name, ssh_target, path_prefix) VALUES (?, ?, ?)')
+    .run(name, sshTarget, pathPrefix);
+  return getHost(result.lastInsertRowid);
+}
+
+export function updateHostStatus(id, status) {
+  db.prepare('UPDATE hosts SET status = ? WHERE id = ?').run(status, id);
+  return getHost(id);
+}
+
+export function deleteHost(id) {
+  db.prepare('DELETE FROM hosts WHERE id = ?').run(id);
+}
+
+export function countAgentsOnHost(hostId) {
+  return db.prepare('SELECT COUNT(*) as count FROM agents WHERE host_id = ?').get(hostId).count;
+}
+
 // Agents
 function parseAgentConfig(row) {
   if (!row) return row;
@@ -194,35 +241,52 @@ function parseAgentConfig(row) {
 
 export function getAgents() {
   return db.prepare(`
-    SELECT a.*, p.name as project_name, p.color as project_color
+    SELECT a.*, p.name as project_name, p.color as project_color,
+           h.name AS host_name, h.ssh_target AS host_ssh_target, h.path_prefix AS host_path_prefix
     FROM agents a
     LEFT JOIN projects p ON a.project_id = p.id
+    LEFT JOIN hosts h ON a.host_id = h.id
     ORDER BY a.created_at DESC
   `).all().map(parseAgentConfig);
 }
 
 export function getAgent(id) {
   return parseAgentConfig(db.prepare(`
-    SELECT a.*, p.name as project_name, p.color as project_color
+    SELECT a.*, p.name as project_name, p.color as project_color,
+           h.name AS host_name, h.ssh_target AS host_ssh_target, h.path_prefix AS host_path_prefix
     FROM agents a
     LEFT JOIN projects p ON a.project_id = p.id
+    LEFT JOIN hosts h ON a.host_id = h.id
     WHERE a.id = ?
   `).get(id));
 }
 
 export function getAgentsByProject(projectId) {
-  return db.prepare('SELECT * FROM agents WHERE project_id = ? ORDER BY created_at DESC').all(projectId).map(parseAgentConfig);
+  return db.prepare(`
+    SELECT a.*, h.name AS host_name, h.ssh_target AS host_ssh_target, h.path_prefix AS host_path_prefix
+    FROM agents a
+    LEFT JOIN hosts h ON a.host_id = h.id
+    WHERE a.project_id = ?
+    ORDER BY a.created_at DESC
+  `).all(projectId).map(parseAgentConfig);
 }
 
-export function createAgent(projectId, name, screenSession, status = 'stopped', config = {}) {
-  const stmt = db.prepare('INSERT INTO agents (project_id, name, screen_session, status, config) VALUES (?, ?, ?, ?, ?)');
-  const result = stmt.run(projectId, name, screenSession, status, JSON.stringify(config));
-  return { id: result.lastInsertRowid, project_id: projectId, name, screen_session: screenSession, status, config };
+export function createAgent(projectId, name, screenSession, status = 'stopped', config = {}, hostId = null) {
+  const stmt = db.prepare('INSERT INTO agents (project_id, name, screen_session, status, config, host_id) VALUES (?, ?, ?, ?, ?, ?)');
+  const result = stmt.run(projectId, name, screenSession, status, JSON.stringify(config), hostId);
+  return { id: result.lastInsertRowid, project_id: projectId, name, screen_session: screenSession, status, config, host_id: hostId };
 }
 
 export function updateAgentStatus(id, status) {
   const now = new Date().toISOString();
   db.prepare('UPDATE agents SET status = ?, last_seen_at = ? WHERE id = ?').run(status, now, id);
+  return getAgent(id);
+}
+
+export function updateAgent(id, { name } = {}) {
+  if (typeof name === 'string' && name.trim()) {
+    db.prepare('UPDATE agents SET name = ? WHERE id = ?').run(name.trim(), id);
+  }
   return getAgent(id);
 }
 
@@ -317,9 +381,11 @@ export function getProjectsForUser(userId) {
 
 export function getAgentsForUser(userId) {
   return db.prepare(`
-    SELECT a.*, p.name as project_name, p.color as project_color
+    SELECT a.*, p.name as project_name, p.color as project_color,
+           h.name AS host_name, h.ssh_target AS host_ssh_target, h.path_prefix AS host_path_prefix
     FROM agents a
     LEFT JOIN projects p ON a.project_id = p.id
+    LEFT JOIN hosts h ON a.host_id = h.id
     INNER JOIN project_contributors pc ON a.project_id = pc.project_id
     WHERE pc.user_id = ?
     ORDER BY a.created_at DESC

@@ -16,12 +16,13 @@ function sanitizeSessionName(name) {
 }
 
 function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector = false, projects = [] }) {
-  const { createAgent } = useApp();
+  const { createAgent, hosts } = useApp();
   const [provider, setProvider] = useState(type === 'shell' ? 'shell' : 'claude');
   const [name, setName] = useState('');
   const [screenSession, setScreenSession] = useState('');
   const [sessionEdited, setSessionEdited] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState(projectId || '');
+  const [selectedHostId, setSelectedHostId] = useState(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [flags, setFlags] = useState('');
   const [model, setModel] = useState('');
@@ -30,6 +31,12 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
   const [loading, setLoading] = useState(false);
 
   const hideProviderSelector = type === 'shell';
+
+  // Host selection: default to the local host (ssh_target null); only shown when
+  // more than one host is configured
+  const showHostSelector = hosts.length > 1;
+  const localHost = hosts.find((h) => !h.ssh_target);
+  const effectiveHostId = selectedHostId ?? localHost?.id ?? null;
 
   const handleNameChange = (value) => {
     setName(value);
@@ -54,12 +61,17 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
       if (model && provider === 'aider') config.model = model;
       if (customCommand && provider === 'custom') config.customCommand = customCommand;
 
-      await createAgent({
+      const payload = {
         projectId: showProjectSelector ? selectedProjectId : projectId,
         name,
         screenSession,
         config,
-      });
+      };
+      if (showHostSelector && effectiveHostId != null) {
+        payload.hostId = Number(effectiveHostId);
+      }
+
+      await createAgent(payload);
       onClose();
     } catch (err) {
       setError(err.message);
@@ -103,6 +115,24 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
             <option value="">No project</option>
             {projects.map((p) => (
               <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {/* Host selector (only when remote hosts are configured) */}
+      {showHostSelector && (
+        <div className="mb-2">
+          <select
+            value={effectiveHostId ?? ''}
+            onChange={(e) => setSelectedHostId(Number(e.target.value))}
+            className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white
+                       focus:outline-none focus:ring-1 focus:ring-primary-500"
+          >
+            {hosts.map((h) => (
+              <option key={h.id} value={h.id}>
+                {h.name}{h.ssh_target ? ` (${h.ssh_target})` : ' (local)'}
+              </option>
             ))}
           </select>
         </div>

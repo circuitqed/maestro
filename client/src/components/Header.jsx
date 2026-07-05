@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import UserManagement from './UserManagement';
+import HostManagement from './HostManagement';
 
 function Header() {
   const { logout, user, projects, agents, soundEnabled, toggleSound, requestPermission } = useApp();
   const [showMenu, setShowMenu] = useState(false);
   const [showUserManagement, setShowUserManagement] = useState(false);
+  const [showHostManagement, setShowHostManagement] = useState(false);
 
   const runningAgents = agents.filter((a) =>
     a.status === 'running' || a.status === 'busy'
@@ -103,6 +105,21 @@ function Header() {
                       Manage Users
                     </button>
                   )}
+                  {user?.role === 'admin' && (
+                    <button
+                      onClick={() => {
+                        setShowHostManagement(true);
+                        setShowMenu(false);
+                      }}
+                      className="w-full px-4 py-2 text-left text-gray-300 hover:bg-gray-700 transition-colors flex items-center gap-2"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                              d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+                      </svg>
+                      Manage Hosts
+                    </button>
+                  )}
                   <button
                     onClick={() => {
                       logout();
@@ -125,6 +142,10 @@ function Header() {
 
       {showUserManagement && (
         <UserManagement onClose={() => setShowUserManagement(false)} />
+      )}
+
+      {showHostManagement && (
+        <HostManagement onClose={() => setShowHostManagement(false)} />
       )}
     </>
   );

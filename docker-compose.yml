@@ -24,4 +24,5 @@ services:
     user: "1005:1005"
     group_add:
       - "119"  # docker group - needed for /var/run/docker.sock access
+      - "1011"  # projects group - needed to mkdir under /home/projects
     restart: unless-stopped

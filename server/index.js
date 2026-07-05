@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import authRoutes from './routes/auth.js';
 import projectsRoutes from './routes/projects.js';
 import agentsRoutes from './routes/agents.js';
+import hostsRoutes from './routes/hosts.js';
 import { setupTerminalWS } from './services/terminal.js';
 import { initDb, getUserCount } from './services/db.js';
 import SQLiteStore from './services/sessionStore.js';
@@ -41,6 +42,7 @@ app.use(sessionParser);
 app.use('/api/auth', authRoutes);
 app.use('/api/projects', projectsRoutes);
 app.use('/api/agents', agentsRoutes);
+app.use('/api/hosts', hostsRoutes);
 
 // Serve static files in production
 const publicPath = path.join(__dirname, 'public');

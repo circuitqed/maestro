@@ -5,7 +5,9 @@ import {
   getAgents,
   getAgent,
   getProject,
+  getHost,
   createAgent,
+  updateAgent,
   updateAgentStatus,
   deleteAgent,
   getAgentsForUser,
@@ -14,6 +16,7 @@ import {
 import { getTmuxSessions, startProviderSession, createSession, killSession, sessionExists } from '../services/tmux.js';
 import { registerAgent, unregisterAgent } from '../services/agentMonitor.js';
 import { getProvider, getProviderList } from '../services/providers.js';
+import { isRemote, isValidSessionName, execOnHost, shellQuote } from '../services/hosts.js';
 
 const router = Router();
 
@@ -60,10 +63,17 @@ router.get('/providers', (req, res) => {
   res.json(providers);
 });
 
-// List available tmux sessions
+// List available tmux sessions (optionally on a specific host)
 router.get('/sessions', async (req, res) => {
   try {
-    const sessions = await getTmuxSessions();
+    let host = null;
+    if (req.query.hostId !== undefined && req.query.hostId !== '') {
+      host = getHost(req.query.hostId);
+      if (!host) {
+        return res.status(400).json({ error: 'Unknown host' });
+      }
+    }
+    const sessions = await getTmuxSessions(host);
     res.json(sessions);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -86,15 +96,42 @@ router.get('/:id', (req, res) => {
 // Create agent
 router.post('/', (req, res) => {
   try {
-    const { projectId, name, screenSession, status, config } = req.body;
+    const { projectId, name, screenSession, status, config, hostId } = req.body;
     if (!name) {
       return res.status(400).json({ error: 'Agent name is required' });
+    }
+    if (screenSession && !isValidSessionName(screenSession)) {
+      return res.status(400).json({ error: 'Invalid session name (allowed: letters, numbers, . _ -)' });
+    }
+    if (hostId !== undefined && hostId !== null && !getHost(hostId)) {
+      return res.status(400).json({ error: 'Unknown host' });
     }
     if (projectId && req.user && req.user.role !== 'admin' && !userHasProjectAccess(req.user.id, projectId)) {
       return res.status(403).json({ error: 'Access denied to this project' });
     }
-    const agent = createAgent(projectId, name, screenSession, status, config);
+    const agent = createAgent(projectId, name, screenSession, status, config, hostId ?? null);
     res.status(201).json(agent);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update agent (name only, for now)
+router.patch('/:id', (req, res) => {
+  try {
+    const agent = getAgent(req.params.id);
+    if (!agent) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+    if (!checkAgentAccess(req, res, agent)) return;
+
+    const { name } = req.body;
+    if (typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ error: 'Valid name required' });
+    }
+
+    const updated = updateAgent(req.params.id, { name });
+    res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -130,6 +167,16 @@ router.post('/:id/start', async (req, res) => {
       return res.status(400).json({ error: 'Agent has no session name configured' });
     }
 
+    if (!isValidSessionName(agent.screen_session)) {
+      return res.status(400).json({ error: 'Invalid session name (allowed: letters, numbers, . _ -)' });
+    }
+
+    // Resolve the agent's host (null => local)
+    const host = agent.host_id ? getHost(agent.host_id) : null;
+    if (agent.host_id && !host) {
+      return res.status(400).json({ error: 'Agent references an unknown host' });
+    }
+
     // Get project path for working directory
     let workingDir = null;
     if (agent.project_id) {
@@ -140,30 +187,51 @@ router.post('/:id/start', async (req, res) => {
     }
 
     // tmux silently falls back to $HOME when `-c <dir>` doesn't exist — catch it here instead
-    if (workingDir && !fs.existsSync(workingDir)) {
-      return res.status(400).json({
-        error: `Project path does not exist: ${workingDir}. Update the project settings.`,
-      });
+    if (workingDir) {
+      if (isRemote(host)) {
+        try {
+          await execOnHost(host, `test -d ${shellQuote(workingDir)}`);
+        } catch (err) {
+          // `test -d` exits 1 when the dir is missing; anything else is an ssh failure
+          if (err.code === 1) {
+            return res.status(400).json({
+              error: `Project path does not exist: ${workingDir}. Update the project settings.`,
+            });
+          }
+          return res.status(503).json({ error: `Cannot reach host ${host.name}: ${err.message}` });
+        }
+      } else if (!fs.existsSync(workingDir)) {
+        return res.status(400).json({
+          error: `Project path does not exist: ${workingDir}. Update the project settings.`,
+        });
+      }
     }
 
     const provider = getProvider(agent.config?.provider);
 
     let result;
-    if (provider.id === 'shell') {
-      result = await createSession(agent.screen_session, workingDir);
-    } else {
-      const command = provider.buildCommand(agent.config || {});
-      result = await startProviderSession(agent.screen_session, command, workingDir);
+    try {
+      if (provider.id === 'shell') {
+        result = await createSession(agent.screen_session, workingDir, null, host);
+      } else {
+        const command = provider.buildCommand(agent.config || {}, agent.name, host);
+        result = await startProviderSession(agent.screen_session, command, workingDir, host);
+      }
+    } catch (err) {
+      if (isRemote(host)) {
+        return res.status(503).json({ error: `Failed to start on host ${host.name}: ${err.message}` });
+      }
+      throw err;
     }
 
     if (result.alreadyRunning || !result.created) {
       updateAgentStatus(req.params.id, 'running');
-      if (provider.monitorable) registerAgent(agent.id, agent.screen_session);
+      if (provider.monitorable) registerAgent(agent.id, agent.screen_session, host);
       return res.json({ success: true, message: 'Session already running', agent: getAgent(req.params.id) });
     }
 
     const updatedAgent = updateAgentStatus(req.params.id, 'running');
-    if (provider.monitorable) registerAgent(agent.id, agent.screen_session);
+    if (provider.monitorable) registerAgent(agent.id, agent.screen_session, host);
     res.json({ success: true, message: `${provider.name} started`, agent: updatedAgent });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -183,7 +251,16 @@ router.post('/:id/stop', async (req, res) => {
       return res.status(400).json({ error: 'Agent has no session name configured' });
     }
 
-    const result = await killSession(agent.screen_session);
+    if (!isValidSessionName(agent.screen_session)) {
+      return res.status(400).json({ error: 'Invalid session name (allowed: letters, numbers, . _ -)' });
+    }
+
+    const host = agent.host_id ? getHost(agent.host_id) : null;
+    if (agent.host_id && !host) {
+      return res.status(400).json({ error: 'Agent references an unknown host' });
+    }
+
+    const result = await killSession(agent.screen_session, host);
 
     // Update agent status to stopped and unregister from monitoring
     unregisterAgent(agent.id);

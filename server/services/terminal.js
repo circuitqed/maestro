@@ -1,11 +1,13 @@
 import pty from 'node-pty';
 import { URL } from 'url';
 import { recordActivity } from './agentMonitor.js';
+import { getHost } from './db.js';
+import { attachSpawnArgs, isRemote, isValidSessionName } from './hosts.js';
 
 const terminals = new Map();
 
-// Track active connection per session (only one allowed)
-// sessionName -> { ws, pty, terminalId }
+// Track active connection per (host, session) pair (only one allowed)
+// '<hostId>:<sessionName>' -> { ws, pty, terminalId }
 const activeConnections = new Map();
 
 /**
@@ -15,6 +17,7 @@ export function setupTerminalWS(wss) {
   wss.on('connection', async (ws, request) => {
     const url = new URL(request.url, 'http://localhost');
     const sessionName = url.searchParams.get('session');
+    const hostParam = url.searchParams.get('host');
 
     if (!sessionName) {
       ws.send(JSON.stringify({ type: 'error', message: 'Session name required' }));
@@ -22,10 +25,31 @@ export function setupTerminalWS(wss) {
       return;
     }
 
-    console.log(`Terminal connecting to session: ${sessionName}`);
+    if (!isValidSessionName(sessionName)) {
+      ws.send(JSON.stringify({ type: 'error', message: 'Invalid session name' }));
+      ws.close();
+      return;
+    }
+
+    let host = null;
+    if (hostParam) {
+      host = getHost(hostParam);
+      if (!host) {
+        ws.send(JSON.stringify({ type: 'error', message: 'Unknown host' }));
+        ws.close();
+        return;
+      }
+    }
+
+    // Local hosts (no ssh_target) all normalize to 0 so legacy no-host
+    // connections and explicit local-host connections share a key
+    const hostId = isRemote(host) ? host.id : 0;
+    const connKey = `${hostId}:${sessionName}`;
+
+    console.log(`Terminal connecting to session: ${sessionName}${isRemote(host) ? ` on host ${host.name}` : ''}`);
 
     // Check if session already has an active connection
-    const existingConnection = activeConnections.get(sessionName);
+    const existingConnection = activeConnections.get(connKey);
     if (existingConnection) {
       console.log(`Replacing existing connection for session: ${sessionName}`);
       try {
@@ -55,8 +79,9 @@ export function setupTerminalWS(wss) {
       LC_CTYPE: 'en_US.UTF-8',
     };
 
-    // Create PTY process attached to tmux session
-    const ptyProcess = pty.spawn('tmux', ['attach-session', '-t', sessionName], {
+    // Create PTY process attached to the tmux session (local tmux or ssh -t for remote)
+    const { file, args } = attachSpawnArgs(host, sessionName);
+    const ptyProcess = pty.spawn(file, args, {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
@@ -65,17 +90,17 @@ export function setupTerminalWS(wss) {
       encoding: 'utf8',
     });
 
-    const terminalId = `${sessionName}-${Date.now()}`;
+    const terminalId = `${connKey}-${Date.now()}`;
     terminals.set(terminalId, { pty: ptyProcess, ws });
 
-    // Register as active connection for this session
-    activeConnections.set(sessionName, { ws, pty: ptyProcess, terminalId });
+    // Register as active connection for this (host, session) pair
+    activeConnections.set(connKey, { ws, pty: ptyProcess, terminalId });
 
     // Send terminal output to WebSocket
     // Use base64 encoding to preserve all bytes correctly through JSON
     ptyProcess.onData((data) => {
       // Record activity for agent monitoring
-      recordActivity(sessionName);
+      recordActivity(sessionName, hostId || null);
 
       if (ws.readyState === ws.OPEN) {
         // Convert to base64 to avoid any encoding issues with JSON
@@ -121,9 +146,9 @@ export function setupTerminalWS(wss) {
       ptyProcess.kill();
       terminals.delete(terminalId);
       // Only remove from activeConnections if this connection is still the active one
-      const active = activeConnections.get(sessionName);
+      const active = activeConnections.get(connKey);
       if (active && active.terminalId === terminalId) {
-        activeConnections.delete(sessionName);
+        activeConnections.delete(connKey);
       }
     });
 
@@ -132,9 +157,9 @@ export function setupTerminalWS(wss) {
       ptyProcess.kill();
       terminals.delete(terminalId);
       // Only remove from activeConnections if this connection is still the active one
-      const active = activeConnections.get(sessionName);
+      const active = activeConnections.get(connKey);
       if (active && active.terminalId === terminalId) {
-        activeConnections.delete(sessionName);
+        activeConnections.delete(connKey);
       }
     });
 

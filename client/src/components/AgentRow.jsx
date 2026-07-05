@@ -21,7 +21,7 @@ function AgentRow({ agent }) {
       await startAgent(agent.id);
       // Open terminal after starting
       if (agent.screen_session) {
-        openTerminal(agent.screen_session);
+        openTerminal(agent.screen_session, agent.host_id ?? null);
       }
     } catch (err) {
       console.error('Failed to start agent:', err);
@@ -48,7 +48,7 @@ function AgentRow({ agent }) {
 
   const handleOpenTerminal = () => {
     if (agent.screen_session) {
-      openTerminal(agent.screen_session);
+      openTerminal(agent.screen_session, agent.host_id ?? null);
     }
   };
 
@@ -70,6 +70,18 @@ function AgentRow({ agent }) {
         <div className="font-medium text-white text-sm truncate flex items-center gap-1.5">
           <ProviderIcon provider={provider} className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
           {agent.name}
+          {agent.host_ssh_target && (
+            <span
+              className="flex items-center gap-1 rounded bg-gray-700 text-[10px] text-gray-300 px-1.5 py-0.5 flex-shrink-0"
+              title={agent.host_ssh_target}
+            >
+              <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+              </svg>
+              {agent.host_name}
+            </span>
+          )}
         </div>
         {agent.screen_session && (
           <div className="text-xs text-gray-500 font-mono truncate">{agent.screen_session}</div>

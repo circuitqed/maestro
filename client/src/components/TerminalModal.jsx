@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import Terminal from './Terminal';
 
-function TerminalModal({ sessionName, onClose }) {
+function TerminalModal({ sessionName, hostId, onClose }) {
   const [viewportHeight, setViewportHeight] = useState(
     window.visualViewport?.height ?? window.innerHeight
   );
@@ -61,7 +61,7 @@ function TerminalModal({ sessionName, onClose }) {
 
         {/* Terminal */}
         <div className="flex-1 min-h-0 overflow-hidden">
-          <Terminal sessionName={sessionName} />
+          <Terminal sessionName={sessionName} hostId={hostId} />
         </div>
       </div>
     </div>

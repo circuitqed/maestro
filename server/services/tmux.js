@@ -1,14 +1,12 @@
-import { exec } from 'child_process';
-import { promisify } from 'util';
-
-const execAsync = promisify(exec);
+import { execOnHost, shellQuote } from './hosts.js';
 
 /**
  * Get list of available tmux sessions
+ * @param {object|null} host - Host row (null => local)
  */
-export async function getTmuxSessions() {
+export async function getTmuxSessions(host = null) {
   try {
-    const { stdout } = await execAsync('tmux list-sessions -F "#{session_name}:#{session_attached}"');
+    const { stdout } = await execOnHost(host, 'tmux list-sessions -F "#{session_name}:#{session_attached}"');
     const lines = stdout.trim().split('\n').filter(Boolean);
 
     return lines.map((line) => {
@@ -30,12 +28,16 @@ export async function getTmuxSessions() {
 /**
  * Check if a tmux session exists
  */
-export async function sessionExists(sessionName) {
+export async function sessionExists(sessionName, host = null) {
   try {
-    await execAsync(`tmux has-session -t "${sessionName}" 2>/dev/null`);
+    await execOnHost(host, `tmux has-session -t ${shellQuote(sessionName)} 2>/dev/null`);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    // tmux has-session exits 1 when the session/server genuinely doesn't exist.
+    // Anything else (ssh 255, ConnectTimeout, execFile timeout) means the host
+    // state is unknown — surface it so callers don't treat "unreachable" as "gone".
+    if (err.code === 1) return false;
+    throw err;
   }
 }
 
@@ -44,26 +46,27 @@ export async function sessionExists(sessionName) {
  * @param {string} sessionName - Name for the tmux session
  * @param {string} workingDir - Working directory for the session
  * @param {string} command - Command to run in the session
+ * @param {object|null} host - Host row (null => local)
  */
-export async function createSession(sessionName, workingDir = null, command = null) {
+export async function createSession(sessionName, workingDir = null, command = null, host = null) {
   // Check if session already exists
-  if (await sessionExists(sessionName)) {
+  if (await sessionExists(sessionName, host)) {
     return { name: sessionName, created: false, message: 'Session already exists' };
   }
 
   // Build the tmux command
-  let tmuxCmd = `tmux new-session -d -s "${sessionName}"`;
+  let tmuxCmd = `tmux new-session -d -s ${shellQuote(sessionName)}`;
 
   if (workingDir) {
-    tmuxCmd += ` -c "${workingDir}"`;
+    tmuxCmd += ` -c ${shellQuote(workingDir)}`;
   }
 
   if (command) {
     // Run command with exec bash fallback so session stays open
-    tmuxCmd += ` "${command}; exec bash"`;
+    tmuxCmd += ` ${shellQuote(`${command}; exec bash`)}`;
   }
 
-  await execAsync(tmuxCmd);
+  await execOnHost(host, tmuxCmd);
   return { name: sessionName, created: true };
 }
 
@@ -72,21 +75,22 @@ export async function createSession(sessionName, workingDir = null, command = nu
  * @param {string} sessionName - Name for the tmux session
  * @param {string} command - Shell command to run (e.g. "bash -lc 'claude --dangerously-skip-permissions; exec bash'")
  * @param {string} workingDir - Project path as working directory
+ * @param {object|null} host - Host row (null => local)
  */
-export async function startProviderSession(sessionName, command, workingDir = null) {
-  if (await sessionExists(sessionName)) {
+export async function startProviderSession(sessionName, command, workingDir = null, host = null) {
+  if (await sessionExists(sessionName, host)) {
     return { name: sessionName, created: false, alreadyRunning: true };
   }
 
-  let tmuxCmd = `tmux new-session -d -s "${sessionName}"`;
+  let tmuxCmd = `tmux new-session -d -s ${shellQuote(sessionName)}`;
 
   if (workingDir) {
-    tmuxCmd += ` -c "${workingDir}"`;
+    tmuxCmd += ` -c ${shellQuote(workingDir)}`;
   }
 
-  tmuxCmd += ` "${command}"`;
+  tmuxCmd += ` ${shellQuote(command)}`;
 
-  await execAsync(tmuxCmd);
+  await execOnHost(host, tmuxCmd);
   return { name: sessionName, created: true };
 }
 
@@ -101,9 +105,9 @@ export async function startAgentSession(sessionName, workingDir = null) {
 /**
  * Kill a tmux session
  */
-export async function killSession(sessionName) {
+export async function killSession(sessionName, host = null) {
   try {
-    await execAsync(`tmux kill-session -t "${sessionName}"`);
+    await execOnHost(host, `tmux kill-session -t ${shellQuote(sessionName)}`);
     return { name: sessionName, killed: true };
   } catch (err) {
     if (err.message.includes('session not found') || err.message.includes("can't find session")) {
@@ -116,6 +120,6 @@ export async function killSession(sessionName) {
 /**
  * Send keys to a tmux session
  */
-export async function sendKeys(sessionName, keys) {
-  await execAsync(`tmux send-keys -t "${sessionName}" "${keys}"`);
+export async function sendKeys(sessionName, keys, host = null) {
+  await execOnHost(host, `tmux send-keys -t ${shellQuote(sessionName)} "${keys}"`);
 }

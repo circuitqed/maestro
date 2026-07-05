@@ -118,14 +118,20 @@ Open http://localhost:3000 for development (Vite dev server with HMR)
 | GET | /api/projects/colors | Get available colors |
 | GET | /api/agents | List all agents |
 | GET | /api/projects/:id/agents | List project agents |
-| GET | /api/agents/sessions | List available tmux sessions |
-| POST | /api/agents | Create agent |
+| GET | /api/agents/sessions | List available tmux sessions (`?hostId=N` for a remote host) |
+| POST | /api/agents | Create agent (accepts `hostId`) |
 | PATCH | /api/agents/:id/status | Update status |
 | DELETE | /api/agents/:id | Delete agent |
+| GET | /api/hosts | List hosts |
+| POST | /api/hosts | Add remote host (admin) |
+| DELETE | /api/hosts/:id | Delete host (admin; not local, not if agents reference it) |
+| POST | /api/hosts/:id/test | Test connectivity (runs `tmux -V`, persists status) |
 
 ## WebSocket Protocol
 
-Connect to: `ws://host/ws/terminal?session=<tmux-session-name>`
+Connect to: `ws://host/ws/terminal?session=<tmux-session-name>&host=<hostId>`
+
+(`host` is optional; absent — or a host row with a NULL `ssh_target` — attaches locally.)
 
 ```javascript
 // Client → Server
@@ -183,7 +189,43 @@ CREATE TABLE activity_log (
   agent_id INTEGER,
   message TEXT
 );
+
+CREATE TABLE hosts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  ssh_target TEXT,          -- NULL => local host (oracle); else user@hostname
+  path_prefix TEXT,         -- PATH prepended to remote commands (macOS/homebrew)
+  status TEXT DEFAULT 'unknown',  -- online | offline | unknown
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+-- agents.host_id INTEGER references hosts(id); NULL => local
 ```
+
+## Multi-Host Orchestration (SSH)
+
+Agents can run on remote machines over SSH (e.g. a Mac mini on the same Tailscale
+network). The seeded local host `oracle` (`ssh_target` NULL) runs commands directly;
+remote hosts wrap every tmux command in `ssh <target> 'export PATH=<prefix>:$PATH; <cmd>'`.
+
+- **Why the PATH prefix:** non-interactive SSH gets a bare `PATH` (`/usr/bin:/bin:...`),
+  so `tmux`/`claude` (in `/opt/homebrew/bin`, `~/.local/bin`) won't resolve. Default
+  prefix: `/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin` (override per host).
+- **Transport:** `server/services/hosts.js` — `execOnHost(host, cmd)` (local `exec` /
+  remote `execFile('ssh', …)`) and `attachSpawnArgs(host, session)` for the terminal
+  PTY (`ssh -t … tmux attach`). SSH uses **ControlMaster multiplexing**
+  (`~/.ssh/sockets/`, ControlPersist 600s) so the 2s monitor polling reuses one
+  connection instead of reconnecting each tick.
+- **Quoting:** session names, project paths, agent names, and the built provider
+  command all cross a shell boundary — everything is single-quoted via `shellQuote()`
+  (never raw double quotes). Session names are additionally charset-validated
+  (`isValidSessionName`, `[A-Za-z0-9._-]+`) at every entry point.
+- **Unreachable hosts:** the monitor probes each host once per tick (grouped) and
+  concurrently; a host that fails to answer leaves its agents' state untouched (a
+  sleeping Mac mini does **not** flip its still-running agents to `stopped`). A
+  reentrancy guard prevents overlapping sync runs.
+- **Setup:** SSH key auth from the container to the host must work (the container
+  mounts `/home/dave`, so `~/.ssh/id_ed25519` is available). Add hosts via the
+  **Manage Hosts** UI (admin) or `POST /api/hosts`, then **Test**.
 
 ## Current Projects Tracked
 - deep-blue-brawl (port 7847)
