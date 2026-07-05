@@ -45,13 +45,27 @@ app.use('/api/projects', projectsRoutes);
 app.use('/api/agents', agentsRoutes);
 app.use('/api/hosts', hostsRoutes);
 
-// Serve static files in production
+// Serve static files in production.
+// Content-hashed assets (Vite emits /assets/index-<hash>.js) are safe to cache
+// forever; index.html must always revalidate so a new deploy is picked up
+// immediately instead of the browser clinging to a stale bundle reference.
 const publicPath = path.join(__dirname, 'public');
-app.use(express.static(publicPath));
+app.use(
+  express.static(publicPath, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('index.html')) {
+        res.setHeader('Cache-Control', 'no-cache');
+      } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    },
+  })
+);
 
 // SPA fallback
 app.get('*', (req, res) => {
   if (!req.path.startsWith('/api')) {
+    res.setHeader('Cache-Control', 'no-cache');
     res.sendFile(path.join(publicPath, 'index.html'));
   }
 });
