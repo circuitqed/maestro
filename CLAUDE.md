@@ -121,6 +121,8 @@ Open http://localhost:3000 for development (Vite dev server with HMR)
 | GET | /api/agents/sessions | List available tmux sessions (`?hostId=N` for a remote host) |
 | POST | /api/agents | Create agent (accepts `hostId`) |
 | PATCH | /api/agents/:id/status | Update status |
+| POST | /api/agents/:id/input | Inject text into the agent's tmux session (chat send box) |
+| GET | /api/agents/:id/transcript/meta | Whether a transcript file was located `{available, sessionId}` |
 | DELETE | /api/agents/:id | Delete agent |
 | GET | /api/hosts | List hosts |
 | POST | /api/hosts | Add remote host (admin) |
@@ -144,6 +146,39 @@ Connect to: `ws://host/ws/terminal?session=<tmux-session-name>&host=<hostId>`
 { type: 'error', message: 'Session not found' }
 { type: 'exit', code: 0 }
 ```
+
+### Transcript stream (chat view, read-only)
+
+Connect to: `ws://host/ws/transcript?agent=<agentId>`
+
+```javascript
+// Server → Client (no client → server messages; sending uses POST /api/agents/:id/input)
+{ type: 'record', record: { /* one parsed JSONL line, history then live */ } }
+{ type: 'error', message: '...' }
+{ type: 'end' }   // the tail process exited
+```
+
+## Chat View (alternate to the terminal)
+
+Each agent can be opened as **Terminal** (xterm attached to tmux) or **Chat** (a
+rich rendering of its Claude Code conversation) — a Terminal|Chat toggle in the
+panel/modal header switches live. The tmux TUI stays the single source of truth:
+
+- **Read:** `server/services/transcript.js` tails the session's JSONL transcript
+  (`tail -n +1 -F` — history then live, host-aware over SSH), partial-line
+  buffered and parsed per record, streamed over `/ws/transcript`.
+  `ChatView.jsx` renders text (react-markdown), collapsible thinking, tool-use
+  cards, and tool-result cards with inline base64 images.
+- **Write:** the send box POSTs to `/api/agents/:id/input`, which calls
+  `tmux.js` `sendText()` — `set-buffer` + `paste-buffer` + `Enter` (all values
+  `shellQuote`'d; paste, not send-keys, so literal text can't be interpreted as
+  tmux keys).
+- **Locating the transcript:** the filename equals the session UUID. On claude
+  start, Maestro pins `--session-id <uuid>` (stored in `agents.claude_session_id`)
+  so the file is found by globbing `<uuid>.jsonl`; fallback is the newest `.jsonl`
+  in the project's encoded-cwd dir. Start chooses `--session-id` (first/empty) vs
+  `--resume` (existing transcript) by whether the file already exists — Claude
+  rejects `--session-id` when it exists and `--resume` when it doesn't.
 
 ## Terminal UX
 
@@ -178,6 +213,8 @@ CREATE TABLE agents (
   config JSON DEFAULT '{}',
   last_seen_at DATETIME,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  host_id INTEGER,           -- references hosts(id); NULL => local
+  claude_session_id TEXT,    -- pinned Claude session UUID (locates the chat transcript)
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
