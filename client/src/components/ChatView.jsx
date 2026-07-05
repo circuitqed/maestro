@@ -529,14 +529,14 @@ function ChatView({ agentId, session }) {
       {/* Send box */}
       <div className="flex-shrink-0 border-t border-gray-700 bg-gray-800 p-2">
         {sendError && <div className="text-xs text-red-400 mb-1">{sendError}</div>}
-        <div className="flex items-end gap-2">
+        <div className="flex items-end gap-2 w-full min-w-0">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Message the agent…  (Enter to send, Shift+Enter for newline)"
             rows={1}
-            className="flex-1 min-h-[38px] max-h-40 resize-y rounded bg-gray-900 border border-gray-600 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+            className="flex-1 min-w-0 min-h-[38px] max-h-40 resize-y rounded bg-gray-900 border border-gray-600 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
           />
           <button
             type="button"
