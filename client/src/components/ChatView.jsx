@@ -332,7 +332,9 @@ function ChatView({ agentId, session }) {
   const mountedRef = useRef(true);
   const seenUuidsRef = useRef(new Set());
   const scrollRef = useRef(null);
+  const contentRef = useRef(null);
   const atBottomRef = useRef(true);
+  const lastTopRef = useRef(0);
 
   // --- WebSocket connection (keyed on agentId via connect callback) ---------
   const connect = useCallback(() => {
@@ -420,12 +422,44 @@ function ChatView({ agentId, session }) {
   }, [connect]);
 
   // --- Auto-scroll ----------------------------------------------------------
+  // The transcript streams in from the top (tail -n +1), so on open we want to
+  // land at the newest message and then stick there. atBottomRef tracks whether
+  // we should keep pinning to the bottom; a real user scroll-up turns it off.
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    atBottomRef.current = distanceFromBottom < 80;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const prevTop = lastTopRef.current;
+    lastTopRef.current = el.scrollTop;
+    // Only a genuine user scroll UP (scrollTop moving toward 0, away from the
+    // bottom) turns off sticking. Content growing below fires no scroll event,
+    // and our own scroll-to-bottom only increases scrollTop — so the fast-stream
+    // race that used to strand the view near the top can no longer disable it.
+    if (dist < 80) {
+      atBottomRef.current = true;
+    } else if (el.scrollTop < prevTop - 2) {
+      atBottomRef.current = false;
+    }
   }, []);
+
+  // Keep pinned to the bottom as content grows — including async reflow from
+  // markdown/code/images that a records-change effect would miss. A programmatic
+  // scroll leaves us at the bottom (so handleScroll keeps atBottomRef true);
+  // once the user scrolls up, atBottomRef goes false and we stop following.
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      if (atBottomRef.current) scrollToBottom();
+    });
+    ro.observe(content);
+    return () => ro.disconnect();
+  }, [scrollToBottom]);
 
   // --- Working / activity indicator ----------------------------------------
   // The pane monitor (agentStates) reports 'busy' while the agent produces
@@ -497,20 +531,22 @@ function ChatView({ agentId, session }) {
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden px-3 py-3 space-y-2"
+        className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden"
       >
-        {renderedRecords.length === 0 && !isWorking ? (
-          <div className="h-full flex items-center justify-center text-center text-sm text-gray-500 px-4">
-            {connected
-              ? 'No messages yet. Send something below to get started.'
-              : 'Connecting to transcript…'}
-          </div>
-        ) : (
-          <>
-            {renderedRecords}
-            {isWorking && <WorkingIndicator label={activityLabel} />}
-          </>
-        )}
+        <div ref={contentRef} className="px-3 py-3 space-y-2 min-h-full">
+          {renderedRecords.length === 0 && !isWorking ? (
+            <div className="h-full flex items-center justify-center text-center text-sm text-gray-500 px-4">
+              {connected
+                ? 'No messages yet. Send something below to get started.'
+                : 'Connecting to transcript…'}
+            </div>
+          ) : (
+            <>
+              {renderedRecords}
+              {isWorking && <WorkingIndicator label={activityLabel} />}
+            </>
+          )}
+        </div>
       </div>
 
       {/* Status / banner */}
