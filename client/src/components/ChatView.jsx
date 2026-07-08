@@ -1,7 +1,30 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import { useApp } from '../context/AppContext';
+
+// Claude also emits LaTeX with \(...\) and \[...\] delimiters; remark-math only
+// understands $...$ / $$...$$. Rewrite those to dollar delimiters, but protect
+// fenced/inline code so we never touch real code.
+function normalizeMath(text) {
+  if (!text) return '';
+  const stash = [];
+  const guard = (m) => `@@MG${stash.push(m) - 1}@@`;
+  let out = text
+    .replace(/```[\s\S]*?```/g, guard)
+    .replace(/`[^`\n]*`/g, guard);
+  out = out
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_, e) => `$$${e}$$`)
+    .replace(/\\\(([\s\S]+?)\\\)/g, (_, e) => `$${e}$`);
+  // remark-math only renders display (block) math when the $$ delimiters are on
+  // their own lines; single-line $$...$$ (and our \[...\] conversion) would
+  // otherwise render inline. Put every $$...$$ into block form.
+  out = out.replace(/\$\$\s*([\s\S]+?)\s*\$\$/g, (_, e) => `\n\n$$\n${e}\n$$\n\n`);
+  return out.replace(/@@MG(\d+)@@/g, (_, i) => stash[Number(i)]);
+}
 
 const RECONNECT_DELAYS = [500, 1000, 2000, 5000, 10000]; // Exponential backoff
 
@@ -87,8 +110,12 @@ const markdownComponents = {
 function Markdown({ children }) {
   return (
     <div className="text-sm text-gray-100 break-words min-w-0 max-w-full overflow-hidden">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-        {children || ''}
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[[rehypeKatex, { throwOnError: false, errorColor: '#f87171' }]]}
+        components={markdownComponents}
+      >
+        {normalizeMath(children)}
       </ReactMarkdown>
     </div>
   );

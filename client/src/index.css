@@ -60,3 +60,7 @@
 .xterm-viewport::-webkit-scrollbar-thumb:hover {
   background: #484f58;
 }
+
+/* KaTeX display math: scroll wide equations instead of overflowing the chat */
+.katex-display { overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+.katex-display > .katex { white-space: nowrap; }
