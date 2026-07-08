@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -175,42 +175,49 @@ function ToolUseCard({ block }) {
 
 function ToolResultCard({ result }) {
   const content = result.content;
-  const parts = [];
+  const texts = [];
+  const images = [];
   if (typeof content === 'string') {
-    parts.push({ kind: 'text', text: content });
+    if (content) texts.push(content);
   } else if (Array.isArray(content)) {
     content.forEach((b) => {
       if (!b) return;
-      if (b.type === 'text') {
-        parts.push({ kind: 'text', text: b.text });
-      } else if (b.type === 'image' && b.source?.type === 'base64') {
-        parts.push({
-          kind: 'image',
-          src: `data:${b.source.media_type};base64,${b.source.data}`,
-        });
+      if (b.type === 'text') texts.push(b.text);
+      else if (b.type === 'image' && b.source?.type === 'base64') {
+        images.push(`data:${b.source.media_type};base64,${b.source.data}`);
       }
     });
   }
-  if (parts.length === 0) return null;
+  if (texts.length === 0 && images.length === 0) return null;
   return (
     <div className="rounded border border-gray-700 bg-gray-900/60">
       <div className="px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 border-b border-gray-700/60">
         result
       </div>
-      <div className="p-2 max-h-64 overflow-auto">
-        {parts.map((p, i) =>
-          p.kind === 'text' ? (
-            <pre
-              key={i}
-              className="text-xs font-mono text-gray-300 whitespace-pre-wrap break-words"
-            >
-              {p.text}
+      {/* Text output: keep the compact scroll box */}
+      {texts.length > 0 && (
+        <div className="p-2 max-h-64 overflow-auto">
+          {texts.map((t, i) => (
+            <pre key={i} className="text-xs font-mono text-gray-300 whitespace-pre-wrap break-words">
+              {t}
             </pre>
-          ) : (
-            <img key={i} src={p.src} alt="tool result" className="max-w-full rounded my-1" />
-          )
-        )}
-      </div>
+          ))}
+        </div>
+      )}
+      {/* Images: render at full container width (the original data, not downscaled
+          by us) and let the user open the full-resolution image in a new tab. */}
+      {images.map((src, i) => (
+        <a
+          key={i}
+          href={src}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Open full size"
+          className="block p-2"
+        >
+          <img src={src} alt="tool result" className="max-w-full rounded" />
+        </a>
+      ))}
     </div>
   );
 }
@@ -352,6 +359,9 @@ function ChatView({ agentId, session }) {
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState(null);
   const [pendingSent, setPendingSent] = useState(false);
+  // Hidden until the initial history burst settles, so we reveal already pinned
+  // at the bottom instead of visibly scrolling through the whole transcript.
+  const [ready, setReady] = useState(false);
 
   const wsRef = useRef(null);
   const reconnectAttemptRef = useRef(0);
@@ -362,6 +372,14 @@ function ChatView({ agentId, session }) {
   const contentRef = useRef(null);
   const atBottomRef = useRef(true);
   const lastTopRef = useRef(0);
+  const readyRef = useRef(false);
+  const settleTimerRef = useRef(null);
+  const textareaRef = useRef(null);
+
+  const markReady = useCallback(() => {
+    readyRef.current = true;
+    setReady(true);
+  }, []);
 
   // --- WebSocket connection (keyed on agentId via connect callback) ---------
   const connect = useCallback(() => {
@@ -407,9 +425,16 @@ function ChatView({ agentId, session }) {
         if (seenUuidsRef.current.has(rec.uuid)) return;
         seenUuidsRef.current.add(rec.uuid);
         setRecords((prev) => [...prev, rec]);
+        // Reveal once the burst of history stops arriving (short quiet period).
+        if (!readyRef.current) {
+          clearTimeout(settleTimerRef.current);
+          settleTimerRef.current = setTimeout(markReady, 180);
+        }
       } else if (msg.type === 'error') {
+        markReady();
         setBanner({ type: 'error', message: msg.message || 'Transcript error' });
       } else if (msg.type === 'end') {
+        markReady();
         setBanner({ type: 'end', message: 'Transcript stream ended' });
       }
     };
@@ -429,13 +454,17 @@ function ChatView({ agentId, session }) {
         if (mountedRef.current) connect();
       }, delay);
     };
-  }, [agentId]);
+  }, [agentId, markReady]);
 
   useEffect(() => {
     mountedRef.current = true;
     connect();
+    // Fallback: reveal even if the transcript is empty or the stream is slow.
+    const fallback = setTimeout(markReady, 2500);
     return () => {
       mountedRef.current = false;
+      clearTimeout(fallback);
+      if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
@@ -446,7 +475,13 @@ function ChatView({ agentId, session }) {
         wsRef.current = null;
       }
     };
-  }, [connect]);
+  }, [connect, markReady]);
+
+  // When the view is revealed, make sure we're pinned at the bottom.
+  useEffect(() => {
+    if (ready) requestAnimationFrame(() => scrollToBottom());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready]);
 
   // --- Auto-scroll ----------------------------------------------------------
   // The transcript streams in from the top (tail -n +1), so on open we want to
@@ -538,6 +573,14 @@ function ChatView({ agentId, session }) {
     }
   };
 
+  // Auto-size the composer to fit its content (up to a max, then it scrolls).
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [input]);
+
   const renderedRecords = useMemo(() => {
     const out = [];
     records.forEach((rec) => {
@@ -558,9 +601,14 @@ function ChatView({ agentId, session }) {
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden"
+        className="relative flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden"
       >
-        <div ref={contentRef} className="px-3 py-3 space-y-2 min-h-full">
+        {!ready && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-900 text-sm text-gray-500">
+            Loading conversation…
+          </div>
+        )}
+        <div ref={contentRef} className={`px-3 py-3 space-y-2 min-h-full ${ready ? '' : 'invisible'}`}>
           {renderedRecords.length === 0 && !isWorking ? (
             <div className="h-full flex items-center justify-center text-center text-sm text-gray-500 px-4">
               {connected
@@ -594,12 +642,13 @@ function ChatView({ agentId, session }) {
         {sendError && <div className="text-xs text-red-400 mb-1">{sendError}</div>}
         <div className="flex items-end gap-2 w-full min-w-0">
           <textarea
+            ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Message the agent…  (Enter to send, Shift+Enter for newline)"
             rows={1}
-            className="flex-1 min-w-0 min-h-[38px] max-h-40 resize-y rounded bg-gray-900 border border-gray-600 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+            className="flex-1 min-w-0 min-h-[38px] max-h-40 overflow-y-auto resize-none rounded bg-gray-900 border border-gray-600 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
           />
           <button
             type="button"
