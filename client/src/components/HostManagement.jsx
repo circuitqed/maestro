@@ -12,17 +12,36 @@ const STATUS_DOT = {
 };
 
 function HostManagement({ onClose }) {
-  const { hosts, createHost, deleteHost, testHost } = useApp();
+  const { hosts, createHost, updateHost, deleteHost, testHost } = useApp();
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
   const [newSshTarget, setNewSshTarget] = useState('');
   const [newPathPrefix, setNewPathPrefix] = useState('');
+  const [newDefaultRoot, setNewDefaultRoot] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [testResults, setTestResults] = useState({}); // hostId -> {ok, version|error}
   const [testingId, setTestingId] = useState(null);
+  const [dirEdits, setDirEdits] = useState({}); // hostId -> edited default_root
+  const [dirSaving, setDirSaving] = useState(null);
+  const [dirSaved, setDirSaved] = useState(null);
+
+  const handleSaveDir = async (h) => {
+    setError('');
+    const value = (dirEdits[h.id] ?? (h.default_root || '')).trim();
+    setDirSaving(h.id);
+    try {
+      await updateHost(h.id, { defaultRoot: value });
+      setDirSaved(h.id);
+      setTimeout(() => setDirSaved((cur) => (cur === h.id ? null : cur)), 1500);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDirSaving(null);
+    }
+  };
 
   const handleCreate = async (e) => {
     e.preventDefault();
@@ -39,10 +58,12 @@ function HostManagement({ onClose }) {
     try {
       const payload = { name: newName, sshTarget: newSshTarget };
       if (newPathPrefix.trim()) payload.pathPrefix = newPathPrefix.trim();
+      if (newDefaultRoot.trim()) payload.defaultRoot = newDefaultRoot.trim();
       await createHost(payload);
       setNewName('');
       setNewSshTarget('');
       setNewPathPrefix('');
+      setNewDefaultRoot('');
       setShowAdvanced(false);
       setShowCreate(false);
     } catch (err) {
@@ -165,6 +186,31 @@ function HostManagement({ onClose }) {
                       {result.ok ? result.version : (result.error || 'Test failed')}
                     </div>
                   )}
+                  {!isLocal && (
+                    <div className="mt-2">
+                      <div className="text-[11px] text-gray-500 mb-1">
+                        Default agent directory (new agents default to this + the agent name)
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          placeholder="/Users/you/dev"
+                          value={dirEdits[h.id] ?? (h.default_root || '')}
+                          onChange={(e) => setDirEdits((prev) => ({ ...prev, [h.id]: e.target.value }))}
+                          className="flex-1 min-w-0 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs text-white
+                                     font-mono focus:outline-none focus:ring-1 focus:ring-primary-500"
+                        />
+                        <button
+                          onClick={() => handleSaveDir(h)}
+                          disabled={dirSaving === h.id}
+                          className="px-2 py-1 text-xs bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors
+                                     disabled:opacity-40 flex-shrink-0"
+                        >
+                          {dirSaving === h.id ? '…' : dirSaved === h.id ? 'Saved' : 'Save'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -219,14 +265,24 @@ function HostManagement({ onClose }) {
                     Advanced
                   </button>
                   {showAdvanced && (
-                    <input
-                      type="text"
-                      placeholder="PATH prefix (e.g. /opt/homebrew/bin:/usr/local/bin)"
-                      value={newPathPrefix}
-                      onChange={(e) => setNewPathPrefix(e.target.value)}
-                      className="mt-1 w-full px-3 py-1.5 bg-gray-700 border border-gray-600 rounded text-white
-                                 focus:outline-none focus:ring-1 focus:ring-primary-500 font-mono text-xs"
-                    />
+                    <div className="mt-1 space-y-2">
+                      <input
+                        type="text"
+                        placeholder="PATH prefix (e.g. /opt/homebrew/bin:/usr/local/bin)"
+                        value={newPathPrefix}
+                        onChange={(e) => setNewPathPrefix(e.target.value)}
+                        className="w-full px-3 py-1.5 bg-gray-700 border border-gray-600 rounded text-white
+                                   focus:outline-none focus:ring-1 focus:ring-primary-500 font-mono text-xs"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Default agent directory (e.g. /Users/you/dev)"
+                        value={newDefaultRoot}
+                        onChange={(e) => setNewDefaultRoot(e.target.value)}
+                        className="w-full px-3 py-1.5 bg-gray-700 border border-gray-600 rounded text-white
+                                   focus:outline-none focus:ring-1 focus:ring-primary-500 font-mono text-xs"
+                      />
+                    </div>
                   )}
                 </div>
                 <div className="flex gap-2">

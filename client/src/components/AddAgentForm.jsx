@@ -15,6 +15,14 @@ function sanitizeSessionName(name) {
   return name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
 }
 
+// Suggested working dir on a remote host: <host default root>/<agent-name slug>
+function defaultWorkingDir(host, name) {
+  const root = host?.default_root;
+  const slug = sanitizeSessionName(name || '');
+  if (!root || !slug) return '';
+  return `${root.replace(/\/+$/, '')}/${slug}`;
+}
+
 function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector = false, projects = [] }) {
   const { createAgent, hosts, getProjectPaths } = useApp();
   const [provider, setProvider] = useState(type === 'shell' ? 'shell' : 'claude');
@@ -58,7 +66,9 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
         const existing = entry?.path || null;
         setExistingHostPath(existing);
         if (!workingDirEdited) {
-          setWorkingDir(existing || '');
+          // Prefer the project's already-configured path; otherwise fall back to
+          // the host's default root joined with the agent-name slug.
+          setWorkingDir(existing || defaultWorkingDir(selectedHost, name));
         }
       })
       .catch(() => {
@@ -74,6 +84,11 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
     setName(value);
     if (!sessionEdited) {
       setScreenSession(sanitizeSessionName(value));
+    }
+    // Keep the remote working dir in sync with the name until the user edits it
+    // or the project already has a path configured for this host.
+    if (!workingDirEdited && isRemoteHost && !existingHostPath) {
+      setWorkingDir(defaultWorkingDir(selectedHost, value));
     }
   };
 

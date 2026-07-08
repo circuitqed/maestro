@@ -130,6 +130,10 @@ export async function initDb() {
     db.exec('ALTER TABLE agents ADD COLUMN claude_session_id TEXT');
   } catch (e) { /* Column already exists */ }
 
+  try {
+    db.exec('ALTER TABLE hosts ADD COLUMN default_root TEXT');
+  } catch (e) { /* Column already exists */ }
+
   // Seed the local host row (ssh_target NULL => local) on first run
   const hostCount = db.prepare('SELECT COUNT(*) as count FROM hosts').get().count;
   if (hostCount === 0) {
@@ -218,10 +222,22 @@ export function getHost(id) {
   return db.prepare('SELECT * FROM hosts WHERE id = ?').get(id);
 }
 
-export function createHost(name, sshTarget, pathPrefix = null) {
-  const result = db.prepare('INSERT INTO hosts (name, ssh_target, path_prefix) VALUES (?, ?, ?)')
-    .run(name, sshTarget, pathPrefix);
+export function createHost(name, sshTarget, pathPrefix = null, defaultRoot = null) {
+  const result = db.prepare('INSERT INTO hosts (name, ssh_target, path_prefix, default_root) VALUES (?, ?, ?, ?)')
+    .run(name, sshTarget, pathPrefix, defaultRoot);
   return getHost(result.lastInsertRowid);
+}
+
+export function updateHost(id, { name, pathPrefix, defaultRoot } = {}) {
+  const fields = [];
+  const values = [];
+  if (name !== undefined) { fields.push('name = ?'); values.push(name); }
+  if (pathPrefix !== undefined) { fields.push('path_prefix = ?'); values.push(pathPrefix || null); }
+  if (defaultRoot !== undefined) { fields.push('default_root = ?'); values.push(defaultRoot || null); }
+  if (fields.length === 0) return getHost(id);
+  values.push(id);
+  db.prepare(`UPDATE hosts SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  return getHost(id);
 }
 
 export function updateHostStatus(id, status) {

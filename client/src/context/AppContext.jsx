@@ -371,6 +371,20 @@ export function AppProvider({ children }) {
     return res.json();
   };
 
+  const updateHost = async (id, updates) => {
+    const res = await fetch(`/api/hosts/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Failed to update host');
+    }
+    await loadHosts();
+    return res.json();
+  };
+
   const deleteHost = async (id) => {
     const res = await fetch(`/api/hosts/${id}`, { method: 'DELETE' });
     if (!res.ok) {
@@ -497,6 +511,7 @@ export function AppProvider({ children }) {
 
     // Host management
     createHost,
+    updateHost,
     deleteHost,
     testHost,
 

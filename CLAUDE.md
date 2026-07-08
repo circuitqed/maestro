@@ -125,7 +125,8 @@ Open http://localhost:3000 for development (Vite dev server with HMR)
 | GET | /api/agents/:id/transcript/meta | Whether a transcript file was located `{available, sessionId}` |
 | DELETE | /api/agents/:id | Delete agent |
 | GET | /api/hosts | List hosts |
-| POST | /api/hosts | Add remote host (admin) |
+| POST | /api/hosts | Add remote host (admin; accepts `pathPrefix`, `defaultRoot`) |
+| PATCH | /api/hosts/:id | Update host `name`/`pathPrefix`/`defaultRoot` (admin) |
 | DELETE | /api/hosts/:id | Delete host (admin; not local, not if agents reference it) |
 | POST | /api/hosts/:id/test | Test connectivity (runs `tmux -V`, persists status) |
 
@@ -232,6 +233,7 @@ CREATE TABLE hosts (
   name TEXT NOT NULL UNIQUE,
   ssh_target TEXT,          -- NULL => local host (oracle); else user@hostname
   path_prefix TEXT,         -- PATH prepended to remote commands (macOS/homebrew)
+  default_root TEXT,        -- new remote agents default their cwd to <default_root>/<agent-slug>
   status TEXT DEFAULT 'unknown',  -- online | offline | unknown
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
