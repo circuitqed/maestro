@@ -42,7 +42,7 @@ function Section({ title, count, defaultCollapsed = false, children, variant = '
 }
 
 function Dashboard() {
-  const { projects, agents, createProject } = useApp();
+  const { projects, agents, createProject, agentStates, loadAgents } = useApp();
   const [view, setView] = useState(() => localStorage.getItem('dashboardView') || 'projects');
   const [showAddProject, setShowAddProject] = useState(false);
   const [showAddAgent, setShowAddAgent] = useState(false);
@@ -53,6 +53,41 @@ function Dashboard() {
   useEffect(() => {
     localStorage.setItem('dashboardView', view);
   }, [view]);
+
+  // Re-render periodically so the "recently active" window stays current even
+  // when nothing else changes (e.g. an idle agent crossing the 10-min mark).
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Refresh the agent list (fresh status + sort timestamps) whenever any agent
+  // changes state on the notifications socket — keeps the tab live in realtime.
+  useEffect(() => {
+    const t = setTimeout(() => loadAgents(), 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentStates]);
+
+  // Activity classification. Prefer the realtime busy/idle from the notifications
+  // socket, falling back to the last-fetched DB status. An agent is "active" if
+  // it's working now OR interacted within the last 10 minutes (recent agent
+  // response or user input) — i.e. still in an active conversation.
+  const RECENT_ACTIVE_MS = 10 * 60 * 1000;
+  const tsOf = (v) => (v ? new Date(v).getTime() : 0);
+  const liveStatus = (a) => {
+    const live = agentStates[a.id];
+    return live === 'busy' || live === 'idle' ? live : a.status;
+  };
+  const lastActivity = (a) => Math.max(tsOf(a.last_seen_at), tsOf(a.last_user_at));
+  const bucket = (a) => {
+    const s = liveStatus(a);
+    if (s === 'stopped') return 'stopped';
+    if (s === 'busy' || s === 'running') return 'active';
+    if (now - lastActivity(a) < RECENT_ACTIVE_MS) return 'active';
+    return 'idle';
+  };
 
   const handleAddProject = async (e) => {
     e.preventDefault();
@@ -77,13 +112,11 @@ function Dashboard() {
     }
   });
 
-  // Categorize projects by activity
+  // Categorize projects by their agents' activity (same rules as agents)
   const getProjectActivity = (project) => {
-    const pAgents = projectAgents[project.id] || [];
-    const hasBusy = pAgents.some((a) => a.status === 'running' || a.status === 'busy');
-    const hasIdle = pAgents.some((a) => a.status === 'idle');
-    if (hasBusy) return 'active';
-    if (hasIdle) return 'idle';
+    const buckets = (projectAgents[project.id] || []).map(bucket);
+    if (buckets.includes('active')) return 'active';
+    if (buckets.includes('idle')) return 'idle';
     return 'stopped';
   };
 
@@ -91,16 +124,15 @@ function Dashboard() {
   const idleProjects = projects.filter((p) => getProjectActivity(p) === 'idle');
   const stoppedProjects = projects.filter((p) => getProjectActivity(p) === 'stopped');
 
-  // Categorize agents by status, and within each group sort by most-recent agent
-  // response (last_seen_at), then most-recent user input (last_user_at).
-  const tsOf = (v) => (v ? new Date(v).getTime() : 0);
+  // Within each group, sort by most-recent agent response (last_seen_at), then
+  // most-recent user input (last_user_at).
   const byRecency = (a, b) =>
     (tsOf(b.last_seen_at) - tsOf(a.last_seen_at)) ||
     (tsOf(b.last_user_at) - tsOf(a.last_user_at)) ||
     (a.name || '').localeCompare(b.name || '');
-  const activeAgents = agents.filter((a) => a.status === 'running' || a.status === 'busy').sort(byRecency);
-  const idleAgents = agents.filter((a) => a.status === 'idle').sort(byRecency);
-  const stoppedAgents = agents.filter((a) => a.status === 'stopped').sort(byRecency);
+  const activeAgents = agents.filter((a) => bucket(a) === 'active').sort(byRecency);
+  const idleAgents = agents.filter((a) => bucket(a) === 'idle').sort(byRecency);
+  const stoppedAgents = agents.filter((a) => bucket(a) === 'stopped').sort(byRecency);
 
   return (
     <div className="flex-1 overflow-auto p-4 md:p-6">
