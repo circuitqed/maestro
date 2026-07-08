@@ -9,7 +9,7 @@ const STATUS_COLORS = {
   stopped: 'bg-gray-500',
 };
 
-function AgentRow({ agent }) {
+function AgentRow({ agent, showProject = false }) {
   const { startAgent, stopAgent, deleteAgent, openAgentView } = useApp();
   const [showMenu, setShowMenu] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -89,8 +89,16 @@ function AgentRow({ agent }) {
             </span>
           )}
         </div>
-        {agent.screen_session && (
-          <div className="text-xs text-gray-500 font-mono truncate">{agent.screen_session}</div>
+        {(agent.screen_session || (showProject && agent.project_name)) && (
+          <div className="text-xs text-gray-500 truncate">
+            {showProject && agent.project_name && (
+              <span className="text-gray-400">{agent.project_name}</span>
+            )}
+            {showProject && agent.project_name && agent.screen_session && (
+              <span className="text-gray-600"> · </span>
+            )}
+            {agent.screen_session && <span className="font-mono">{agent.screen_session}</span>}
+          </div>
         )}
       </div>
 

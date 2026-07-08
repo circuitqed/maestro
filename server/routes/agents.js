@@ -10,6 +10,7 @@ import {
   createAgent,
   updateAgent,
   updateAgentStatus,
+  updateAgentUserActivity,
   setAgentClaudeSessionId,
   setProjectHostPath,
   deleteAgent,
@@ -365,6 +366,7 @@ router.post('/:id/input', async (req, res) => {
     }
 
     await sendText(agent.screen_session, text, host);
+    updateAgentUserActivity(agent.id); // track most-recent user input for sorting
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import ProjectCard from './ProjectCard';
-import AgentCard from './AgentCard';
+import AgentRow from './AgentRow';
 import AddAgentForm from './AddAgentForm';
 
 // Collapsible section component
@@ -91,10 +91,16 @@ function Dashboard() {
   const idleProjects = projects.filter((p) => getProjectActivity(p) === 'idle');
   const stoppedProjects = projects.filter((p) => getProjectActivity(p) === 'stopped');
 
-  // Categorize agents by status
-  const activeAgents = agents.filter((a) => a.status === 'running' || a.status === 'busy');
-  const idleAgents = agents.filter((a) => a.status === 'idle');
-  const stoppedAgents = agents.filter((a) => a.status === 'stopped');
+  // Categorize agents by status, and within each group sort by most-recent agent
+  // response (last_seen_at), then most-recent user input (last_user_at).
+  const tsOf = (v) => (v ? new Date(v).getTime() : 0);
+  const byRecency = (a, b) =>
+    (tsOf(b.last_seen_at) - tsOf(a.last_seen_at)) ||
+    (tsOf(b.last_user_at) - tsOf(a.last_user_at)) ||
+    (a.name || '').localeCompare(b.name || '');
+  const activeAgents = agents.filter((a) => a.status === 'running' || a.status === 'busy').sort(byRecency);
+  const idleAgents = agents.filter((a) => a.status === 'idle').sort(byRecency);
+  const stoppedAgents = agents.filter((a) => a.status === 'stopped').sort(byRecency);
 
   return (
     <div className="flex-1 overflow-auto p-4 md:p-6">
@@ -257,27 +263,27 @@ function Dashboard() {
         <div>
           {/* Active Agents */}
           <Section title="Active" count={activeAgents.length} variant="active">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            <div className="space-y-2">
               {activeAgents.map((agent) => (
-                <AgentCard key={agent.id} agent={agent} />
+                <AgentRow key={agent.id} agent={agent} showProject />
               ))}
             </div>
           </Section>
 
           {/* Idle Agents */}
           <Section title="Ready" count={idleAgents.length} variant="idle" defaultCollapsed={activeAgents.length > 0}>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            <div className="space-y-2">
               {idleAgents.map((agent) => (
-                <AgentCard key={agent.id} agent={agent} />
+                <AgentRow key={agent.id} agent={agent} showProject />
               ))}
             </div>
           </Section>
 
           {/* Stopped Agents */}
           <Section title="Stopped" count={stoppedAgents.length} variant="stopped" defaultCollapsed={true}>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            <div className="space-y-2">
               {stoppedAgents.map((agent) => (
-                <AgentCard key={agent.id} agent={agent} />
+                <AgentRow key={agent.id} agent={agent} showProject />
               ))}
             </div>
           </Section>

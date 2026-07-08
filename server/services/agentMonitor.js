@@ -1,4 +1,4 @@
-import { getAgents, updateAgentStatus } from './db.js';
+import { getAgents, updateAgentStatus, updateAgentLastSeen } from './db.js';
 import { getTmuxSessions } from './tmux.js';
 import { getProvider } from './providers.js';
 import { execOnHost, isRemote } from './hosts.js';
@@ -104,6 +104,9 @@ async function checkPaneActivity(agentId, info) {
   if (content !== info.lastContent) {
     info.lastContent = content;
     info.lastActivity = Date.now();
+    // Track most-recent agent output for dashboard sorting (bounded: at most one
+    // write per agent per sync tick, only when the pane actually changed).
+    updateAgentLastSeen(agentId);
 
     // If was idle, transition to busy
     if (info.state === 'idle') {

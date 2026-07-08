@@ -134,6 +134,10 @@ export async function initDb() {
     db.exec('ALTER TABLE hosts ADD COLUMN default_root TEXT');
   } catch (e) { /* Column already exists */ }
 
+  try {
+    db.exec('ALTER TABLE agents ADD COLUMN last_user_at DATETIME');
+  } catch (e) { /* Column already exists */ }
+
   // Seed the local host row (ssh_target NULL => local) on first run
   const hostCount = db.prepare('SELECT COUNT(*) as count FROM hosts').get().count;
   if (hostCount === 0) {
@@ -353,6 +357,12 @@ export function updateAgent(id, { name } = {}) {
 export function updateAgentLastSeen(id) {
   const now = new Date().toISOString();
   db.prepare('UPDATE agents SET last_seen_at = ? WHERE id = ?').run(now, id);
+}
+
+// Timestamp of the most recent input the user sent to this agent (chat send box).
+export function updateAgentUserActivity(id) {
+  const now = new Date().toISOString();
+  db.prepare('UPDATE agents SET last_user_at = ? WHERE id = ?').run(now, id);
 }
 
 export function setAgentClaudeSessionId(id, sessionId) {
