@@ -173,7 +173,7 @@ function ToolUseCard({ block }) {
   );
 }
 
-function ToolResultCard({ result }) {
+function ToolResultCard({ result, onImage }) {
   const content = result.content;
   const texts = [];
   const images = [];
@@ -207,16 +207,15 @@ function ToolResultCard({ result }) {
       {/* Images: render at full container width (the original data, not downscaled
           by us) and let the user open the full-resolution image in a new tab. */}
       {images.map((src, i) => (
-        <a
+        <button
           key={i}
-          href={src}
-          target="_blank"
-          rel="noopener noreferrer"
-          title="Open full size"
-          className="block p-2"
+          type="button"
+          onClick={() => onImage && onImage(src)}
+          title="Click to view full size"
+          className="block w-full p-2 text-left"
         >
-          <img src={src} alt="tool result" className="max-w-full rounded" />
-        </a>
+          <img src={src} alt="tool result" className="max-w-full rounded cursor-zoom-in" />
+        </button>
       ))}
     </div>
   );
@@ -317,7 +316,7 @@ function renderUserPrompt(rec) {
   );
 }
 
-function renderToolResults(rec) {
+function renderToolResults(rec, onImage) {
   const blocks = rec.message?.content;
   if (!Array.isArray(blocks)) return null;
   const results = blocks.filter((b) => b && b.type === 'tool_result');
@@ -326,20 +325,20 @@ function renderToolResults(rec) {
     <div className="flex justify-start">
       <div className="min-w-0 max-w-[92%] w-full space-y-1">
         {results.map((r, i) => (
-          <ToolResultCard key={`${rec.uuid}-${i}`} result={r} />
+          <ToolResultCard key={`${rec.uuid}-${i}`} result={r} onImage={onImage} />
         ))}
       </div>
     </div>
   );
 }
 
-function renderRecord(rec) {
+function renderRecord(rec, onImage) {
   if (rec.type === 'assistant') return renderAssistant(rec);
   if (rec.type === 'user') {
     if (rec.isMeta) return null;
     const content = rec.message?.content;
     const hasToolResult = Array.isArray(content) && content.some((b) => b && b.type === 'tool_result');
-    if (hasToolResult) return renderToolResults(rec);
+    if (hasToolResult) return renderToolResults(rec, onImage);
     return renderUserPrompt(rec);
   }
   return null;
@@ -362,6 +361,7 @@ function ChatView({ agentId, session }) {
   // Hidden until the initial history burst settles, so we reveal already pinned
   // at the bottom instead of visibly scrolling through the whole transcript.
   const [ready, setReady] = useState(false);
+  const [lightbox, setLightbox] = useState(null); // full-size image src, or null
 
   const wsRef = useRef(null);
   const reconnectAttemptRef = useRef(0);
@@ -584,7 +584,7 @@ function ChatView({ agentId, session }) {
   const renderedRecords = useMemo(() => {
     const out = [];
     records.forEach((rec) => {
-      const el = renderRecord(rec);
+      const el = renderRecord(rec, setLightbox);
       if (!el) return;
       out.push(
         <div key={rec.uuid} className={rec.isSidechain ? 'opacity-70' : ''}>
@@ -660,6 +660,31 @@ function ChatView({ agentId, session }) {
           </button>
         </div>
       </div>
+
+      {/* Full-size image viewer (data: URLs can't open in a new tab, so overlay) */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4"
+          onClick={() => setLightbox(null)}
+        >
+          <img
+            src={lightbox}
+            alt="full size"
+            className="max-w-full max-h-full object-contain rounded shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <button
+            type="button"
+            onClick={() => setLightbox(null)}
+            title="Close"
+            className="absolute top-3 right-3 p-2 text-white/70 hover:text-white"
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
