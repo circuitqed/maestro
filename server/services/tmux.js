@@ -147,3 +147,26 @@ export async function sendText(sessionName, text, host = null) {
     `tmux send-keys -t ${shellQuote(sessionName)} Enter`;
   await execOnHost(host, cmd);
 }
+
+/**
+ * Answer an interactive numbered select (e.g. Claude Code's AskUserQuestion) by
+ * pressing the option's number key, which selects and submits it immediately.
+ *
+ * @param {string} sessionName - Target tmux session
+ * @param {number} choice - The option number (1-9) to press
+ * @param {object|null} host - Host row (null => local)
+ */
+export async function sendAnswer(sessionName, choice, host = null) {
+  const digit = String(parseInt(choice, 10));
+  if (!/^[1-9]$/.test(digit)) throw new Error('choice must be 1-9');
+  await execOnHost(host, `tmux send-keys -t ${shellQuote(sessionName)} ${shellQuote(digit)}`);
+}
+
+/**
+ * Capture the current visible pane content of a session (for detecting an active
+ * interactive prompt that isn't in the transcript yet).
+ */
+export async function capturePane(sessionName, host = null) {
+  const { stdout } = await execOnHost(host, `tmux capture-pane -t ${shellQuote(sessionName)} -p`);
+  return stdout;
+}

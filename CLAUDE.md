@@ -122,6 +122,8 @@ Open http://localhost:3000 for development (Vite dev server with HMR)
 | POST | /api/agents | Create agent (accepts `hostId`) |
 | PATCH | /api/agents/:id/status | Update status |
 | POST | /api/agents/:id/input | Inject text into the agent's tmux session (chat send box) |
+| POST | /api/agents/:id/answer | Answer an active select prompt (presses option number 1-9) |
+| GET | /api/agents/:id/pane | Capture the live pane (chat uses it to detect active questions) |
 | GET | /api/agents/:id/transcript/meta | Whether a transcript file was located `{available, sessionId}` |
 | DELETE | /api/agents/:id | Delete agent |
 | GET | /api/hosts | List hosts |
@@ -174,6 +176,12 @@ panel/modal header switches live. The tmux TUI stays the single source of truth:
   `tmux.js` `sendText()` — `set-buffer` + `paste-buffer` + `Enter` (all values
   `shellQuote`'d; paste, not send-keys, so literal text can't be interpreted as
   tmux keys).
+- **Active questions:** when an agent shows an interactive select (AskUserQuestion,
+  plan approval, …), the tool_use is NOT in the transcript until answered — it's
+  only in the live pane. The chat polls `GET /api/agents/:id/pane`, parses the
+  numbered widget, and renders clickable options; a click POSTs to `/answer`,
+  which presses that option's number key (`tmux send-keys <n>`) to select+submit.
+  Answered questions render from the transcript with the chosen option marked.
 - **Locating the transcript:** the filename equals the session UUID. On claude
   start, Maestro pins `--session-id <uuid>` (stored in `agents.claude_session_id`)
   so the file is found by globbing `<uuid>.jsonl`; fallback is the newest `.jsonl`

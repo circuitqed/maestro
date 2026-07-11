@@ -458,6 +458,32 @@ export function AppProvider({ children }) {
     return res.json();
   }, []);
 
+  const answerAgentQuestion = useCallback(async (agentId, choice) => {
+    const res = await fetch(`/api/agents/${agentId}/answer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ choice }),
+    });
+    if (!res.ok) {
+      let message = 'Failed to answer';
+      try {
+        const data = await res.json();
+        message = data.error || message;
+      } catch {
+        // ignore JSON parse errors
+      }
+      throw new Error(message);
+    }
+    return res.json();
+  }, []);
+
+  const getAgentPane = useCallback(async (agentId) => {
+    const res = await fetch(`/api/agents/${agentId}/pane`);
+    if (!res.ok) return '';
+    const data = await res.json();
+    return data.text || '';
+  }, []);
+
   const closeTerminal = useCallback(() => {
     setTerminalOpen(false);
     // Delay clearing active terminal to allow close animation
@@ -522,6 +548,8 @@ export function AppProvider({ children }) {
     openAgentView,
     setViewMode,
     sendAgentInput,
+    answerAgentQuestion,
+    getAgentPane,
     closeTerminal,
 
     // Notifications

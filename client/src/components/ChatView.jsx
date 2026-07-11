@@ -221,6 +221,150 @@ function ToolResultCard({ result, onImage }) {
   );
 }
 
+// The AskUserQuestion tool_result reads: ... "Question"="Answer" ... — collect the
+// chosen answer strings so we can highlight them once the question is answered.
+function parseAnswers(text) {
+  const set = new Set();
+  if (typeof text === 'string') {
+    const re = /"[^"]*"\s*=\s*"([^"]*)"/g;
+    let m;
+    while ((m = re.exec(text))) set.add(m[1]);
+  }
+  return set;
+}
+
+function QuestionCard({ block, answered, chosen, onAnswer }) {
+  const questions = block.input?.questions || [];
+  if (questions.length === 0) return null;
+  return (
+    <div
+      className={`my-1 rounded-lg border px-3 py-2 ${
+        answered ? 'border-gray-700 bg-gray-800/50' : 'border-blue-500/60 bg-blue-950/30'
+      }`}
+    >
+      {!answered && (
+        <div className="flex items-center gap-1.5 text-xs text-blue-300 mb-2">
+          <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span className="font-medium">Waiting for your answer</span>
+        </div>
+      )}
+      {questions.map((q, qi) => {
+        const clickable = !answered && !q.multiSelect && !!onAnswer;
+        return (
+          <div key={qi} className={qi > 0 ? 'mt-3' : ''}>
+            {q.header && (
+              <div className="text-[10px] uppercase tracking-wide text-gray-400 mb-0.5">{q.header}</div>
+            )}
+            <div className="text-sm text-gray-100 font-medium mb-1.5 break-words">{q.question}</div>
+            <div className="space-y-1">
+              {(q.options || []).map((opt, oi) => {
+                const isChosen = chosen && chosen.has(opt.label);
+                return (
+                  <button
+                    key={oi}
+                    type="button"
+                    disabled={!clickable}
+                    onClick={clickable ? () => onAnswer(oi + 1) : undefined}
+                    className={`w-full text-left rounded border px-2.5 py-1.5 transition-colors ${
+                      isChosen
+                        ? 'border-blue-400 bg-blue-900/40'
+                        : clickable
+                          ? 'border-gray-600 hover:border-blue-400 hover:bg-blue-900/20 cursor-pointer'
+                          : 'border-gray-700 cursor-default'
+                    }`}
+                  >
+                    <div className={`text-sm font-medium ${isChosen ? 'text-blue-200' : 'text-gray-100'}`}>
+                      <span className="text-gray-500">{oi + 1}.</span> {opt.label}
+                      {isChosen && <span className="ml-1.5 text-xs text-blue-300">✓ chosen</span>}
+                    </div>
+                    {opt.description && (
+                      <div className="text-xs text-gray-400 mt-0.5 break-words">{opt.description}</div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            {!answered && q.multiSelect && (
+              <div className="mt-1 text-[11px] text-amber-400/80">
+                Multiple-choice — answer in the terminal.
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {!answered && (
+        <div className="mt-2 text-[11px] text-gray-500">Click an option, or type a reply below.</div>
+      )}
+    </div>
+  );
+}
+
+// A Claude Code select widget (AskUserQuestion, plan approval, etc.) lives only in
+// the live pane while active — it isn't written to the transcript until answered.
+// Detect it from a pane snapshot and pull the numbered options for clickable answers.
+function parseActivePrompt(text) {
+  if (!text) return null;
+  const lines = text.split('\n');
+  const footerIdx = lines.findIndex((l) => /to select|to navigate|Esc to cancel|↑\/↓/.test(l));
+  if (footerIdx === -1) return null;
+  const options = [];
+  let firstOptIdx = -1;
+  const start = Math.max(0, footerIdx - 25);
+  for (let i = start; i < footerIdx; i++) {
+    const m = lines[i].match(/^[\s│┃▎☐☑◉○❯›>*·-]*?(\d+)[.)]\s+(.*\S)\s*$/);
+    if (m) {
+      if (firstOptIdx === -1) firstOptIdx = i;
+      options.push({ n: parseInt(m[1], 10), label: m[2].trim() });
+    }
+  }
+  if (options.length === 0) return null;
+  const qLines = [];
+  for (let i = firstOptIdx - 1; i >= start && qLines.length < 4; i--) {
+    const t = lines[i].replace(/[│╰╯╭╮─┃▎☐☑◉○❯›>]/g, '').trim();
+    if (!t) {
+      if (qLines.length) break;
+      continue;
+    }
+    if (/to select|to navigate/.test(t)) break;
+    qLines.unshift(t);
+  }
+  return { question: qLines.join(' ').slice(0, 400), options };
+}
+
+function ActivePromptCard({ prompt, onAnswer }) {
+  return (
+    <div className="flex justify-start">
+      <div className="min-w-0 max-w-[92%] w-full my-1 rounded-lg border border-blue-500/60 bg-blue-950/30 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-xs text-blue-300 mb-2">
+          <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span className="font-medium">The agent is waiting for your answer</span>
+        </div>
+        {prompt.question && (
+          <div className="text-sm text-gray-100 mb-1.5 whitespace-pre-wrap break-words">{prompt.question}</div>
+        )}
+        <div className="space-y-1">
+          {prompt.options.map((opt) => (
+            <button
+              key={opt.n}
+              type="button"
+              onClick={() => onAnswer && onAnswer(opt.n)}
+              className="w-full text-left rounded border border-gray-600 hover:border-blue-400 hover:bg-blue-900/20 px-2.5 py-1.5 text-sm text-gray-100 transition-colors cursor-pointer"
+            >
+              <span className="text-gray-500">{opt.n}.</span> {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Derive a short activity label from the transcript so the indicator can say
 // what the agent is doing (running a tool it hasn't returned from, else generic).
 function deriveActivity(records) {
@@ -264,7 +408,7 @@ function WorkingIndicator({ label }) {
 // Record renderers
 // ---------------------------------------------------------------------------
 
-function renderAssistant(rec) {
+function renderAssistant(rec, ctx) {
   const content = rec.message?.content;
   const blocks =
     typeof content === 'string'
@@ -286,6 +430,19 @@ function renderAssistant(rec) {
             return <ThinkingBlock key={key} text={block.thinking} />;
           }
           if (block.type === 'tool_use') {
+            if (block.name === 'AskUserQuestion') {
+              const resultText = ctx && ctx.results ? ctx.results[block.id] : undefined;
+              const answered = resultText !== undefined;
+              return (
+                <QuestionCard
+                  key={key}
+                  block={block}
+                  answered={answered}
+                  chosen={answered ? parseAnswers(resultText) : null}
+                  onAnswer={ctx && ctx.onAnswer}
+                />
+              );
+            }
             return <ToolUseCard key={key} block={block} />;
           }
           return null;
@@ -316,7 +473,7 @@ function renderUserPrompt(rec) {
   );
 }
 
-function renderToolResults(rec, onImage) {
+function renderToolResults(rec, ctx) {
   const blocks = rec.message?.content;
   if (!Array.isArray(blocks)) return null;
   const results = blocks.filter((b) => b && b.type === 'tool_result');
@@ -325,20 +482,20 @@ function renderToolResults(rec, onImage) {
     <div className="flex justify-start">
       <div className="min-w-0 max-w-[92%] w-full space-y-1">
         {results.map((r, i) => (
-          <ToolResultCard key={`${rec.uuid}-${i}`} result={r} onImage={onImage} />
+          <ToolResultCard key={`${rec.uuid}-${i}`} result={r} onImage={ctx && ctx.onImage} />
         ))}
       </div>
     </div>
   );
 }
 
-function renderRecord(rec, onImage) {
-  if (rec.type === 'assistant') return renderAssistant(rec);
+function renderRecord(rec, ctx) {
+  if (rec.type === 'assistant') return renderAssistant(rec, ctx);
   if (rec.type === 'user') {
     if (rec.isMeta) return null;
     const content = rec.message?.content;
     const hasToolResult = Array.isArray(content) && content.some((b) => b && b.type === 'tool_result');
-    if (hasToolResult) return renderToolResults(rec, onImage);
+    if (hasToolResult) return renderToolResults(rec, ctx);
     return renderUserPrompt(rec);
   }
   return null;
@@ -349,7 +506,7 @@ function renderRecord(rec, onImage) {
 // ---------------------------------------------------------------------------
 
 function ChatView({ agentId, session }) {
-  const { sendAgentInput, agentStates } = useApp();
+  const { sendAgentInput, answerAgentQuestion, getAgentPane, agentStates } = useApp();
 
   const [records, setRecords] = useState([]);
   const [connected, setConnected] = useState(false);
@@ -362,6 +519,7 @@ function ChatView({ agentId, session }) {
   // at the bottom instead of visibly scrolling through the whole transcript.
   const [ready, setReady] = useState(false);
   const [lightbox, setLightbox] = useState(null); // full-size image src, or null
+  const [activePrompt, setActivePrompt] = useState(null); // live select prompt, or null
 
   const wsRef = useRef(null);
   const reconnectAttemptRef = useRef(0);
@@ -581,10 +739,56 @@ function ChatView({ agentId, session }) {
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }, [input]);
 
+  const onAnswerQuestion = useCallback(
+    (choice) => {
+      answerAgentQuestion(agentId, choice).catch((e) =>
+        setSendError(e.message || 'Failed to answer')
+      );
+    },
+    [answerAgentQuestion, agentId]
+  );
+
+  // Poll the live pane for an active interactive prompt (which isn't in the
+  // transcript until answered) so we can render it with clickable options.
+  useEffect(() => {
+    if (!agentId) return undefined;
+    let cancelled = false;
+    let timer;
+    const poll = async () => {
+      try {
+        const text = await getAgentPane(agentId);
+        if (!cancelled) setActivePrompt(parseActivePrompt(text));
+      } catch {
+        /* ignore */
+      }
+      if (!cancelled) timer = setTimeout(poll, 2500);
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [agentId, getAgentPane]);
+
   const renderedRecords = useMemo(() => {
+    // Map each answered tool_use_id -> its result text (used to mark AskUserQuestion
+    // cards answered and highlight the chosen option).
+    const results = {};
+    records.forEach((rec) => {
+      const c = rec.message?.content;
+      if (Array.isArray(c)) {
+        c.forEach((b) => {
+          if (b && b.type === 'tool_result' && b.tool_use_id) {
+            results[b.tool_use_id] =
+              typeof b.content === 'string' ? b.content : JSON.stringify(b.content);
+          }
+        });
+      }
+    });
+    const ctx = { onImage: setLightbox, onAnswer: onAnswerQuestion, results };
     const out = [];
     records.forEach((rec) => {
-      const el = renderRecord(rec, setLightbox);
+      const el = renderRecord(rec, ctx);
       if (!el) return;
       out.push(
         <div key={rec.uuid} className={rec.isSidechain ? 'opacity-70' : ''}>
@@ -593,7 +797,7 @@ function ChatView({ agentId, session }) {
       );
     });
     return out;
-  }, [records]);
+  }, [records, onAnswerQuestion]);
 
   return (
     <div className="h-full w-full flex flex-col bg-gray-900">
@@ -609,7 +813,7 @@ function ChatView({ agentId, session }) {
           </div>
         )}
         <div ref={contentRef} className={`px-3 py-3 space-y-2 min-h-full ${ready ? '' : 'invisible'}`}>
-          {renderedRecords.length === 0 && !isWorking ? (
+          {renderedRecords.length === 0 && !isWorking && !activePrompt ? (
             <div className="h-full flex items-center justify-center text-center text-sm text-gray-500 px-4">
               {connected
                 ? 'No messages yet. Send something below to get started.'
@@ -618,7 +822,11 @@ function ChatView({ agentId, session }) {
           ) : (
             <>
               {renderedRecords}
-              {isWorking && <WorkingIndicator label={activityLabel} />}
+              {activePrompt ? (
+                <ActivePromptCard prompt={activePrompt} onAnswer={onAnswerQuestion} />
+              ) : (
+                isWorking && <WorkingIndicator label={activityLabel} />
+              )}
             </>
           )}
         </div>

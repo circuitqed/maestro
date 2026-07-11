@@ -17,7 +17,7 @@ import {
   getAgentsForUser,
   userHasProjectAccess,
 } from '../services/db.js';
-import { getTmuxSessions, startProviderSession, createSession, killSession, sessionExists, sendText } from '../services/tmux.js';
+import { getTmuxSessions, startProviderSession, createSession, killSession, sessionExists, sendText, sendAnswer, capturePane } from '../services/tmux.js';
 import { registerAgent, unregisterAgent } from '../services/agentMonitor.js';
 import { getProvider, getProviderList } from '../services/providers.js';
 import { isRemote, isValidSessionName, execOnHost, shellQuote } from '../services/hosts.js';
@@ -367,6 +367,54 @@ router.post('/:id/input', async (req, res) => {
 
     await sendText(agent.screen_session, text, host);
     updateAgentUserActivity(agent.id); // track most-recent user input for sorting
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Current pane content (to detect an active interactive prompt / question)
+router.get('/:id/pane', async (req, res) => {
+  try {
+    const agent = getAgent(req.params.id);
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
+    if (!checkAgentAccess(req, res, agent)) return;
+    if (!agent.screen_session || !isValidSessionName(agent.screen_session)) {
+      return res.json({ text: '' });
+    }
+    const host = agent.host_id ? getHost(agent.host_id) : null;
+    if (agent.host_id && !host) return res.status(400).json({ error: 'Unknown host' });
+    let text = '';
+    try {
+      text = await capturePane(agent.screen_session, host);
+    } catch {
+      text = ''; // session gone / unreachable — treat as no prompt
+    }
+    res.json({ text });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Answer an active question (e.g. AskUserQuestion) by pressing an option number
+router.post('/:id/answer', async (req, res) => {
+  try {
+    const agent = getAgent(req.params.id);
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
+    if (!checkAgentAccess(req, res, agent)) return;
+
+    const choice = parseInt(req.body?.choice, 10);
+    if (!Number.isInteger(choice) || choice < 1 || choice > 9) {
+      return res.status(400).json({ error: 'choice must be an integer 1-9' });
+    }
+    if (!agent.screen_session || !isValidSessionName(agent.screen_session)) {
+      return res.status(400).json({ error: 'Agent has no valid session' });
+    }
+    const host = agent.host_id ? getHost(agent.host_id) : null;
+    if (agent.host_id && !host) return res.status(400).json({ error: 'Agent references an unknown host' });
+
+    await sendAnswer(agent.screen_session, choice, host);
+    updateAgentUserActivity(agent.id);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
