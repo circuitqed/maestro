@@ -138,8 +138,10 @@ export function AppProvider({ children }) {
       throw new Error(data.error || 'Failed to create project');
     }
 
+    const created = await res.json();
     await loadProjects();
-    return res.json();
+    await loadAgents(); // a seeded default agent may have been created
+    return created;
   };
 
   const updateProject = async (id, updates) => {

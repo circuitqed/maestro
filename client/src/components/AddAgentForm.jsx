@@ -24,8 +24,9 @@ function defaultWorkingDir(host, name) {
 }
 
 function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector = false, projects = [] }) {
-  const { createAgent, hosts, getProjectPaths } = useApp();
+  const { createAgent, hosts, getProjectPaths, agents } = useApp();
   const [provider, setProvider] = useState(type === 'shell' ? 'shell' : 'claude');
+  const [providerTouched, setProviderTouched] = useState(false);
   const [name, setName] = useState('');
   const [screenSession, setScreenSession] = useState('');
   const [sessionEdited, setSessionEdited] = useState(false);
@@ -79,6 +80,22 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveProjectId, effectiveHostId, isRemoteHost]);
+
+  // Smart default: when the project already has agents, pre-select the first
+  // provider it doesn't have yet (Claude → Codex → Gemini → Aider) so "add another
+  // agent" naturally reaches for a complementary tool. Stops once the user picks.
+  useEffect(() => {
+    if (hideProviderSelector || providerTouched || !effectiveProjectId) return;
+    const used = new Set(
+      (agents || [])
+        .filter((a) => String(a.project_id) === String(effectiveProjectId))
+        .map((a) => a.config?.provider || 'claude')
+    );
+    if (used.size === 0) return; // first agent on the project → keep the Claude default
+    const next = ['claude', 'codex', 'gemini', 'aider'].find((p) => !used.has(p));
+    if (next && next !== provider) setProvider(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveProjectId, agents]);
 
   const handleNameChange = (value) => {
     setName(value);
@@ -139,7 +156,7 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
             <button
               key={p.id}
               type="button"
-              onClick={() => setProvider(p.id)}
+              onClick={() => { setProvider(p.id); setProviderTouched(true); }}
               className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors
                 ${provider === p.id
                   ? 'bg-primary-600 text-white'
