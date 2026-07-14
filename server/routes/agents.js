@@ -443,13 +443,29 @@ router.get('/:id/transcript/meta', async (req, res) => {
 });
 
 // Delete agent
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
     const agent = getAgent(req.params.id);
     if (!agent) {
       return res.status(404).json({ error: 'Agent not found' });
     }
     if (!checkAgentAccess(req, res, agent)) return;
+
+    // Kill the agent's tmux session before dropping the row, so deleting an
+    // agent never orphans a live session on its host (which then lingers as a
+    // stray, mis-attributed session). Best-effort: an unreachable host or a
+    // since-gone session must not block deletion of the DB row.
+    if (agent.screen_session && isValidSessionName(agent.screen_session)) {
+      const host = agent.host_id ? getHost(agent.host_id) : null;
+      if (!(agent.host_id && !host)) {
+        try {
+          await killSession(agent.screen_session, host);
+        } catch {
+          // host unreachable / tmux gone — proceed with row deletion anyway
+        }
+      }
+    }
+    unregisterAgent(agent.id);
     deleteAgent(req.params.id);
     res.json({ success: true });
   } catch (err) {
