@@ -21,6 +21,8 @@ import { getTmuxSessions, startProviderSession, createSession, killSession, sess
 import { registerAgent, unregisterAgent } from '../services/agentMonitor.js';
 import { getProvider, getProviderList } from '../services/providers.js';
 import { isRemote, isValidSessionName, execOnHost, shellQuote } from '../services/hosts.js';
+import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js';
+import { appendAgentLane } from '../services/scaffold.js';
 import { resolveWorkingDir, ensureDirOnHost } from '../services/projectPaths.js';
 import { pinnedTranscriptExists } from '../services/transcript.js';
 import { resolveTranscriptFile } from '../services/transcript.js';
@@ -110,7 +112,7 @@ router.get('/:id', (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { projectId, name, screenSession, status, config, hostId, workingDir } = req.body;
-    if (!name) {
+    if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Agent name is required' });
     }
     if (screenSession && !isValidSessionName(screenSession)) {
@@ -123,6 +125,16 @@ router.post('/', async (req, res) => {
         return res.status(400).json({ error: 'Unknown host' });
       }
     }
+
+    // Derive a VALID, UNIQUE session name. An explicit screenSession is honored as
+    // the base; otherwise we slugify the agent name. uniqueSessionName auto-suffixes
+    // (-2, -3, ...) so a second agent that would collide can't silently attach to
+    // (hijack) an existing agent's tmux session.
+    const sessionBase = (screenSession && screenSession.trim()) || sanitizeSessionName(name);
+    if (!sessionBase) {
+      return res.status(400).json({ error: 'Could not derive a session name from the agent name; set one explicitly.' });
+    }
+    const session = uniqueSessionName(host ? host.id : null, sessionBase);
     if (projectId && req.user && req.user.role !== 'admin' && !userHasProjectAccess(req.user.id, projectId)) {
       return res.status(403).json({ error: 'Access denied to this project' });
     }
@@ -146,7 +158,17 @@ router.post('/', async (req, res) => {
       setProjectHostPath(projectId, host.id, dir);
     }
 
-    const agent = createAgent(projectId, name, screenSession, status, config, host ? host.id : null);
+    const agent = createAgent(projectId, name, session, status, config, host ? host.id : null);
+
+    // Record this agent's ownership lane in the project's canonical AGENTS.md
+    // (local project path). Best-effort — never blocks agent creation.
+    if (projectId) {
+      const project = getProject(projectId);
+      if (project && project.path) {
+        appendAgentLane(project.path, name.trim(), (config && config.provider) || 'claude');
+      }
+    }
+
     res.status(201).json(agent);
   } catch (err) {
     res.status(500).json({ error: err.message });

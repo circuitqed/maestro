@@ -23,10 +23,13 @@ import {
   getProjectHostPaths,
   setProjectHostPath,
   deleteProjectHostPath,
+  createAgent,
   PROJECT_COLORS,
 } from '../services/db.js';
 import { isRemote } from '../services/hosts.js';
 import { ensureDirOnHost } from '../services/projectPaths.js';
+import { scaffoldProject, appendAgentLane } from '../services/scaffold.js';
+import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js';
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -177,13 +180,22 @@ router.get('/:id/agents', (req, res) => {
   }
 });
 
-// Create project
-router.post('/', (req, res) => {
+// Create project. Beyond the DB row we (best-effort) scaffold the directory with
+// the Maestro conventions — git init + AGENTS.md (canonical) + CLAUDE.md pointer +
+// docs/ + .gitignore — and seed a default Claude agent so it's ready to run.
+router.post('/', async (req, res) => {
   try {
-    const { name, description, color } = req.body;
-    const path = req.body.path || `/home/projects/${name.toLowerCase().replace(/[^a-z0-9-]/g, '-')}`;
-    if (!name) {
+    const { name, description, color, scaffold = true, seedAgent = true } = req.body;
+    if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Project name is required' });
+    }
+    const projectName = name.trim();
+    const path =
+      req.body.path && req.body.path.trim()
+        ? req.body.path.trim()
+        : `/home/projects/${projectName.toLowerCase().replace(/[^a-z0-9-]/g, '-')}`;
+    if (!isValidProjectPath(path)) {
+      return res.status(400).json({ error: 'Project path must be a non-empty absolute path' });
     }
     try {
       fs.mkdirSync(path, { recursive: true });
@@ -193,8 +205,31 @@ router.post('/', (req, res) => {
       });
     }
     const userId = req.user ? req.user.id : null;
-    const project = createProject(name, path, description, color, userId);
-    res.status(201).json(project);
+    const project = createProject(projectName, path, description, color, userId);
+
+    // Scaffold the directory. Best-effort: a scaffold hiccup must not fail creation.
+    let scaffoldResult = null;
+    if (scaffold) {
+      try {
+        scaffoldResult = await scaffoldProject(null, path, { name: projectName, description });
+      } catch (e) {
+        scaffoldResult = { error: e.message };
+      }
+    }
+
+    // Seed a default Claude agent (stopped) so the project appears ready to start.
+    let seededAgent = null;
+    if (seedAgent) {
+      try {
+        const session = uniqueSessionName(null, sanitizeSessionName(projectName) || 'agent');
+        seededAgent = createAgent(project.id, projectName, session, 'stopped', { provider: 'claude' }, null);
+        appendAgentLane(path, projectName, 'claude');
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    res.status(201).json({ ...project, scaffold: scaffoldResult, seededAgent });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

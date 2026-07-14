@@ -335,6 +335,14 @@ export function getAgentsByProject(projectId) {
   `).all(projectId).map(parseAgentConfig);
 }
 
+// Is a tmux session name already used by an agent on this host? (host_id null =
+// local; SQLite `IS` is null-safe equality so it matches both null and a number.)
+export function isSessionNameTaken(hostId, screenSession) {
+  return !!db
+    .prepare('SELECT 1 FROM agents WHERE screen_session = ? AND host_id IS ? LIMIT 1')
+    .get(screenSession, hostId ?? null);
+}
+
 export function createAgent(projectId, name, screenSession, status = 'stopped', config = {}, hostId = null) {
   const stmt = db.prepare('INSERT INTO agents (project_id, name, screen_session, status, config, host_id) VALUES (?, ?, ?, ?, ?, ?)');
   const result = stmt.run(projectId, name, screenSession, status, JSON.stringify(config), hostId);
