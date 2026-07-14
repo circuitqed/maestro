@@ -635,9 +635,12 @@ function ChatView({ agentId, session }) {
     };
   }, [connect, markReady]);
 
-  // When the view is revealed, make sure we're pinned at the bottom.
-  useEffect(() => {
-    if (ready) requestAnimationFrame(() => scrollToBottom());
+  // Reveal already pinned to the newest message: scroll to the bottom BEFORE the
+  // browser paints the revealed content (useLayoutEffect, not useEffect+rAF), so
+  // the transcript never visibly scrolls past on open. Post-reveal growth from
+  // async markdown/KaTeX/image reflow is caught by the ResizeObserver below.
+  useLayoutEffect(() => {
+    if (ready && atBottomRef.current) scrollToBottom();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
@@ -690,11 +693,13 @@ function ChatView({ agentId, session }) {
   const activityLabel = useMemo(() => deriveActivity(records), [records]);
   const isWorking = isBusy || pendingSent;
 
-  useEffect(() => {
+  // Pin to the bottom as new records/indicators render — pre-paint, so a growing
+  // transcript stays glued to the newest line with no visible scroll motion.
+  useLayoutEffect(() => {
     if (atBottomRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [records, isWorking, activityLabel]);
+  }, [records, isWorking, activityLabel, activePrompt]);
 
   // Clear the transient "just sent" flag once the agent is observably working
   // or has produced a reply (covers fast turns the pane monitor may not catch).
