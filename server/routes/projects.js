@@ -26,7 +26,7 @@ import {
   createAgent,
   PROJECT_COLORS,
 } from '../services/db.js';
-import { isRemote } from '../services/hosts.js';
+import { isRemote, execOnHost, shellQuote } from '../services/hosts.js';
 import { ensureDirOnHost } from '../services/projectPaths.js';
 import { scaffoldProject, appendAgentLane } from '../services/scaffold.js';
 import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js';
@@ -61,62 +61,73 @@ function buildProjectPaths(project) {
 // Apply auth middleware to all routes
 router.use(requireAuth);
 
+function parseGithubUrl(remoteUrl) {
+  if (!remoteUrl) return null;
+  const ssh = remoteUrl.match(/git@github\.com:(.+?)(?:\.git)?$/);
+  if (ssh) return `https://github.com/${ssh[1].replace(/\.git$/, '')}`;
+  const https = remoteUrl.match(/https:\/\/github\.com\/(.+?)(?:\.git)?$/);
+  if (https) return `https://github.com/${https[1].replace(/\.git$/, '')}`;
+  return null;
+}
+
 /**
- * Get git info for a project path
+ * Probe git at a single (host, path) in ONE round-trip: branch, origin, dirty.
+ * host null => local (container fs); remote => over SSH. Returns null when the
+ * path isn't a git repo or the host is unreachable.
  */
-async function getGitInfo(projectPath) {
+async function gitProbe(host, projectPath) {
   if (!projectPath) return null;
-
+  const script =
+    `cd ${shellQuote(projectPath)} 2>/dev/null && ` +
+    `git rev-parse --is-inside-work-tree >/dev/null 2>&1 && ` +
+    `printf 'BRANCH=%s\\nORIGIN=%s\\nDIRTY=%s\\n' ` +
+    `"$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" ` +
+    `"$(git remote get-url origin 2>/dev/null)" ` +
+    `"$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')" ` +
+    `|| echo NOTREPO`;
+  let stdout;
   try {
-    // Check if it's a git repo
-    await execAsync(`git -C "${projectPath}" rev-parse --git-dir 2>/dev/null`);
-
-    // Get current branch
-    const { stdout: branch } = await execAsync(
-      `git -C "${projectPath}" rev-parse --abbrev-ref HEAD 2>/dev/null`
-    );
-
-    // Get remote origin URL
-    let remoteUrl = null;
-    let githubUrl = null;
-    try {
-      const { stdout: remote } = await execAsync(
-        `git -C "${projectPath}" remote get-url origin 2>/dev/null`
-      );
-      remoteUrl = remote.trim();
-
-      // Parse GitHub URL from remote
-      if (remoteUrl) {
-        // Handle SSH format: git@github.com:user/repo.git
-        const sshMatch = remoteUrl.match(/git@github\.com:(.+?)(?:\.git)?$/);
-        if (sshMatch) {
-          githubUrl = `https://github.com/${sshMatch[1].replace(/\.git$/, '')}`;
-        }
-        // Handle HTTPS format: https://github.com/user/repo.git
-        const httpsMatch = remoteUrl.match(/https:\/\/github\.com\/(.+?)(?:\.git)?$/);
-        if (httpsMatch) {
-          githubUrl = `https://github.com/${httpsMatch[1].replace(/\.git$/, '')}`;
-        }
-      }
-    } catch {
-      // No remote configured
-    }
-
-    // Check for uncommitted changes
-    const { stdout: status } = await execAsync(
-      `git -C "${projectPath}" status --porcelain 2>/dev/null`
-    );
-    const hasChanges = status.trim().length > 0;
-
-    return {
-      branch: branch.trim(),
-      hasChanges,
-      remoteUrl,
-      githubUrl,
-    };
+    ({ stdout } = isRemote(host) ? await execOnHost(host, script) : await execAsync(script));
   } catch {
     return null;
   }
+  if (!stdout || stdout.includes('NOTREPO')) return null;
+  const get = (k) => {
+    const m = stdout.match(new RegExp(`^${k}=(.*)$`, 'm'));
+    return m ? m[1].trim() : '';
+  };
+  const branch = get('BRANCH');
+  if (!branch) return null;
+  const remoteUrl = get('ORIGIN') || null;
+  return {
+    branch,
+    hasChanges: parseInt(get('DIRTY'), 10) > 0,
+    remoteUrl,
+    githubUrl: parseGithubUrl(remoteUrl),
+  };
+}
+
+/**
+ * Host-aware git info for a project. Tries the local project path first (fast),
+ * then falls back to the project's per-host paths — so a project whose repo lives
+ * on the mac mini or garage-wsl still reports its branch/GitHub link/dirty state.
+ */
+async function getGitInfo(project) {
+  if (!project) return null;
+  const local = await gitProbe(null, project.path);
+  if (local) return local;
+  try {
+    for (const hp of getProjectHostPaths(project.id)) {
+      const host = getHost(hp.host_id);
+      if (host) {
+        const info = await gitProbe(host, hp.path);
+        if (info) return info;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
 }
 
 // List projects (scoped to user's contributions, admins see all)
@@ -135,7 +146,7 @@ router.get('/', async (req, res) => {
 
     const projectsWithGit = await Promise.all(
       projects.map(async (project) => {
-        const gitInfo = await getGitInfo(project.path);
+        const gitInfo = await getGitInfo(project);
         const contributors = getProjectContributors(project.id);
         return { ...project, git: gitInfo, contributors };
       })
@@ -162,7 +173,7 @@ router.get('/:id', async (req, res) => {
     if (req.user && req.user.role !== 'admin' && !userHasProjectAccess(req.user.id, project.id)) {
       return res.status(403).json({ error: 'Access denied' });
     }
-    const gitInfo = await getGitInfo(project.path);
+    const gitInfo = await getGitInfo(project);
     const contributors = getProjectContributors(project.id);
     res.json({ ...project, git: gitInfo, contributors });
   } catch (err) {
