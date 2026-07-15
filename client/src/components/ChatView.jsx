@@ -40,6 +40,14 @@ function summarizeToolInput(name, input) {
   if (n === 'edit' || n === 'write' || n === 'multiedit' || n === 'read' || n === 'notebookedit') {
     return input.file_path || input.notebook_path || '';
   }
+  if (n === 'agent' || n === 'task') {
+    const head = [input.subagent_type ? `→ ${input.subagent_type}` : null, input.description].filter(Boolean).join(': ');
+    return head || (typeof input.prompt === 'string' ? input.prompt.slice(0, 140) : '');
+  }
+  if (n === 'taskcreate') return input.subject || '';
+  if (n === 'taskupdate') return `${input.taskId ? `#${input.taskId} ` : ''}${input.status || ''}`.trim();
+  if (n === 'webfetch') return input.url || '';
+  if (n === 'websearch') return input.query || '';
   try {
     const s = JSON.stringify(input);
     return s.length > 160 ? `${s.slice(0, 160)}…` : s;
@@ -196,6 +204,103 @@ function ThinkingBlock({ text }) {
   );
 }
 
+// Claude wraps tool errors in <tool_use_error>…</tool_use_error>; strip it for display.
+function stripToolError(t) {
+  return typeof t === 'string' ? t.replace(/<\/?tool_use_error>/g, '').trim() : t;
+}
+
+// Flatten diff input to lines: Claude structuredPatch hunks [{lines:[...]}] or a
+// Codex unified_diff string. Lines keep their +/-/space/@@ prefixes.
+function toDiffLines(input) {
+  if (Array.isArray(input)) {
+    const out = [];
+    input.forEach((h, i) => {
+      if (i > 0) out.push('@@');
+      (h.lines || []).forEach((l) => out.push(l));
+    });
+    return out;
+  }
+  return typeof input === 'string' ? input.split('\n') : [];
+}
+
+function DiffView({ hunks, text }) {
+  const lines = toDiffLines(hunks != null ? hunks : text);
+  const big = lines.length > 40;
+  const [open, setOpen] = useState(!big);
+  if (!lines.length) return null;
+  const plus = lines.filter((l) => /^\+/.test(l) && !/^\+\+\+/.test(l)).length;
+  const minus = lines.filter((l) => /^-/.test(l) && !/^---/.test(l)).length;
+  const body = open ? lines : lines.slice(0, 12);
+  return (
+    <div className="rounded border border-gray-700 bg-gray-950/70 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center gap-2 px-2 py-1 text-[11px] border-b border-gray-700/60 hover:bg-gray-800/40"
+      >
+        <span className="text-green-400">+{plus}</span>
+        <span className="text-red-400">−{minus}</span>
+        {big && <span className="ml-auto text-gray-500">{open ? 'collapse' : `show all ${lines.length} lines`}</span>}
+      </button>
+      <div className="max-h-96 overflow-auto">
+        {body.map((l, i) => {
+          const cls = /^\+\+\+|^---|^@@/.test(l)
+            ? 'text-gray-500'
+            : l.startsWith('+') ? 'bg-green-900/25 text-green-300'
+            : l.startsWith('-') ? 'bg-red-900/25 text-red-300'
+            : 'text-gray-400';
+          return (
+            <div key={i} className={`px-2 text-[11px] font-mono whitespace-pre-wrap break-all leading-snug ${cls}`}>
+              {l || ' '}
+            </div>
+          );
+        })}
+        {!open && big && <div className="px-2 py-0.5 text-[10px] text-gray-500">… {lines.length - 12} more lines</div>}
+      </div>
+    </div>
+  );
+}
+
+// A block of tool output, collapsed to a preview when large.
+function CollapsibleText({ text, isError }) {
+  const lines = String(text).split('\n');
+  const big = lines.length > 16 || text.length > 2000;
+  const [open, setOpen] = useState(!big);
+  return (
+    <div>
+      <pre className={`text-xs font-mono whitespace-pre-wrap break-words ${isError ? 'text-red-300' : 'text-gray-300'}`}>
+        {open ? text : lines.slice(0, 12).join('\n')}
+      </pre>
+      {big && (
+        <button type="button" onClick={() => setOpen((o) => !o)} className="mt-1 text-[11px] text-gray-500 hover:text-gray-300">
+          {open ? 'show less' : `show ${lines.length - 12} more lines`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// A todo/plan checklist (Codex update_plan; reusable for Claude TodoWrite).
+function ChecklistCard({ title, items }) {
+  const mark = { completed: '✓', in_progress: '◐', pending: '○', cancelled: '✕' };
+  const col = { completed: 'text-green-400', in_progress: 'text-blue-300', pending: 'text-gray-500', cancelled: 'text-red-400' };
+  return (
+    <div className="flex justify-start">
+      <div className="min-w-0 max-w-[92%] w-full my-1 rounded border border-gray-700 bg-gray-800/60 px-2.5 py-1.5">
+        <div className="text-xs font-medium text-blue-300 mb-1">{title}</div>
+        <div className="space-y-0.5">
+          {items.map((it, i) => (
+            <div key={i} className="text-xs flex items-start gap-1.5">
+              <span className={col[it.status] || 'text-gray-500'}>{mark[it.status] || '○'}</span>
+              <span className={it.status === 'completed' ? 'text-gray-500 line-through' : 'text-gray-200'}>{it.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ToolUseCard({ block }) {
   const summary = summarizeToolInput(block.name, block.input);
   return (
@@ -208,42 +313,45 @@ function ToolUseCard({ block }) {
         <span className="font-medium text-blue-300">{block.name || 'tool'}</span>
       </div>
       {summary && (
-        <div className="mt-0.5 text-xs text-gray-400 font-mono truncate" title={summary}>
-          {summary}
-        </div>
+        summary.includes('\n') ? (
+          <pre className="mt-0.5 text-xs text-gray-400 font-mono whitespace-pre-wrap break-words max-h-32 overflow-auto">{summary}</pre>
+        ) : (
+          <div className="mt-0.5 text-xs text-gray-400 font-mono truncate" title={summary}>{summary}</div>
+        )
       )}
     </div>
   );
 }
 
-function ToolResultCard({ result, onImage }) {
+function ToolResultCard({ result, onImage, isError, diff }) {
   const content = result.content;
   const texts = [];
   const images = [];
   if (typeof content === 'string') {
-    if (content) texts.push(content);
+    if (content) texts.push(stripToolError(content));
   } else if (Array.isArray(content)) {
     content.forEach((b) => {
       if (!b) return;
-      if (b.type === 'text') texts.push(b.text);
+      if (b.type === 'text') texts.push(stripToolError(b.text));
       else if (b.type === 'image' && b.source?.type === 'base64') {
         images.push(`data:${b.source.media_type};base64,${b.source.data}`);
       }
     });
   }
-  if (texts.length === 0 && images.length === 0) return null;
+  // When there's a diff (Edit/Write), the text is a boilerplate "file updated" blurb
+  // — show the diff instead. Otherwise show the (collapsible) text output.
+  const showTexts = diff ? [] : texts.filter((t) => t && t.trim());
+  if (showTexts.length === 0 && images.length === 0 && !diff) return null;
   return (
-    <div className="rounded border border-gray-700 bg-gray-900/60">
-      <div className="px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 border-b border-gray-700/60">
-        result
+    <div className={`rounded border ${isError ? 'border-red-700/70' : 'border-gray-700'} bg-gray-900/60`}>
+      <div className={`px-2 py-0.5 text-[10px] uppercase tracking-wide border-b ${isError ? 'text-red-400 border-red-700/50' : 'text-gray-500 border-gray-700/60'}`}>
+        {isError ? 'error' : 'result'}
       </div>
-      {/* Text output: keep the compact scroll box */}
-      {texts.length > 0 && (
-        <div className="p-2 max-h-64 overflow-auto">
-          {texts.map((t, i) => (
-            <pre key={i} className="text-xs font-mono text-gray-300 whitespace-pre-wrap break-words">
-              {t}
-            </pre>
+      {diff && <div className="p-2"><DiffView hunks={diff} /></div>}
+      {showTexts.length > 0 && (
+        <div className="p-2 space-y-1">
+          {showTexts.map((t, i) => (
+            <CollapsibleText key={i} text={t} isError={isError} />
           ))}
         </div>
       )}
@@ -498,22 +606,50 @@ function renderAssistant(rec, ctx) {
   );
 }
 
+// Most "user" records in a Claude transcript aren't things the human typed: they're
+// slash-command invocations and injected <system-reminder>/<local-command-stdout>
+// blocks. Turn a command into a chip, strip the injected wrappers, and only show a
+// real "you" bubble when genuine prose remains.
+function cleanUserText(text) {
+  if (typeof text !== 'string') return { kind: 'text', text: '' };
+  const cmd = text.match(/<command-name>\s*\/?([^<]+?)\s*<\/command-name>/);
+  if (cmd) {
+    const args = (text.match(/<command-args>([\s\S]*?)<\/command-args>/) || [])[1];
+    return { kind: 'command', name: cmd[1].trim(), args: (args || '').trim() };
+  }
+  const t = text
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+    .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, '')
+    .replace(/<command-message>[\s\S]*?<\/command-message>/g, '')
+    .trim();
+  return { kind: 'text', text: t };
+}
+
 function renderUserPrompt(rec) {
   const content = rec.message?.content;
-  const text =
+  const raw =
     typeof content === 'string'
       ? content
       : Array.isArray(content)
-        ? content
-            .filter((b) => b && b.type === 'text')
-            .map((b) => b.text)
-            .join('\n')
+        ? content.filter((b) => b && b.type === 'text').map((b) => b.text).join('\n')
         : '';
+  const c = cleanUserText(raw);
+  if (c.kind === 'command') {
+    return (
+      <div className="flex justify-end">
+        <div className="text-[11px] text-gray-400 bg-gray-800/60 border border-gray-700 rounded-full px-2.5 py-0.5">
+          ran <span className="text-blue-300 font-mono">/{c.name}</span>
+          {c.args ? <span className="text-gray-500 font-mono"> {c.args}</span> : null}
+        </div>
+      </div>
+    );
+  }
+  if (!c.text) return null; // pure system-reminder / injected block -> render nothing
   return (
     <div className="flex justify-end">
       <div className="min-w-0 max-w-[85%] rounded-lg bg-blue-600/20 border border-blue-500/30 px-3 py-2">
         <div className="text-[10px] uppercase tracking-wide text-blue-300/70 mb-0.5">you</div>
-        <Markdown>{text}</Markdown>
+        <Markdown>{c.text}</Markdown>
       </div>
     </div>
   );
@@ -524,11 +660,21 @@ function renderToolResults(rec, ctx) {
   if (!Array.isArray(blocks)) return null;
   const results = blocks.filter((b) => b && b.type === 'tool_result');
   if (results.length === 0) return null;
+  // Edit/Write/MultiEdit results carry a ready-made diff in toolUseResult.structuredPatch.
+  const diff = rec.toolUseResult && Array.isArray(rec.toolUseResult.structuredPatch)
+    ? rec.toolUseResult.structuredPatch
+    : null;
   return (
     <div className="flex justify-start">
       <div className="min-w-0 max-w-[92%] w-full space-y-1">
         {results.map((r, i) => (
-          <ToolResultCard key={`${rec.uuid}-${i}`} result={r} onImage={ctx && ctx.onImage} />
+          <ToolResultCard
+            key={`${rec.uuid}-${i}`}
+            result={r}
+            onImage={ctx && ctx.onImage}
+            isError={!!r.is_error}
+            diff={i === 0 ? diff : null}
+          />
         ))}
       </div>
     </div>
@@ -570,19 +716,52 @@ function codexKey(rec) {
   return `${rec.timestamp || ''}|${rec.type || ''}:${p.type || ''}|${p.call_id || p.id || ''}|${String(c).slice(0, 60)}`;
 }
 
-function codexToolSummary(name, input) {
-  if (typeof input !== 'string') {
-    try { return JSON.stringify(input); } catch { return ''; }
-  }
-  if (name === 'exec') {
-    const m = input.match(/"cmd"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-    if (m) { try { return JSON.parse(`"${m[1]}"`); } catch { return m[1]; } }
-  }
-  return input.trim();
+// Codex reports every custom_tool_call as name 'exec'; the real tool is encoded in
+// the JS input (tools.apply_patch / update_plan / web__run / view_image / exec_command).
+function codexToolName(input) {
+  const s = typeof input === 'string' ? input : '';
+  const m = s.match(/tools\.(apply_patch|update_plan|web__run|view_image|exec_command|build_meta)\b/);
+  return m ? m[1] : 'exec_command';
 }
 
-function CodexToolCard({ name, input }) {
-  const summary = codexToolSummary(name, input);
+function codexToolSummary(tool, input) {
+  const s = typeof input === 'string' ? input : (() => { try { return JSON.stringify(input); } catch { return ''; } })();
+  const unq = (x) => { try { return JSON.parse(`"${x}"`); } catch { return x; } };
+  if (tool === 'exec_command') {
+    const m = s.match(/"cmd"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (m) return unq(m[1]);
+    const arr = [...s.matchAll(/\[\s*"[^"]*"\s*,\s*"((?:[^"\\]|\\.)*)"\s*\]/g)].map((x) => unq(x[1]));
+    if (arr.length) return arr.join('\n');
+  }
+  if (tool === 'web__run') {
+    const qs = [...s.matchAll(/"(?:q|query|prompt|search_query)"\s*:\s*"((?:[^"\\]|\\.)*)"/g)].map((x) => unq(x[1]));
+    if (qs.length) return qs.join('\n');
+  }
+  if (tool === 'view_image') {
+    const paths = [...s.matchAll(/"((?:\/|\.\/)[^"]+?\.(?:png|jpe?g|gif|webp|pdf|svg))"/gi)].map((x) => x[1]);
+    if (paths.length) return paths.join('\n');
+  }
+  return s.replace(/\s+/g, ' ').trim().slice(0, 400);
+}
+
+// Parse a Codex tools.update_plan input into checklist items.
+function codexPlanItems(input) {
+  const s = typeof input === 'string' ? input : '';
+  return [...s.matchAll(/step\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*status\s*:\s*"(\w+)"/g)].map((m) => ({
+    label: (() => { try { return JSON.parse(`"${m[1]}"`); } catch { return m[1]; } })(),
+    status: m[2],
+  }));
+}
+
+function CodexToolCard({ input }) {
+  const tool = codexToolName(input);
+  if (tool === 'apply_patch') return null; // the patch_apply_end card renders the result
+  if (tool === 'update_plan') {
+    const items = codexPlanItems(input);
+    if (items.length) return <ChecklistCard title="Plan" items={items} />;
+  }
+  const label = tool === 'exec_command' ? 'exec' : tool.replace(/__/g, ' ');
+  const summary = codexToolSummary(tool, input);
   return (
     <div className="flex justify-start">
       <div className="min-w-0 max-w-[92%] w-full my-1 rounded border border-gray-700 bg-gray-800/60 px-2.5 py-1.5">
@@ -591,7 +770,7 @@ function CodexToolCard({ name, input }) {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                   d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z" />
           </svg>
-          <span className="font-medium text-blue-300">{name || 'tool'}</span>
+          <span className="font-medium text-blue-300">{label}</span>
         </div>
         {summary && (
           <pre className="mt-1 text-xs text-gray-300 font-mono whitespace-pre-wrap break-words max-h-40 overflow-auto">
@@ -610,7 +789,7 @@ function CodexPatchCard({ payload }) {
   const changes = payload && payload.changes && typeof payload.changes === 'object' ? payload.changes : null;
   let files = [];
   if (changes) {
-    files = Object.entries(changes).map(([p, c]) => ({ path: p, type: (c && c.type) || 'update' }));
+    files = Object.entries(changes).map(([p, c]) => ({ path: p, type: (c && c.type) || 'update', diff: c && c.unified_diff }));
   } else if (typeof payload.stdout === 'string') {
     files = payload.stdout.split('\n')
       .map((l) => l.match(/^\s*([AMD])\s+(.+\S)\s*$/))
@@ -633,19 +812,22 @@ function CodexPatchCard({ payload }) {
           </span>
         </div>
         {files.length > 0 && (
-          <div className="mt-1 space-y-0.5">
+          <div className="mt-1 space-y-1">
             {files.map((f, i) => (
-              <div key={i} className="text-xs font-mono truncate">
-                <span className={col[f.type] || 'text-gray-400'}>{mark[f.type] || '~'}</span>{' '}
-                {agentId ? (
-                  <a
-                    href={`/api/agents/${encodeURIComponent(agentId)}/file?path=${encodeURIComponent(f.path)}`}
-                    target="_blank" rel="noopener noreferrer" title={`Open ${f.path}`}
-                    className="text-blue-400 hover:text-blue-300 underline"
-                  >
-                    {f.path}
-                  </a>
-                ) : <span className="text-gray-300">{f.path}</span>}
+              <div key={i}>
+                <div className="text-xs font-mono truncate">
+                  <span className={col[f.type] || 'text-gray-400'}>{mark[f.type] || '~'}</span>{' '}
+                  {agentId ? (
+                    <a
+                      href={`/api/agents/${encodeURIComponent(agentId)}/file?path=${encodeURIComponent(f.path)}`}
+                      target="_blank" rel="noopener noreferrer" title={`Open ${f.path}`}
+                      className="text-blue-400 hover:text-blue-300 underline"
+                    >
+                      {f.path}
+                    </a>
+                  ) : <span className="text-gray-300">{f.path}</span>}
+                </div>
+                {f.diff && <div className="mt-0.5"><DiffView text={f.diff} /></div>}
               </div>
             ))}
           </div>
@@ -678,7 +860,8 @@ function renderCodexRecords(records, ctx) {
         </div>
       );
     } else if (rec.type === 'response_item' && p.type === 'custom_tool_call') {
-      el = <CodexToolCard name={p.name} input={p.input} />;
+      // apply_patch is rendered by its patch_apply_end card; skip the raw-JS tool call.
+      if (codexToolName(p.input) !== 'apply_patch') el = <CodexToolCard input={p.input} />;
     } else if (rec.type === 'response_item' && p.type === 'custom_tool_call_output') {
       const text = codexOutputText(p.output);
       if (text.trim()) el = <ToolResultCard result={{ content: text }} onImage={ctx && ctx.onImage} />;
