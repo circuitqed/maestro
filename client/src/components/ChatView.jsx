@@ -594,38 +594,40 @@ function renderAssistant(rec, ctx) {
       : Array.isArray(content)
         ? content
         : [];
+  const mo = ctx && ctx.messagesOnly; // hide thinking + tool_use, show only text
+  const children = [];
+  blocks.forEach((block, i) => {
+    if (!block) return;
+    const key = `${rec.uuid}-${i}`;
+    if (block.type === 'text') {
+      if (block.text && block.text.trim()) children.push(<Markdown key={key}>{block.text}</Markdown>);
+      return;
+    }
+    if (mo) return;
+    if (block.type === 'thinking') {
+      children.push(<ThinkingBlock key={key} text={block.thinking} />);
+    } else if (block.type === 'tool_use') {
+      if (block.name === 'AskUserQuestion') {
+        const resultText = ctx && ctx.results ? ctx.results[block.id] : undefined;
+        const answered = resultText !== undefined;
+        children.push(
+          <QuestionCard
+            key={key}
+            block={block}
+            answered={answered}
+            chosen={answered ? parseAnswers(resultText) : null}
+            onAnswer={ctx && ctx.onAnswer}
+          />
+        );
+      } else {
+        children.push(<ToolUseCard key={key} block={block} />);
+      }
+    }
+  });
+  if (children.length === 0) return null;
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[92%] space-y-1">
-        {blocks.map((block, i) => {
-          const key = `${rec.uuid}-${i}`;
-          if (!block) return null;
-          if (block.type === 'text') {
-            if (!block.text || !block.text.trim()) return null;
-            return <Markdown key={key}>{block.text}</Markdown>;
-          }
-          if (block.type === 'thinking') {
-            return <ThinkingBlock key={key} text={block.thinking} />;
-          }
-          if (block.type === 'tool_use') {
-            if (block.name === 'AskUserQuestion') {
-              const resultText = ctx && ctx.results ? ctx.results[block.id] : undefined;
-              const answered = resultText !== undefined;
-              return (
-                <QuestionCard
-                  key={key}
-                  block={block}
-                  answered={answered}
-                  chosen={answered ? parseAnswers(resultText) : null}
-                  onAnswer={ctx && ctx.onAnswer}
-                />
-              );
-            }
-            return <ToolUseCard key={key} block={block} />;
-          }
-          return null;
-        })}
-      </div>
+      <div className="min-w-0 max-w-[92%] space-y-1">{children}</div>
     </div>
   );
 }
@@ -711,7 +713,7 @@ function renderRecord(rec, ctx) {
     if (rec.isMeta) return null;
     const content = rec.message?.content;
     const hasToolResult = Array.isArray(content) && content.some((b) => b && b.type === 'tool_result');
-    if (hasToolResult) return renderToolResults(rec, ctx);
+    if (hasToolResult) return ctx && ctx.messagesOnly ? null : renderToolResults(rec, ctx);
     return renderUserPrompt(rec);
   }
   return null;
@@ -853,6 +855,7 @@ function CodexPatchCard({ payload }) {
 }
 
 function renderCodexRecords(records, ctx) {
+  const mo = ctx && ctx.messagesOnly; // hide tool calls / results / patch cards
   const out = [];
   records.forEach((rec, i) => {
     if (!rec || typeof rec !== 'object') return;
@@ -874,13 +877,13 @@ function renderCodexRecords(records, ctx) {
           <div className="min-w-0 max-w-[92%] space-y-1"><Markdown>{p.message}</Markdown></div>
         </div>
       );
-    } else if (rec.type === 'response_item' && p.type === 'custom_tool_call') {
+    } else if (!mo && rec.type === 'response_item' && p.type === 'custom_tool_call') {
       // apply_patch is rendered by its patch_apply_end card; skip the raw-JS tool call.
       if (codexToolName(p.input) !== 'apply_patch') el = <CodexToolCard input={p.input} />;
-    } else if (rec.type === 'response_item' && p.type === 'custom_tool_call_output') {
+    } else if (!mo && rec.type === 'response_item' && p.type === 'custom_tool_call_output') {
       const text = codexOutputText(p.output);
       if (text.trim()) el = <ToolResultCard result={{ content: text }} onImage={ctx && ctx.onImage} />;
-    } else if (rec.type === 'event_msg' && p.type === 'patch_apply_end') {
+    } else if (!mo && rec.type === 'event_msg' && p.type === 'patch_apply_end') {
       el = <CodexPatchCard payload={p} />;
     }
     if (el) out.push(<div key={key}>{el}</div>);
@@ -966,6 +969,10 @@ function ChatView({ agentId, session }) {
   const [ready, setReady] = useState(false);
   const [lightbox, setLightbox] = useState(null); // full-size image src, or null
   const [fileViewerPath, setFileViewerPath] = useState(null); // in-app file viewer, or null
+  // "Messages only" hides all tool activity (calls, results, diffs, thinking); persisted.
+  const [messagesOnly, setMessagesOnly] = useState(() => {
+    try { return localStorage.getItem('maestro-chat-messages-only') === '1'; } catch { return false; }
+  });
   const [activePrompt, setActivePrompt] = useState(null); // live select prompt, or null
   // "Load earlier" paging: chat opens on the last CHAT_TAIL_CAP records; older
   // history is fetched on demand. atStart => the whole file is loaded (hide button).
@@ -1210,7 +1217,7 @@ function ChatView({ agentId, session }) {
     if (atBottomRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [records, isWorking, activityLabel, activePrompt, atStart]);
+  }, [records, isWorking, activityLabel, activePrompt, atStart, messagesOnly]);
 
   // Clear the transient "just sent" flag once the agent is observably working
   // or has produced a reply (covers fast turns the pane monitor may not catch).
@@ -1288,7 +1295,7 @@ function ChatView({ agentId, session }) {
 
   const renderedRecords = useMemo(() => {
     if (provider === 'codex') {
-      return renderCodexRecords(records, { onImage: setLightbox });
+      return renderCodexRecords(records, { onImage: setLightbox, messagesOnly });
     }
     // Map each answered tool_use_id -> its result text (used to mark AskUserQuestion
     // cards answered and highlight the chosen option).
@@ -1304,7 +1311,7 @@ function ChatView({ agentId, session }) {
         });
       }
     });
-    const ctx = { onImage: setLightbox, onAnswer: onAnswerQuestion, results };
+    const ctx = { onImage: setLightbox, onAnswer: onAnswerQuestion, results, messagesOnly };
     const out = [];
     records.forEach((rec) => {
       const el = renderRecord(rec, ctx);
@@ -1316,11 +1323,34 @@ function ChatView({ agentId, session }) {
       );
     });
     return out;
-  }, [records, onAnswerQuestion, provider]);
+  }, [records, onAnswerQuestion, provider, messagesOnly]);
 
   return (
     <ChatAgentContext.Provider value={chatCtx}>
-    <div className="h-full w-full flex flex-col bg-gray-900">
+    <div className="relative h-full w-full flex flex-col bg-gray-900">
+      {/* Filter toggle: hide all tool activity, show only the conversation */}
+      <button
+        type="button"
+        onClick={() =>
+          setMessagesOnly((v) => {
+            const nv = !v;
+            try { localStorage.setItem('maestro-chat-messages-only', nv ? '1' : '0'); } catch { /* ignore */ }
+            return nv;
+          })
+        }
+        title={messagesOnly ? 'Show tool calls' : 'Hide tool calls — show only messages'}
+        className={`absolute top-2 right-2 z-20 flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] shadow-sm transition-colors ${
+          messagesOnly
+            ? 'border-blue-500/60 bg-blue-600/40 text-blue-100'
+            : 'border-gray-700 bg-gray-800/85 text-gray-400 hover:text-gray-200'
+        }`}
+      >
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+        </svg>
+        Messages only
+      </button>
       {/* Messages */}
       <div
         ref={scrollRef}
