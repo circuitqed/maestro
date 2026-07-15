@@ -196,7 +196,7 @@ function AgentCard({ agent }) {
           {loading ? '...' : isRunning ? 'Stop' : 'Start'}
         </button>
 
-        {agent.screen_session && provider === 'claude' && (
+        {agent.screen_session && (provider === 'claude' || provider === 'codex') && (
           <button
             onClick={handleOpenChat}
             className="px-3 py-1.5 text-sm font-medium bg-gray-700 text-gray-300

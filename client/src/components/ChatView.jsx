@@ -502,11 +502,109 @@ function renderRecord(rec, ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// Codex transcript rendering
+// ---------------------------------------------------------------------------
+// Codex's rollout JSONL differs from Claude's: each line is {timestamp,type,payload}.
+// Render user/assistant text from event_msg (user_message / agent_message) and tool
+// activity from response_item (custom_tool_call / _output). Reasoning is encrypted,
+// and response_item messages duplicate the event_msg text, so both are skipped.
+
+function codexOutputText(output) {
+  if (typeof output === 'string') return output;
+  if (Array.isArray(output)) {
+    return output.map((o) => (o && typeof o.text === 'string' ? o.text : '')).join('');
+  }
+  return '';
+}
+
+// Dedupe key for a Codex record (they carry no uuid; tail replays from the top).
+function codexKey(rec) {
+  const p = (rec && rec.payload) || {};
+  const c = p.message || p.input || (Array.isArray(p.output) ? codexOutputText(p.output) : '') || '';
+  return `${rec.timestamp || ''}|${rec.type || ''}:${p.type || ''}|${p.call_id || p.id || ''}|${String(c).slice(0, 60)}`;
+}
+
+function codexToolSummary(name, input) {
+  if (typeof input !== 'string') {
+    try { return JSON.stringify(input); } catch { return ''; }
+  }
+  if (name === 'exec') {
+    const m = input.match(/"cmd"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (m) { try { return JSON.parse(`"${m[1]}"`); } catch { return m[1]; } }
+  }
+  return input.trim();
+}
+
+function CodexToolCard({ name, input }) {
+  const summary = codexToolSummary(name, input);
+  return (
+    <div className="flex justify-start">
+      <div className="min-w-0 max-w-[92%] w-full my-1 rounded border border-gray-700 bg-gray-800/60 px-2.5 py-1.5">
+        <div className="flex items-center gap-1.5 text-xs">
+          <svg className="w-3.5 h-3.5 text-blue-300 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z" />
+          </svg>
+          <span className="font-medium text-blue-300">{name || 'tool'}</span>
+        </div>
+        {summary && (
+          <pre className="mt-1 text-xs text-gray-300 font-mono whitespace-pre-wrap break-words max-h-40 overflow-auto">
+            {summary}
+          </pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function renderCodexRecords(records, ctx) {
+  const out = [];
+  records.forEach((rec, i) => {
+    if (!rec || typeof rec !== 'object') return;
+    const p = rec.payload || {};
+    const key = `cx-${i}-${p.call_id || p.id || rec.timestamp || i}`;
+    let el = null;
+    if (rec.type === 'event_msg' && p.type === 'user_message' && p.message) {
+      el = (
+        <div className="flex justify-end">
+          <div className="min-w-0 max-w-[85%] rounded-lg bg-blue-600/20 border border-blue-500/30 px-3 py-2">
+            <div className="text-[10px] uppercase tracking-wide text-blue-300/70 mb-0.5">you</div>
+            <Markdown>{p.message}</Markdown>
+          </div>
+        </div>
+      );
+    } else if (rec.type === 'event_msg' && p.type === 'agent_message' && p.message) {
+      el = (
+        <div className="flex justify-start">
+          <div className="min-w-0 max-w-[92%] space-y-1"><Markdown>{p.message}</Markdown></div>
+        </div>
+      );
+    } else if (rec.type === 'response_item' && p.type === 'custom_tool_call') {
+      el = <CodexToolCard name={p.name} input={p.input} />;
+    } else if (rec.type === 'response_item' && p.type === 'custom_tool_call_output') {
+      const text = codexOutputText(p.output);
+      if (text.trim()) el = <ToolResultCard result={{ content: text }} onImage={ctx && ctx.onImage} />;
+    }
+    if (el) out.push(<div key={key}>{el}</div>);
+  });
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // ChatView
 // ---------------------------------------------------------------------------
 
 function ChatView({ agentId, session }) {
-  const { sendAgentInput, answerAgentQuestion, getAgentPane, agentStates } = useApp();
+  const { sendAgentInput, answerAgentQuestion, getAgentPane, agentStates, agents } = useApp();
+
+  // Which provider's transcript format to render (Claude vs Codex). Kept in a ref
+  // too, so the long-lived WebSocket onmessage closure dedupes with the right key.
+  const provider = useMemo(
+    () => (agents || []).find((a) => String(a.id) === String(agentId))?.config?.provider || 'claude',
+    [agents, agentId]
+  );
+  const providerRef = useRef('claude');
+  providerRef.current = provider;
 
   const [records, setRecords] = useState([]);
   const [connected, setConnected] = useState(false);
@@ -577,11 +675,12 @@ function ChatView({ agentId, session }) {
       }
       if (msg.type === 'record' && msg.record && typeof msg.record === 'object') {
         const rec = msg.record;
-        // All renderable message records carry a uuid; use it to dedupe across
-        // reconnects (which replay history from the top). Drop uuid-less noise.
-        if (!rec.uuid) return;
-        if (seenUuidsRef.current.has(rec.uuid)) return;
-        seenUuidsRef.current.add(rec.uuid);
+        // Dedupe across reconnects (which replay history from the top). Claude
+        // records carry a uuid; Codex records don't, so synthesize a stable key.
+        const key = providerRef.current === 'codex' ? codexKey(rec) : rec.uuid;
+        if (!key) return;
+        if (seenUuidsRef.current.has(key)) return;
+        seenUuidsRef.current.add(key);
         setRecords((prev) => [...prev, rec]);
         // Reveal once the burst of history stops arriving (short quiet period).
         if (!readyRef.current) {
@@ -776,6 +875,9 @@ function ChatView({ agentId, session }) {
   }, [agentId, getAgentPane]);
 
   const renderedRecords = useMemo(() => {
+    if (provider === 'codex') {
+      return renderCodexRecords(records, { onImage: setLightbox });
+    }
     // Map each answered tool_use_id -> its result text (used to mark AskUserQuestion
     // cards answered and highlight the chosen option).
     const results = {};
@@ -802,7 +904,7 @@ function ChatView({ agentId, session }) {
       );
     });
     return out;
-  }, [records, onAnswerQuestion]);
+  }, [records, onAnswerQuestion, provider]);
 
   return (
     <div className="h-full w-full flex flex-col bg-gray-900">

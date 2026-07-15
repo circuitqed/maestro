@@ -8,6 +8,7 @@ import {
   remoteWrap,
 } from './hosts.js';
 import { getAgent, getHost, getProject } from './db.js';
+import { resolveWorkingDir } from './projectPaths.js';
 
 // A single transcript line can legitimately be large (base64 images embedded in
 // tool_result records), so the cap is generous. It only exists to bound memory
@@ -70,7 +71,36 @@ export async function pinnedTranscriptExists(host, sessionId) {
   return !!(await findPinnedTranscript(host, sessionId));
 }
 
+/**
+ * Locate a Codex agent's rollout transcript. Codex stores sessions as
+ * ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl, organised by DATE (not
+ * cwd), and the first line (session_meta) records the cwd. So: scan the newest
+ * rollout files and return the first whose session_meta cwd matches the agent's
+ * working directory. Host-aware; returns an absolute path (valid on host) or null.
+ */
+export async function resolveCodexTranscriptFile(host, cwd) {
+  if (!cwd) return null;
+  const needle = `"cwd":"${cwd}"`; // matched literally against line 1 (session_meta)
+  const script =
+    `ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -50 | while read f; do ` +
+    `head -1 "$f" | grep -qF ${shellQuote(needle)} && { echo "$f"; break; }; done`;
+  try {
+    const { stdout } = await execOnHost(host, script);
+    return firstLine(stdout);
+  } catch {
+    return null;
+  }
+}
+
 export async function resolveTranscriptFile(agent, host) {
+  // Codex keeps its own transcript format/location — resolve by matching the
+  // rollout's recorded cwd to this agent's (host-aware) working directory.
+  if (agent && agent.config && agent.config.provider === 'codex') {
+    const project = agent.project_id ? getProject(agent.project_id) : null;
+    const cwd = project ? resolveWorkingDir(project, host) : null;
+    return resolveCodexTranscriptFile(host, cwd);
+  }
+
   // 1. Pinned session id: the transcript filename equals the session id.
   if (agent && agent.claude_session_id && isUuid(agent.claude_session_id)) {
     const pinned = await findPinnedTranscript(host, agent.claude_session_id);

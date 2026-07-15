@@ -118,7 +118,7 @@ function AgentRow({ agent, showProject = false }) {
         </button>
 
         {/* Chat button (Claude agents only) */}
-        {agent.screen_session && provider === 'claude' && (
+        {agent.screen_session && (provider === 'claude' || provider === 'codex') && (
           <button
             onClick={handleOpenChat}
             className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded transition-colors"
