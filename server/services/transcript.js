@@ -171,6 +171,56 @@ export function tailSpawnArgs(host, filePath) {
   };
 }
 
+// tail -n <k> without -F: a one-shot read of the last k lines (for load-earlier).
+function tailReadArgs(host, filePath, k) {
+  if (!isRemote(host)) {
+    return { file: 'tail', args: ['-n', String(k), filePath] };
+  }
+  return {
+    file: 'ssh',
+    args: [
+      ...sshBaseArgs(host),
+      host.ssh_target,
+      remoteWrap(host, `exec tail -n ${k} ${shellQuote(filePath)}`),
+    ],
+  };
+}
+
+/**
+ * One-shot read of the last `k` lines of an agent's transcript, parsed to records.
+ * Backs the chat's "load earlier messages" control. spawn (not exec) so a big slice
+ * with embedded images isn't capped by exec's maxBuffer. Returns { records, atStart }
+ * where atStart is true once the whole file fits in `k` (nothing older remains).
+ */
+export async function readTranscriptTail(agent, host, k) {
+  const file = await resolveTranscriptFile(agent, host);
+  if (!file) return { records: [], atStart: true };
+  const { file: cmd, args } = tailReadArgs(host, file, k);
+  return new Promise((resolve) => {
+    let out = '';
+    let done = false;
+    const finish = (lines) => {
+      if (done) return;
+      done = true;
+      const records = [];
+      for (const l of lines) {
+        try { records.push(JSON.parse(l)); } catch { /* skip malformed */ }
+      }
+      resolve({ records, atStart: lines.length < k });
+    };
+    let child;
+    try {
+      child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      return resolve({ records: [], atStart: true });
+    }
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('error', () => finish([]));
+    child.on('close', () => finish(out.split('\n').map((s) => s.trim()).filter(Boolean)));
+  });
+}
+
 /**
  * Setup the read-only transcript WebSocket server.
  *

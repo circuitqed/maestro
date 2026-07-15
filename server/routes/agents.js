@@ -25,7 +25,7 @@ import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js'
 import { appendAgentLane } from '../services/scaffold.js';
 import { resolveWorkingDir, ensureDirOnHost } from '../services/projectPaths.js';
 import { pinnedTranscriptExists } from '../services/transcript.js';
-import { resolveTranscriptFile } from '../services/transcript.js';
+import { resolveTranscriptFile, readTranscriptTail } from '../services/transcript.js';
 
 const router = Router();
 
@@ -459,6 +459,30 @@ router.get('/:id/transcript/meta', async (req, res) => {
 
     const filePath = await resolveTranscriptFile(agent, host);
     res.json({ available: !!filePath, sessionId: agent.claude_session_id || null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Load earlier transcript history on demand: returns the last `tail` lines parsed
+// to records, plus atStart (true once the whole file fits in `tail`). The chat
+// requests a growing tail and prepends the newly-revealed older records.
+router.get('/:id/transcript', async (req, res) => {
+  try {
+    const agent = getAgent(req.params.id);
+    if (!agent) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+    if (!checkAgentAccess(req, res, agent)) return;
+
+    const host = agent.host_id ? getHost(agent.host_id) : null;
+    if (agent.host_id && !host) {
+      return res.status(400).json({ error: 'Agent references an unknown host' });
+    }
+
+    const tail = Math.min(Math.max(parseInt(req.query.tail, 10) || 500, 1), 20000);
+    const { records, atStart } = await readTranscriptTail(agent, host, tail);
+    res.json({ records, atStart });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

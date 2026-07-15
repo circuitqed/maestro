@@ -27,6 +27,7 @@ function normalizeMath(text) {
 }
 
 const RECONNECT_DELAYS = [500, 1000, 2000, 5000, 10000]; // Exponential backoff
+const CHAT_TAIL_CAP = 500; // matches the server's INITIAL_TAIL_LINES; step size for "load earlier"
 
 // ---------------------------------------------------------------------------
 // Record classification helpers
@@ -618,6 +619,10 @@ function ChatView({ agentId, session }) {
   const [ready, setReady] = useState(false);
   const [lightbox, setLightbox] = useState(null); // full-size image src, or null
   const [activePrompt, setActivePrompt] = useState(null); // live select prompt, or null
+  // "Load earlier" paging: chat opens on the last CHAT_TAIL_CAP records; older
+  // history is fetched on demand. atStart => the whole file is loaded (hide button).
+  const [atStart, setAtStart] = useState(true);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
 
   const wsRef = useRef(null);
   const reconnectAttemptRef = useRef(0);
@@ -631,6 +636,10 @@ function ChatView({ agentId, session }) {
   const readyRef = useRef(false);
   const settleTimerRef = useRef(null);
   const textareaRef = useRef(null);
+  const historyLimitRef = useRef(CHAT_TAIL_CAP);
+  const initialBurstRef = useRef(0); // raw lines received before ready (many are uuid-less, non-rendered)
+  const loadingEarlierRef = useRef(false);
+  const pendingPrependRef = useRef(null); // { prevH, prevTop } while a load-earlier prepend settles
 
   const markReady = useCallback(() => {
     readyRef.current = true;
@@ -675,6 +684,9 @@ function ChatView({ agentId, session }) {
       }
       if (msg.type === 'record' && msg.record && typeof msg.record === 'object') {
         const rec = msg.record;
+        // Count every line in the initial burst (before ready) — including uuid-less
+        // ones we won't render — so we can tell if the tail was capped (older exists).
+        if (!readyRef.current) initialBurstRef.current += 1;
         // Dedupe across reconnects (which replay history from the top). Claude
         // records carry a uuid; Codex records don't, so synthesize a stable key.
         const key = providerRef.current === 'codex' ? codexKey(rec) : rec.uuid;
@@ -743,6 +755,58 @@ function ChatView({ agentId, session }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
+  // Once the initial burst settles, decide whether earlier history exists: a full
+  // cap of records means the tail was truncated (older messages remain above).
+  useEffect(() => {
+    if (ready) setAtStart(initialBurstRef.current < CHAT_TAIL_CAP);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready]);
+
+  // Fetch the next older slice and prepend it. The server returns the last N lines;
+  // records already shown are deduped, so only genuinely-older ones are prepended.
+  const loadEarlier = useCallback(async () => {
+    if (loadingEarlierRef.current || atStart) return;
+    loadingEarlierRef.current = true;
+    setLoadingEarlier(true);
+    const el = scrollRef.current;
+    const prevH = el ? el.scrollHeight : 0;
+    const prevTop = el ? el.scrollTop : 0;
+    try {
+      const nextLimit = historyLimitRef.current + CHAT_TAIL_CAP;
+      const res = await fetch(`/api/agents/${agentId}/transcript?tail=${nextLimit}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      historyLimitRef.current = nextLimit;
+      const older = [];
+      for (const rec of data.records || []) {
+        const key = providerRef.current === 'codex' ? codexKey(rec) : rec && rec.uuid;
+        if (!key || seenUuidsRef.current.has(key)) continue;
+        seenUuidsRef.current.add(key);
+        older.push(rec);
+      }
+      if (older.length) {
+        pendingPrependRef.current = { prevH, prevTop };
+        setRecords((prev) => [...older, ...prev]);
+      }
+      if (data.atStart || older.length === 0) setAtStart(true);
+    } catch {
+      /* leave the button for a retry */
+    } finally {
+      loadingEarlierRef.current = false;
+      setLoadingEarlier(false);
+    }
+  }, [agentId, atStart]);
+
+  // Preserve scroll position when older messages are prepended, so the view stays
+  // put instead of jumping. Pre-paint (useLayoutEffect) so there's no visible shift.
+  useLayoutEffect(() => {
+    const pend = pendingPrependRef.current;
+    const el = scrollRef.current;
+    if (!pend || !el) return;
+    el.scrollTop = pend.prevTop + (el.scrollHeight - pend.prevH);
+    pendingPrependRef.current = null;
+  }, [records]);
+
   // --- Auto-scroll ----------------------------------------------------------
   // The transcript streams in from the top (tail -n +1), so on open we want to
   // land at the newest message and then stick there. atBottomRef tracks whether
@@ -798,7 +862,7 @@ function ChatView({ agentId, session }) {
     if (atBottomRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [records, isWorking, activityLabel, activePrompt]);
+  }, [records, isWorking, activityLabel, activePrompt, atStart]);
 
   // Clear the transient "just sent" flag once the agent is observably working
   // or has produced a reply (covers fast turns the pane monitor may not catch).
@@ -928,6 +992,18 @@ function ChatView({ agentId, session }) {
             </div>
           ) : (
             <>
+              {!atStart && renderedRecords.length > 0 && (
+                <div className="flex justify-center pb-1">
+                  <button
+                    type="button"
+                    onClick={loadEarlier}
+                    disabled={loadingEarlier}
+                    className="text-xs text-gray-400 hover:text-gray-200 border border-gray-700 rounded-full px-3 py-1 disabled:opacity-50 transition-colors"
+                  >
+                    {loadingEarlier ? 'Loading earlier…' : 'Load earlier messages'}
+                  </button>
+                </div>
+              )}
               {renderedRecords}
               {activePrompt ? (
                 <ActivePromptCard prompt={activePrompt} onAnswer={onAnswerQuestion} />
