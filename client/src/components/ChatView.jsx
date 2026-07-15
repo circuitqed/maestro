@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useContext, createContext } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -52,15 +52,44 @@ function summarizeToolInput(name, input) {
 // Markdown rendering
 // ---------------------------------------------------------------------------
 
+// Provides the current agent id to the markdown link renderer so links to files
+// (relative or absolute-within-the-workdir) can be routed to the file endpoint.
+const ChatAgentContext = createContext(null);
+
+// A markdown link. External URLs (http(s)/mailto/…) and #anchors are left alone;
+// anything else is treated as a path in the agent's working dir and routed to
+// GET /api/agents/:id/file (a trailing :line and #fragment are stripped).
+function MarkdownLink({ node, href, children, ...props }) {
+  const agentId = useContext(ChatAgentContext);
+  const cls = 'text-blue-400 underline hover:text-blue-300';
+  const raw = typeof href === 'string' ? href : '';
+  const external = /^\/\//.test(raw) || /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || /^(mailto|tel|data|app|javascript):/i.test(raw);
+  const anchor = raw.startsWith('#');
+  if (agentId && raw && !external && !anchor) {
+    const clean = raw.replace(/#.*$/, '').replace(/:\d+(:\d+)?$/, '');
+    if (clean) {
+      return (
+        <a
+          href={`/api/agents/${encodeURIComponent(agentId)}/file?path=${encodeURIComponent(clean)}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={`Open ${clean}`}
+          className={cls}
+        >
+          {children}
+        </a>
+      );
+    }
+  }
+  return (
+    <a href={raw || undefined} {...props} target="_blank" rel="noopener noreferrer" className={cls}>
+      {children}
+    </a>
+  );
+}
+
 const markdownComponents = {
-  a: ({ node, ...props }) => (
-    <a
-      {...props}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="text-blue-400 underline hover:text-blue-300"
-    />
-  ),
+  a: MarkdownLink,
   p: ({ node, ...props }) => <p className="my-1 leading-relaxed" {...props} />,
   ul: ({ node, ...props }) => <ul className="list-disc pl-5 my-1 space-y-0.5" {...props} />,
   ol: ({ node, ...props }) => <ol className="list-decimal pl-5 my-1 space-y-0.5" {...props} />,
@@ -108,6 +137,18 @@ const markdownComponents = {
   td: ({ node, ...props }) => <td className="border border-gray-700 px-2 py-1" {...props} />,
 };
 
+// react-markdown's default urlTransform BLANKS any href whose first colon isn't
+// preceded by "/" and isn't a safe protocol — which kills `README.md:10`-style
+// file:line links before MarkdownLink can route them. Keep those (and other paths)
+// intact while still stripping the dangerous inline-script protocols the default
+// sanitizer protected against.
+function chatUrlTransform(url) {
+  const u = String(url || '');
+  if (/^\s*(javascript|vbscript):/i.test(u)) return '';
+  if (/^\s*data:/i.test(u) && !/^\s*data:image\//i.test(u)) return '';
+  return u;
+}
+
 function Markdown({ children }) {
   return (
     <div className="text-sm text-gray-100 break-words min-w-0 max-w-full overflow-hidden">
@@ -115,6 +156,7 @@ function Markdown({ children }) {
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[[rehypeKatex, { throwOnError: false, errorColor: '#f87171' }]]}
         components={markdownComponents}
+        urlTransform={chatUrlTransform}
       >
         {normalizeMath(children)}
       </ReactMarkdown>
@@ -971,6 +1013,7 @@ function ChatView({ agentId, session }) {
   }, [records, onAnswerQuestion, provider]);
 
   return (
+    <ChatAgentContext.Provider value={agentId}>
     <div className="h-full w-full flex flex-col bg-gray-900">
       {/* Messages */}
       <div
@@ -1077,6 +1120,7 @@ function ChatView({ agentId, session }) {
         </div>
       )}
     </div>
+    </ChatAgentContext.Provider>
   );
 }
 

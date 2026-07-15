@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import fs from 'fs';
+import path from 'path';
+import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import { requireAuth } from '../middleware/auth.js';
 import {
@@ -20,7 +22,7 @@ import {
 import { getTmuxSessions, startProviderSession, createSession, killSession, sessionExists, sendText, sendAnswer, capturePane } from '../services/tmux.js';
 import { registerAgent, unregisterAgent } from '../services/agentMonitor.js';
 import { getProvider, getProviderList } from '../services/providers.js';
-import { isRemote, isValidSessionName, execOnHost, shellQuote } from '../services/hosts.js';
+import { isRemote, isValidSessionName, execOnHost, shellQuote, sshBaseArgs, remoteWrap } from '../services/hosts.js';
 import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js';
 import { appendAgentLane } from '../services/scaffold.js';
 import { resolveWorkingDir, ensureDirOnHost } from '../services/projectPaths.js';
@@ -44,6 +46,62 @@ function checkAgentAccess(req, res, agent) {
 // a non-empty absolute path so we never fall back to $HOME or expand a tilde.
 function isValidProjectPath(p) {
   return typeof p === 'string' && p.trim().length > 0 && p.trim().startsWith('/');
+}
+
+// --- File serving (clickable file links in the chat) -----------------------
+const TEXT_FILE_EXTS = new Set([
+  'txt','md','markdown','rst','csv','tsv','log','json','jsonl','ndjson','yaml','yml','toml','ini','cfg','conf','env',
+  'xml','html','htm','svg','css','scss','less','py','js','jsx','ts','tsx','mjs','cjs','c','cc','cpp','h','hpp',
+  'sh','bash','zsh','fish','rb','go','rs','java','kt','swift','php','pl','r','m','mm','sql','lua','dart','scala',
+  'clj','ex','exs','erl','hs','ml','vue','svelte','tex','bib','make','mk','dockerfile','gitignore','diff','patch',
+  'v','sv','vhd','tcl','awk','sed','asm','s','f','f90','proto','gradle','properties','bat','ps1','nix','zig','cs',
+]);
+const IMAGE_TYPES = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+  bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif',
+};
+
+// Canonical extension-less text files, matched by whole (lowercased) name.
+const TEXT_FILENAMES = new Set([
+  'dockerfile','makefile','rakefile','gemfile','procfile','jenkinsfile','vagrantfile','brewfile',
+  'license','readme','changelog','authors','notice','copying','todo','install','manifest',
+]);
+
+// Conservative content type: images/pdf inline; text-likes (incl. html/svg) as
+// text/plain so nothing executes in our origin; everything else is a download.
+function fileServeType(name) {
+  const ext = (name.includes('.') ? name.split('.').pop() : '').toLowerCase();
+  if (IMAGE_TYPES[ext]) return { type: IMAGE_TYPES[ext], inline: true };
+  if (ext === 'pdf') return { type: 'application/pdf', inline: true };
+  if (TEXT_FILE_EXTS.has(ext) || (!name.includes('.') && TEXT_FILENAMES.has(name.toLowerCase()))) {
+    return { type: 'text/plain; charset=utf-8', inline: true };
+  }
+  return { type: 'application/octet-stream', inline: false };
+}
+
+// realpath on the agent's host (resolves symlinks + normalizes; fails if missing).
+async function hostRealpath(host, p) {
+  try {
+    if (isRemote(host)) {
+      const { stdout } = await execOnHost(host, `realpath ${shellQuote(p)}`);
+      return String(stdout).trim() || null;
+    }
+    return fs.realpathSync(p);
+  } catch {
+    return null;
+  }
+}
+
+async function hostIsFile(host, p) {
+  try {
+    if (isRemote(host)) {
+      const { stdout } = await execOnHost(host, `test -f ${shellQuote(p)} && echo y`);
+      return String(stdout).trim() === 'y';
+    }
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
 }
 
 // List agents (scoped to user's accessible projects)
@@ -485,6 +543,95 @@ router.get('/:id/transcript', async (req, res) => {
     res.json({ records, atStart });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Serve a file from an agent's working directory so file links in the chat are
+// clickable. Path-confined to the working dir, symlink-safe via realpath, and
+// served with a conservative content type (text as text/plain + nosniff; images/
+// pdf inline; everything else as a download) so agent-authored files can't execute
+// in the app's origin.
+router.get('/:id/file', async (req, res) => {
+  try {
+    const agent = getAgent(req.params.id);
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
+    if (!checkAgentAccess(req, res, agent)) return;
+
+    const host = agent.host_id ? getHost(agent.host_id) : null;
+    if (agent.host_id && !host) return res.status(400).json({ error: 'Unknown host' });
+
+    const project = agent.project_id ? getProject(agent.project_id) : null;
+    const workingDir = project ? resolveWorkingDir(project, host) : null;
+    if (!workingDir) return res.status(400).json({ error: 'No working directory for this agent' });
+
+    const rawPath = typeof req.query.path === 'string' ? req.query.path.trim() : '';
+    if (!rawPath) return res.status(400).json({ error: 'path is required' });
+    if (rawPath.includes('\0')) return res.status(400).json({ error: 'Invalid path' });
+
+    // Resolve under the working dir (hosts are unix; use posix semantics).
+    const wd = workingDir.replace(/\/+$/, '');
+    const candidate = rawPath.startsWith('/')
+      ? path.posix.normalize(rawPath)
+      : path.posix.normalize(path.posix.join(wd, rawPath));
+
+    const within = (child, parent) => child === parent || child.startsWith(parent + '/');
+    if (!within(candidate, wd)) {
+      return res.status(403).json({ error: 'Path is outside the project directory' });
+    }
+
+    const base = path.posix.basename(candidate);
+    const { type, inline } = fileServeType(base);
+    const setHeaders = () => {
+      res.setHeader('Content-Type', type);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${base.replace(/[\r\n"\\]/g, '_')}"`);
+      res.setHeader('Cache-Control', 'private, no-store');
+    };
+    const failNow = (code) => {
+      if (!res.headersSent) res.status(code).end();
+      else res.end();
+    };
+
+    if (isRemote(host)) {
+      // One SSH round-trip does resolve + confine + is-file + cat atomically: this
+      // closes the cross-round-trip TOCTOU window and turns a failed read into an
+      // HTTP error (exit code) instead of a silent empty/truncated 200. Path-based
+      // confinement still can't detect hardlinks — bounded by the agent's own trust
+      // boundary (it can already read any same-fs file it has access to).
+      setHeaders();
+      const script =
+        `wd=$(realpath ${shellQuote(wd)} 2>/dev/null) || exit 2; ` +
+        `f=$(realpath ${shellQuote(candidate)} 2>/dev/null) || exit 3; ` +
+        `case "$f" in "$wd"/*) ;; *) exit 4;; esac; ` +
+        `[ -f "$f" ] || exit 5; ` +
+        `exec cat -- "$f"`;
+      const child = spawn('ssh', [...sshBaseArgs(host), host.ssh_target, remoteWrap(host, script)], { stdio: ['ignore', 'pipe', 'ignore'] });
+      child.on('error', () => failNow(502));
+      child.stdout.on('error', () => failNow(502));
+      child.stdout.pipe(res, { end: false }); // we end() ourselves in 'close' based on exit code
+      child.on('close', (code) => {
+        if (res.headersSent) return res.end();     // bytes streamed -> just finish
+        if (code === 0) return res.end();           // empty file, success (200)
+        failNow(code === 4 ? 403 : 404);            // 4=outside dir; 2/3/5/other=not found/unreadable
+      });
+      req.on('close', () => { try { child.kill('SIGTERM'); } catch { /* already gone */ } });
+    } else {
+      // Local: re-confine after resolving symlinks. (The realpath->open window is a
+      // sub-ms in-process race; same hardlink caveat as above.)
+      const realWd = await hostRealpath(host, wd);
+      const realTarget = await hostRealpath(host, candidate);
+      if (!realTarget) return res.status(404).json({ error: 'File not found' });
+      if (!realWd || !within(realTarget, realWd)) return res.status(403).json({ error: 'Path is outside the project directory' });
+      if (!(await hostIsFile(host, realTarget))) return res.status(404).json({ error: 'Not a file' });
+      setHeaders();
+      const stream = fs.createReadStream(realTarget);
+      stream.on('error', () => failNow(500));
+      req.on('close', () => stream.destroy());
+      stream.pipe(res);
+    }
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+    else res.end();
   }
 });
 
