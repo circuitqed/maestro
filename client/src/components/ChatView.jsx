@@ -351,7 +351,10 @@ function QuestionCard({ block, answered, chosen, onAnswer }) {
 function parseActivePrompt(text) {
   if (!text) return null;
   const lines = text.split('\n');
-  const footerIdx = lines.findIndex((l) => /to select|to navigate|Esc to cancel|↑\/↓/.test(l));
+  // Footer of a live select widget. Claude: "↑/↓ to select" etc.; Codex: "Press
+  // enter to continue" under a › cursor. Either way the numbered options sit above
+  // it and a number key selects+submits (POST /answer works for both providers).
+  const footerIdx = lines.findIndex((l) => /to select|to navigate|Esc to cancel|↑\/↓|press enter to /i.test(l));
   if (footerIdx === -1) return null;
   const options = [];
   let firstOptIdx = -1;
@@ -600,6 +603,58 @@ function CodexToolCard({ name, input }) {
   );
 }
 
+// Codex edits files via a patch tool; event_msg/patch_apply_end reports the result
+// (success + a changes map path->{type: add|update|delete}, or an "A /path" stdout).
+function CodexPatchCard({ payload }) {
+  const agentId = useContext(ChatAgentContext);
+  const changes = payload && payload.changes && typeof payload.changes === 'object' ? payload.changes : null;
+  let files = [];
+  if (changes) {
+    files = Object.entries(changes).map(([p, c]) => ({ path: p, type: (c && c.type) || 'update' }));
+  } else if (typeof payload.stdout === 'string') {
+    files = payload.stdout.split('\n')
+      .map((l) => l.match(/^\s*([AMD])\s+(.+\S)\s*$/))
+      .filter(Boolean)
+      .map((m) => ({ path: m[2], type: { A: 'add', M: 'update', D: 'delete' }[m[1]] }));
+  }
+  const ok = payload.success !== false;
+  const mark = { add: '+', update: '~', delete: '−' };
+  const col = { add: 'text-green-400', update: 'text-blue-300', delete: 'text-red-400' };
+  return (
+    <div className="flex justify-start">
+      <div className="min-w-0 max-w-[92%] w-full my-1 rounded border border-gray-700 bg-gray-800/60 px-2.5 py-1.5">
+        <div className="flex items-center gap-1.5 text-xs">
+          <svg className="w-3.5 h-3.5 text-blue-300 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+          <span className="font-medium text-blue-300">
+            {ok ? 'Edited' : 'Edit failed'}{files.length ? ` · ${files.length} file${files.length === 1 ? '' : 's'}` : ''}
+          </span>
+        </div>
+        {files.length > 0 && (
+          <div className="mt-1 space-y-0.5">
+            {files.map((f, i) => (
+              <div key={i} className="text-xs font-mono truncate">
+                <span className={col[f.type] || 'text-gray-400'}>{mark[f.type] || '~'}</span>{' '}
+                {agentId ? (
+                  <a
+                    href={`/api/agents/${encodeURIComponent(agentId)}/file?path=${encodeURIComponent(f.path)}`}
+                    target="_blank" rel="noopener noreferrer" title={`Open ${f.path}`}
+                    className="text-blue-400 hover:text-blue-300 underline"
+                  >
+                    {f.path}
+                  </a>
+                ) : <span className="text-gray-300">{f.path}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function renderCodexRecords(records, ctx) {
   const out = [];
   records.forEach((rec, i) => {
@@ -627,6 +682,8 @@ function renderCodexRecords(records, ctx) {
     } else if (rec.type === 'response_item' && p.type === 'custom_tool_call_output') {
       const text = codexOutputText(p.output);
       if (text.trim()) el = <ToolResultCard result={{ content: text }} onImage={ctx && ctx.onImage} />;
+    } else if (rec.type === 'event_msg' && p.type === 'patch_apply_end') {
+      el = <CodexPatchCard payload={p} />;
     }
     if (el) out.push(<div key={key}>{el}</div>);
   });
