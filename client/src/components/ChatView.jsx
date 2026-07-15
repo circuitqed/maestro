@@ -60,34 +60,58 @@ function summarizeToolInput(name, input) {
 // Markdown rendering
 // ---------------------------------------------------------------------------
 
-// Provides the current agent id to the markdown link renderer so links to files
-// (relative or absolute-within-the-workdir) can be routed to the file endpoint.
+// Provides { agentId, openFile } to file links in rendered markdown: a link to a
+// file in the agent's working dir routes to the file endpoint and, for text/markdown,
+// opens in the in-app viewer.
 const ChatAgentContext = createContext(null);
 
+// Extensions rendered in the in-app viewer (markdown rendered, others as text).
+// Images/PDF/binaries are absent — they open via the endpoint (the browser handles them).
+const VIEWER_EXTS = new Set([
+  'md','markdown','txt','text','rst','log','csv','tsv','json','jsonl','yaml','yml','toml','ini','cfg','conf','env',
+  'xml','html','htm','css','scss','less','py','js','jsx','ts','tsx','mjs','cjs','c','cc','cpp','h','hpp','sh','bash',
+  'zsh','rb','go','rs','java','kt','swift','php','pl','r','m','sql','lua','dart','scala','vue','svelte','tex','bib',
+  'diff','patch','v','sv','vhd','proto','gradle','make','mk','dockerfile','gitignore',
+]);
+
+function fileExt(p) {
+  const n = String(p).split('/').pop() || '';
+  return (n.includes('.') ? n.split('.').pop() : n).toLowerCase();
+}
+
+// A link to a file in the agent's working dir. Left-click a text/markdown file opens
+// the in-app viewer; ctrl/cmd-click (or a non-viewable type) uses the raw endpoint.
+function FileLink({ path, className, title, children }) {
+  const ctx = useContext(ChatAgentContext);
+  const agentId = ctx && ctx.agentId;
+  const openFile = ctx && ctx.openFile;
+  if (!agentId) return <span className={className}>{children}</span>;
+  const url = `/api/agents/${encodeURIComponent(agentId)}/file?path=${encodeURIComponent(path)}`;
+  const viewable = VIEWER_EXTS.has(fileExt(path));
+  const onClick = (e) => {
+    if (!viewable || !openFile) return; // browser opens/downloads via the endpoint
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button === 1) return; // new-tab intent
+    e.preventDefault();
+    openFile(path);
+  };
+  return (
+    <a href={url} onClick={onClick} target="_blank" rel="noopener noreferrer" title={title || `Open ${path}`} className={className}>
+      {children}
+    </a>
+  );
+}
+
 // A markdown link. External URLs (http(s)/mailto/…) and #anchors are left alone;
-// anything else is treated as a path in the agent's working dir and routed to
-// GET /api/agents/:id/file (a trailing :line and #fragment are stripped).
+// anything else is a path in the agent's working dir (trailing :line and #fragment
+// stripped), rendered via FileLink.
 function MarkdownLink({ node, href, children, ...props }) {
-  const agentId = useContext(ChatAgentContext);
   const cls = 'text-blue-400 underline hover:text-blue-300';
   const raw = typeof href === 'string' ? href : '';
   const external = /^\/\//.test(raw) || /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || /^(mailto|tel|data|app|javascript):/i.test(raw);
   const anchor = raw.startsWith('#');
-  if (agentId && raw && !external && !anchor) {
+  if (raw && !external && !anchor) {
     const clean = raw.replace(/#.*$/, '').replace(/:\d+(:\d+)?$/, '');
-    if (clean) {
-      return (
-        <a
-          href={`/api/agents/${encodeURIComponent(agentId)}/file?path=${encodeURIComponent(clean)}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          title={`Open ${clean}`}
-          className={cls}
-        >
-          {children}
-        </a>
-      );
-    }
+    if (clean) return <FileLink path={clean} className={cls}>{children}</FileLink>;
   }
   return (
     <a href={raw || undefined} {...props} target="_blank" rel="noopener noreferrer" className={cls}>
@@ -785,7 +809,6 @@ function CodexToolCard({ input }) {
 // Codex edits files via a patch tool; event_msg/patch_apply_end reports the result
 // (success + a changes map path->{type: add|update|delete}, or an "A /path" stdout).
 function CodexPatchCard({ payload }) {
-  const agentId = useContext(ChatAgentContext);
   const changes = payload && payload.changes && typeof payload.changes === 'object' ? payload.changes : null;
   let files = [];
   if (changes) {
@@ -817,15 +840,7 @@ function CodexPatchCard({ payload }) {
               <div key={i}>
                 <div className="text-xs font-mono truncate">
                   <span className={col[f.type] || 'text-gray-400'}>{mark[f.type] || '~'}</span>{' '}
-                  {agentId ? (
-                    <a
-                      href={`/api/agents/${encodeURIComponent(agentId)}/file?path=${encodeURIComponent(f.path)}`}
-                      target="_blank" rel="noopener noreferrer" title={`Open ${f.path}`}
-                      className="text-blue-400 hover:text-blue-300 underline"
-                    >
-                      {f.path}
-                    </a>
-                  ) : <span className="text-gray-300">{f.path}</span>}
+                  <FileLink path={f.path} className="text-blue-400 hover:text-blue-300 underline">{f.path}</FileLink>
                 </div>
                 {f.diff && <div className="mt-0.5"><DiffView text={f.diff} /></div>}
               </div>
@@ -873,6 +888,52 @@ function renderCodexRecords(records, ctx) {
   return out;
 }
 
+// In-app file viewer: fetches a working-dir file and renders markdown with the same
+// <Markdown> pipeline (safe — no raw HTML), other text as a mono block.
+function FileViewer({ agentId, path, onClose }) {
+  const [text, setText] = useState(null);
+  const [err, setErr] = useState(null);
+  const name = String(path).split('/').pop();
+  const isMd = ['md', 'markdown'].includes(fileExt(path));
+  const url = `/api/agents/${encodeURIComponent(agentId)}/file?path=${encodeURIComponent(path)}`;
+  useEffect(() => {
+    let cancelled = false;
+    setText(null);
+    setErr(null);
+    fetch(url)
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((t) => { if (!cancelled) setText(t); })
+      .catch((e) => { if (!cancelled) setErr(e.message); });
+    return () => { cancelled = true; };
+  }, [url]);
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-3 px-3 py-2 border-b border-gray-700 flex-shrink-0">
+          <span className="text-sm text-gray-200 font-mono truncate flex-1" title={path}>{name}</span>
+          <a href={url} target="_blank" rel="noopener noreferrer" className="text-xs text-gray-400 hover:text-gray-200">raw</a>
+          <button type="button" onClick={onClose} title="Close" className="text-gray-400 hover:text-white">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div className="overflow-auto p-4 min-h-0">
+          {err ? (
+            <div className="text-red-400 text-sm">Couldn&apos;t load this file: {err}</div>
+          ) : text == null ? (
+            <div className="text-gray-500 text-sm">Loading…</div>
+          ) : isMd ? (
+            <Markdown>{text}</Markdown>
+          ) : (
+            <pre className="text-xs font-mono text-gray-300 whitespace-pre-wrap break-words">{text}</pre>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // ChatView
 // ---------------------------------------------------------------------------
@@ -889,6 +950,10 @@ function ChatView({ agentId, session }) {
   const providerRef = useRef('claude');
   providerRef.current = provider;
 
+  // Open a working-dir file in the in-app viewer; provided to file links via context.
+  const openFile = useCallback((path) => setFileViewerPath(path), []);
+  const chatCtx = useMemo(() => ({ agentId, openFile }), [agentId, openFile]);
+
   const [records, setRecords] = useState([]);
   const [connected, setConnected] = useState(false);
   const [banner, setBanner] = useState(null); // { type: 'error' | 'end', message }
@@ -900,6 +965,7 @@ function ChatView({ agentId, session }) {
   // at the bottom instead of visibly scrolling through the whole transcript.
   const [ready, setReady] = useState(false);
   const [lightbox, setLightbox] = useState(null); // full-size image src, or null
+  const [fileViewerPath, setFileViewerPath] = useState(null); // in-app file viewer, or null
   const [activePrompt, setActivePrompt] = useState(null); // live select prompt, or null
   // "Load earlier" paging: chat opens on the last CHAT_TAIL_CAP records; older
   // history is fetched on demand. atStart => the whole file is loaded (hide button).
@@ -1253,7 +1319,7 @@ function ChatView({ agentId, session }) {
   }, [records, onAnswerQuestion, provider]);
 
   return (
-    <ChatAgentContext.Provider value={agentId}>
+    <ChatAgentContext.Provider value={chatCtx}>
     <div className="h-full w-full flex flex-col bg-gray-900">
       {/* Messages */}
       <div
@@ -1358,6 +1424,11 @@ function ChatView({ agentId, session }) {
             </svg>
           </button>
         </div>
+      )}
+
+      {/* In-app file viewer (markdown rendered, other text as a mono block) */}
+      {fileViewerPath && (
+        <FileViewer agentId={agentId} path={fileViewerPath} onClose={() => setFileViewerPath(null)} />
       )}
     </div>
     </ChatAgentContext.Provider>
