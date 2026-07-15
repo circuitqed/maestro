@@ -15,6 +15,12 @@ import { resolveWorkingDir } from './projectPaths.js';
 // against a pathological never-terminated line, not to clip real records.
 const MAX_LINE_BYTES = 16 * 1024 * 1024;
 
+// Chat opens on the most recent slice of the transcript, then follows live. A long
+// session (tens of thousands of lines) otherwise streams and renders in full before
+// it can settle at the bottom — the dominant cost for big sessions. The tmux
+// terminal and the raw .jsonl still hold the complete history.
+const INITIAL_TAIL_LINES = 500;
+
 /**
  * Validate a Claude session id before splicing it into a shell command.
  * (hex digits + dashes, length 36 — matches a UUID's shape)
@@ -151,7 +157,7 @@ function firstLine(stdout) {
  */
 export function tailSpawnArgs(host, filePath) {
   if (!isRemote(host)) {
-    return { file: 'tail', args: ['-n', '+1', '-F', filePath] };
+    return { file: 'tail', args: ['-n', String(INITIAL_TAIL_LINES), '-F', filePath] };
   }
   return {
     file: 'ssh',
@@ -160,7 +166,7 @@ export function tailSpawnArgs(host, filePath) {
       '-o',
       'ServerAliveInterval=15',
       host.ssh_target,
-      remoteWrap(host, `exec tail -n +1 -F ${shellQuote(filePath)}`),
+      remoteWrap(host, `exec tail -n ${INITIAL_TAIL_LINES} -F ${shellQuote(filePath)}`),
     ],
   };
 }
