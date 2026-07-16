@@ -74,7 +74,7 @@ function AgentRow({ agent, showProject = false }) {
       {/* Agent info */}
       <div className="flex-1 min-w-0">
         <div className="font-medium text-white text-sm truncate flex items-center gap-1.5">
-          <ProviderIcon provider={provider} className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+          <ProviderIcon provider={provider} className="w-3.5 h-3.5" />
           {agent.name}
           {agent.host_ssh_target && (
             <span

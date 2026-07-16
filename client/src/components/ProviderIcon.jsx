@@ -1,6 +1,17 @@
 import React from 'react';
 
-function ProviderIcon({ provider, className = 'w-4 h-4' }) {
+// Per-provider display name (tooltip) and a distinct color so agent types are
+// recognizable at a glance rather than a row of identical gray marks.
+const PROVIDER_META = {
+  claude: { label: 'Claude Code', color: 'text-orange-400' },
+  codex: { label: 'OpenAI Codex', color: 'text-emerald-400' },
+  gemini: { label: 'Gemini CLI', color: 'text-sky-400' },
+  aider: { label: 'Aider', color: 'text-amber-400' },
+  custom: { label: 'Custom', color: 'text-fuchsia-400' },
+  shell: { label: 'Shell', color: 'text-gray-400' },
+};
+
+function Glyph({ provider, className }) {
   switch (provider) {
     case 'claude':
       // Anthropic-style mark
@@ -58,6 +69,21 @@ function ProviderIcon({ provider, className = 'w-4 h-4' }) {
         </svg>
       );
   }
+}
+
+// `colored` (default true) applies the per-provider color + a tooltip; pass
+// colored={false} to inherit the surrounding text color instead.
+function ProviderIcon({ provider, className = 'w-4 h-4', colored = true }) {
+  const meta = PROVIDER_META[provider] || { label: provider || 'agent', color: 'text-gray-400' };
+  return (
+    <span
+      className={`inline-flex flex-shrink-0 ${colored ? meta.color : ''}`}
+      title={meta.label}
+      aria-label={meta.label}
+    >
+      <Glyph provider={provider} className={className} />
+    </span>
+  );
 }
 
 export default ProviderIcon;
