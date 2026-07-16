@@ -141,10 +141,17 @@ export async function sendKeys(sessionName, keys, host = null) {
  */
 export async function sendText(sessionName, text, host = null) {
   const buf = `maestro-${randomUUID()}`;
+  const s = shellQuote(sessionName);
+  // Paste the text, then submit with Enter as a SEPARATE step after a short pause.
+  // The Claude Code / Codex TUIs ingest a bracketed paste asynchronously, so an
+  // Enter sent in the same instant can arrive before the paste is committed to the
+  // input and get dropped — the message ends up typed but never sent (intermittent,
+  // worse over a laggy remote). The delay lets the paste settle before we submit.
   const cmd =
     `tmux set-buffer -b ${shellQuote(buf)} -- ${shellQuote(text)} && ` +
-    `tmux paste-buffer -d -b ${shellQuote(buf)} -t ${shellQuote(sessionName)} && ` +
-    `tmux send-keys -t ${shellQuote(sessionName)} Enter`;
+    `tmux paste-buffer -d -b ${shellQuote(buf)} -t ${s} && ` +
+    `sleep 0.5 && ` +
+    `tmux send-keys -t ${s} Enter`;
   await execOnHost(host, cmd);
 }
 
