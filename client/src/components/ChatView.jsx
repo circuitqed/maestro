@@ -79,6 +79,95 @@ function fileExt(p) {
   return (n.includes('.') ? n.split('.').pop() : n).toLowerCase();
 }
 
+// Extensions/filenames that mark a bare token (in prose or `inline code`) as an
+// openable working-dir file. Superset of VIEWER_EXTS plus binaries the viewer still
+// downloads (images/pdf/office/archives/media). Curated on purpose: a known ext is
+// what keeps `res.setHeader`, `config.provider`, `1.2.3` etc. from becoming links.
+const LINKABLE_EXTS = new Set([
+  ...VIEWER_EXTS,
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'svg', 'ico', 'pdf',
+  'zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z',
+  'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods',
+  'wav', 'mp3', 'mp4', 'mov', 'webm', 'ogg',
+  'lock', 'map', 'wasm', 'bin', 'db', 'sqlite',
+]);
+const LINKABLE_NAMES = new Set([
+  'Makefile', 'Dockerfile', 'LICENSE', 'Procfile', 'Rakefile', 'Gemfile', 'Justfile',
+]);
+
+// Split a "path[:line[:col]]" reference into { path, suffix }. The endpoint wants the
+// clean path; the suffix is kept only for display so the reference still reads right.
+function splitPathRef(token) {
+  const m = /^(.*?)(:\d+(?::\d+)?)?$/.exec(String(token));
+  return { path: m[1] || '', suffix: m[2] || '' };
+}
+
+// Whether a token is a working-dir file path worth linking. Conservative: rejects
+// URLs, protocol-relative links, npm scopes, `~`/home paths (outside the confinement
+// root), and anything lacking a known file extension or filename.
+function isFilePathToken(token) {
+  const t = String(token || '').trim();
+  if (!t || /\s/.test(t)) return false;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t) || /^(mailto|tel|data|vbscript|javascript):/i.test(t)) return false;
+  if (t.startsWith('//') || /^www\./i.test(t)) return false;
+  if (t.startsWith('~') || t.startsWith('@')) return false; // home dir / npm scope
+  if (/[()<>*?"'`|=\\]/.test(t)) return false;
+  const { path: p } = splitPathRef(t);
+  if (!p || p.endsWith('/')) return false; // directory, not a file
+  const base = p.split('/').pop();
+  if (!base || base === '.' || base === '..') return false;
+  if (LINKABLE_NAMES.has(base)) return true;
+  const dot = base.lastIndexOf('.');
+  if (dot < 0) return false; // no extension
+  return LINKABLE_EXTS.has(base.slice(dot + 1).toLowerCase()); // dot===0 handles .env/.gitignore
+}
+
+// Split a plain-text string into text + link mdast nodes, wrapping bare file paths.
+// Paths in `backticks` are handled by the inline-code component, not here. Returns
+// null when nothing was linkified.
+function linkifyText(value) {
+  const RE = /(?:\.{0,2}\/)?[A-Za-z0-9_.+-]+(?:\/[A-Za-z0-9_.+-]+)*(?::\d+(?::\d+)?)?/g;
+  const out = [];
+  let last = 0;
+  let m;
+  while ((m = RE.exec(value))) {
+    const full = m[0];
+    const start = m.index;
+    const { path: core, suffix } = splitPathRef(full);
+    const cleanCore = core.replace(/\.+$/, ''); // drop a trailing sentence period
+    if (!isFilePathToken(cleanCore)) continue;
+    const consumed = cleanCore.length + suffix.length;
+    if (start > last) out.push({ type: 'text', value: value.slice(last, start) });
+    const ref = cleanCore + suffix;
+    out.push({ type: 'link', url: ref, children: [{ type: 'text', value: ref }] });
+    last = start + consumed;
+    RE.lastIndex = last; // resume after the consumed part (a trimmed trailing dot stays text)
+  }
+  if (!out.length) return null;
+  if (last < value.length) out.push({ type: 'text', value: value.slice(last) });
+  return out;
+}
+
+// remark plugin: turn bare file-path tokens in plain text into links, so they route
+// through MarkdownLink -> FileLink. Skips text already inside a link or code.
+function remarkFilePaths() {
+  const walk = (node) => {
+    if (!node || !Array.isArray(node.children)) return;
+    if (node.type === 'link' || node.type === 'linkReference') return; // no nested links
+    const kids = node.children;
+    for (let i = 0; i < kids.length; i++) {
+      const c = kids[i];
+      if (c.type === 'text') {
+        const repl = linkifyText(c.value);
+        if (repl) { kids.splice(i, 1, ...repl); i += repl.length - 1; }
+      } else if (c.type !== 'inlineCode' && c.type !== 'code') {
+        walk(c);
+      }
+    }
+  };
+  return (tree) => walk(tree);
+}
+
 // A link to a file in the agent's working dir. Left-click a text/markdown file opens
 // the in-app viewer; ctrl/cmd-click (or a non-viewable type) uses the raw endpoint.
 function FileLink({ path, className, title, children }) {
@@ -148,6 +237,22 @@ const markdownComponents = {
         </code>
       );
     }
+    // An inline-code token that is a working-dir file path (`providers.js`,
+    // `server/routes/agents.js:42`) becomes a clickable link into the file viewer,
+    // keeping the code-chip look but blue + dotted-underlined to signal it opens.
+    const raw = Array.isArray(children) ? children.join('') : String(children ?? '');
+    if (isFilePathToken(raw)) {
+      const { path: clean } = splitPathRef(raw.trim());
+      return (
+        <FileLink
+          path={clean}
+          title={`Open ${raw.trim()}`}
+          className="px-1 py-0.5 rounded bg-gray-700/70 text-[0.85em] font-mono text-blue-300 hover:text-blue-200 underline decoration-dotted underline-offset-2 cursor-pointer"
+        >
+          {children}
+        </FileLink>
+      );
+    }
     return (
       <code
         className="px-1 py-0.5 rounded bg-gray-700/70 text-[0.85em] font-mono text-pink-300"
@@ -184,7 +289,7 @@ function Markdown({ children }) {
   return (
     <div className="text-sm text-gray-100 break-words min-w-0 max-w-full overflow-hidden">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={[remarkGfm, remarkMath, remarkFilePaths]}
         rehypePlugins={[[rehypeKatex, { throwOnError: false, errorColor: '#f87171' }]]}
         components={markdownComponents}
         urlTransform={chatUrlTransform}
