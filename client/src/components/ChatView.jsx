@@ -87,12 +87,11 @@ function FileLink({ path, className, title, children }) {
   const openFile = ctx && ctx.openFile;
   if (!agentId) return <span className={className}>{children}</span>;
   const url = `/api/agents/${encodeURIComponent(agentId)}/file?path=${encodeURIComponent(path)}`;
-  const viewable = VIEWER_EXTS.has(fileExt(path));
   const onClick = (e) => {
-    if (!viewable || !openFile) return; // browser opens/downloads via the endpoint
+    if (!openFile) return; // fall back to opening the raw endpoint
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button === 1) return; // new-tab intent
     e.preventDefault();
-    openFile(path);
+    openFile(path); // the viewer handles preview (md/text/image/pdf) + a download button
   };
   return (
     <a href={url} onClick={onClick} target="_blank" rel="noopener noreferrer" title={title || `Open ${path}`} className={className}>
@@ -901,15 +900,25 @@ function CollapsedToolGroup({ count, children }) {
   );
 }
 
-// In-app file viewer: fetches a working-dir file and renders markdown with the same
-// <Markdown> pipeline (safe — no raw HTML), other text as a mono block.
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif']);
+
+// In-app file viewer for a working-dir file: markdown rendered via the safe
+// <Markdown> pipeline, other text as a mono block, images/PDF inline; everything
+// has a Download button (?download=1 forces an attachment).
 function FileViewer({ agentId, path, onClose }) {
   const [text, setText] = useState(null);
   const [err, setErr] = useState(null);
   const name = String(path).split('/').pop();
-  const isMd = ['md', 'markdown'].includes(fileExt(path));
+  const ext = fileExt(path);
+  const isImage = IMAGE_EXTS.has(ext);
+  const isPdf = ext === 'pdf';
+  const isMd = ext === 'md' || ext === 'markdown';
+  // Text-ish: a known text/code ext, or a dotless name (Dockerfile, LICENSE, …).
+  const isTextish = !isImage && !isPdf && (VIEWER_EXTS.has(ext) || !name.includes('.'));
   const url = `/api/agents/${encodeURIComponent(agentId)}/file?path=${encodeURIComponent(path)}`;
+  const dlUrl = `${url}&download=1`;
   useEffect(() => {
+    if (!isTextish) return; // images/pdf render by URL; binary is download-only
     let cancelled = false;
     setText(null);
     setErr(null);
@@ -918,12 +927,18 @@ function FileViewer({ agentId, path, onClose }) {
       .then((t) => { if (!cancelled) setText(t); })
       .catch((e) => { if (!cancelled) setErr(e.message); });
     return () => { cancelled = true; };
-  }, [url]);
+  }, [url, isTextish]);
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
       <div className="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center gap-3 px-3 py-2 border-b border-gray-700 flex-shrink-0">
           <span className="text-sm text-gray-200 font-mono truncate flex-1" title={path}>{name}</span>
+          <a href={dlUrl} download={name} className="flex items-center gap-1 text-xs text-gray-300 hover:text-white" title="Download file">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+            </svg>
+            Download
+          </a>
           <a href={url} target="_blank" rel="noopener noreferrer" className="text-xs text-gray-400 hover:text-gray-200">raw</a>
           <button type="button" onClick={onClose} title="Close" className="text-gray-400 hover:text-white">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -932,7 +947,13 @@ function FileViewer({ agentId, path, onClose }) {
           </button>
         </div>
         <div className="overflow-auto p-4 min-h-0">
-          {err ? (
+          {isImage ? (
+            <img src={url} alt={name} className="max-w-full mx-auto rounded" />
+          ) : isPdf ? (
+            <iframe src={url} title={name} className="w-full h-[75vh] rounded bg-white" />
+          ) : !isTextish ? (
+            <div className="text-gray-400 text-sm text-center py-8">No preview for this file type — use Download above.</div>
+          ) : err ? (
             <div className="text-red-400 text-sm">Couldn&apos;t load this file: {err}</div>
           ) : text == null ? (
             <div className="text-gray-500 text-sm">Loading…</div>

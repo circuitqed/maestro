@@ -581,10 +581,11 @@ router.get('/:id/file', async (req, res) => {
 
     const base = path.posix.basename(candidate);
     const { type, inline } = fileServeType(base);
+    const forceDownload = req.query.download === '1' || req.query.download === 'true';
     const setHeaders = () => {
       res.setHeader('Content-Type', type);
       res.setHeader('X-Content-Type-Options', 'nosniff');
-      res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${base.replace(/[\r\n"\\]/g, '_')}"`);
+      res.setHeader('Content-Disposition', `${inline && !forceDownload ? 'inline' : 'attachment'}; filename="${base.replace(/[\r\n"\\]/g, '_')}"`);
       res.setHeader('Cache-Control', 'private, no-store');
     };
     const failNow = (code) => {
