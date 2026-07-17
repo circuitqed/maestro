@@ -1028,7 +1028,13 @@ function FileViewer({ agentId, path, onClose }) {
     setText(null);
     setErr(null);
     fetch(url)
-      .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((r) => {
+        if (r.ok) return r.text();
+        const msg = r.status === 404 ? 'File not found'
+          : r.status === 403 ? 'Path is outside the allowed directory'
+          : `Request failed (HTTP ${r.status})`;
+        return Promise.reject(new Error(msg));
+      })
       .then((t) => { if (!cancelled) setText(t); })
       .catch((e) => { if (!cancelled) setErr(e.message); });
     return () => { cancelled = true; };
@@ -1059,7 +1065,14 @@ function FileViewer({ agentId, path, onClose }) {
           ) : !isTextish ? (
             <div className="text-gray-400 text-sm text-center py-8">No preview for this file type — use Download above.</div>
           ) : err ? (
-            <div className="text-red-400 text-sm">Couldn&apos;t load this file: {err}</div>
+            <div className="text-sm">
+              <div className="text-red-400">{err}</div>
+              <div className="text-gray-500 mt-1 font-mono text-xs break-all">{path}</div>
+              <div className="text-gray-500 mt-2 text-xs">
+                Relative paths are resolved against the agent&apos;s working directory. If the agent
+                referenced a file in a different directory, use its full path.
+              </div>
+            </div>
           ) : text == null ? (
             <div className="text-gray-500 text-sm">Loading…</div>
           ) : isMd ? (

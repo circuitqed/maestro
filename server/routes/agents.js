@@ -568,15 +568,25 @@ router.get('/:id/file', async (req, res) => {
     if (!rawPath) return res.status(400).json({ error: 'path is required' });
     if (rawPath.includes('\0')) return res.status(400).json({ error: 'Invalid path' });
 
-    // Resolve under the working dir (hosts are unix; use posix semantics).
+    // Relative paths resolve against the working dir (hosts are unix; posix semantics).
+    // Absolute paths (and the resolved realpath) are confined to `root`. Remote agents
+    // routinely `cd` into sibling project dirs under the host's default_root — e.g. an
+    // agent whose Claude cwd is .../qubit-designer that writes files in .../awr-qubit-sim
+    // — so widen the confinement root to default_root when it's an ancestor of the
+    // working dir; otherwise a correct absolute link into a sibling dir is wrongly 403'd.
     const wd = workingDir.replace(/\/+$/, '');
+    let root = wd;
+    if (isRemote(host) && host.default_root) {
+      const dr = host.default_root.replace(/\/+$/, '');
+      if (dr && (wd === dr || wd.startsWith(dr + '/'))) root = dr;
+    }
     const candidate = rawPath.startsWith('/')
       ? path.posix.normalize(rawPath)
       : path.posix.normalize(path.posix.join(wd, rawPath));
 
     const within = (child, parent) => child === parent || child.startsWith(parent + '/');
-    if (!within(candidate, wd)) {
-      return res.status(403).json({ error: 'Path is outside the project directory' });
+    if (!within(candidate, root)) {
+      return res.status(403).json({ error: 'Path is outside the allowed directory' });
     }
 
     const base = path.posix.basename(candidate);
@@ -601,9 +611,9 @@ router.get('/:id/file', async (req, res) => {
       // boundary (it can already read any same-fs file it has access to).
       setHeaders();
       const script =
-        `wd=$(realpath ${shellQuote(wd)} 2>/dev/null) || exit 2; ` +
+        `root=$(realpath ${shellQuote(root)} 2>/dev/null) || exit 2; ` +
         `f=$(realpath ${shellQuote(candidate)} 2>/dev/null) || exit 3; ` +
-        `case "$f" in "$wd"/*) ;; *) exit 4;; esac; ` +
+        `case "$f" in "$root"/*) ;; *) exit 4;; esac; ` +
         `[ -f "$f" ] || exit 5; ` +
         `exec cat -- "$f"`;
       const child = spawn('ssh', [...sshBaseArgs(host), host.ssh_target, remoteWrap(host, script)], { stdio: ['ignore', 'pipe', 'ignore'] });
@@ -619,10 +629,10 @@ router.get('/:id/file', async (req, res) => {
     } else {
       // Local: re-confine after resolving symlinks. (The realpath->open window is a
       // sub-ms in-process race; same hardlink caveat as above.)
-      const realWd = await hostRealpath(host, wd);
+      const realRoot = await hostRealpath(host, root);
       const realTarget = await hostRealpath(host, candidate);
       if (!realTarget) return res.status(404).json({ error: 'File not found' });
-      if (!realWd || !within(realTarget, realWd)) return res.status(403).json({ error: 'Path is outside the project directory' });
+      if (!realRoot || !within(realTarget, realRoot)) return res.status(403).json({ error: 'Path is outside the allowed directory' });
       if (!(await hostIsFile(host, realTarget))) return res.status(404).json({ error: 'Not a file' });
       setHeaders();
       const stream = fs.createReadStream(realTarget);
