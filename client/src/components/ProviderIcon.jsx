@@ -13,25 +13,41 @@ const PROVIDER_META = {
 
 function Glyph({ provider, className }) {
   switch (provider) {
-    case 'claude':
-      // Anthropic-style mark
+    case 'claude': {
+      // Anthropic/Claude — stylized radial sunburst (spark)
+      const spokes = [];
+      for (let i = 0; i < 12; i++) {
+        const a = (i * 30 * Math.PI) / 180;
+        spokes.push(
+          <line
+            key={i}
+            x1={12 + 2.6 * Math.cos(a)}
+            y1={12 + 2.6 * Math.sin(a)}
+            x2={12 + 9 * Math.cos(a)}
+            y2={12 + 9 * Math.sin(a)}
+          />
+        );
+      }
       return (
-        <svg className={className} viewBox="0 0 24 24" fill="currentColor">
-          <path d="M4 20L12 4l8 16H4zm3.5-2h9L12 8.5 7.5 18z" />
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+          {spokes}
         </svg>
       );
+    }
     case 'codex':
-      // OpenAI hexagon shape
+      // OpenAI — stylized blossom: three interlocking loops
       return (
-        <svg className={className} viewBox="0 0 24 24" fill="currentColor">
-          <path d="M12 2L3 7v10l9 5 9-5V7l-9-5zm0 2.18L18.36 7.5 12 10.82 5.64 7.5 12 4.18zM5 8.82l6 3.33v6.67L5 15.5V8.82zm8 10V12.15l6-3.33V15.5l-6 3.32z" />
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+          <ellipse cx="12" cy="12" rx="4" ry="8.5" />
+          <ellipse cx="12" cy="12" rx="4" ry="8.5" transform="rotate(60 12 12)" />
+          <ellipse cx="12" cy="12" rx="4" ry="8.5" transform="rotate(120 12 12)" />
         </svg>
       );
     case 'gemini':
-      // Sparkle/star shape
+      // Google Gemini — four-point spark star with concave sides
       return (
         <svg className={className} viewBox="0 0 24 24" fill="currentColor">
-          <path d="M12 2C12 2 13.5 8.5 15.5 10.5C17.5 12.5 22 12 22 12C22 12 17.5 13.5 15.5 15.5C13.5 17.5 12 22 12 22C12 22 10.5 17.5 8.5 15.5C6.5 13.5 2 12 2 12C2 12 6.5 10.5 8.5 8.5C10.5 6.5 12 2 12 2Z" />
+          <path d="M12 1c.6 5.3 4.7 9.4 10 10-5.3.6-9.4 4.7-10 10-.6-5.3-4.7-9.4-10-10 5.3-.6 9.4-4.7 10-10z" />
         </svg>
       );
     case 'aider':
