@@ -586,52 +586,6 @@ function WorkingIndicator({ label }) {
 // Record renderers
 // ---------------------------------------------------------------------------
 
-function renderAssistant(rec, ctx) {
-  const content = rec.message?.content;
-  const blocks =
-    typeof content === 'string'
-      ? [{ type: 'text', text: content }]
-      : Array.isArray(content)
-        ? content
-        : [];
-  const mo = ctx && ctx.messagesOnly; // hide thinking + tool_use, show only text
-  const children = [];
-  blocks.forEach((block, i) => {
-    if (!block) return;
-    const key = `${rec.uuid}-${i}`;
-    if (block.type === 'text') {
-      if (block.text && block.text.trim()) children.push(<Markdown key={key}>{block.text}</Markdown>);
-      return;
-    }
-    if (mo) return;
-    if (block.type === 'thinking') {
-      children.push(<ThinkingBlock key={key} text={block.thinking} />);
-    } else if (block.type === 'tool_use') {
-      if (block.name === 'AskUserQuestion') {
-        const resultText = ctx && ctx.results ? ctx.results[block.id] : undefined;
-        const answered = resultText !== undefined;
-        children.push(
-          <QuestionCard
-            key={key}
-            block={block}
-            answered={answered}
-            chosen={answered ? parseAnswers(resultText) : null}
-            onAnswer={ctx && ctx.onAnswer}
-          />
-        );
-      } else {
-        children.push(<ToolUseCard key={key} block={block} />);
-      }
-    }
-  });
-  if (children.length === 0) return null;
-  return (
-    <div className="flex justify-start">
-      <div className="min-w-0 max-w-[92%] space-y-1">{children}</div>
-    </div>
-  );
-}
-
 // Most "user" records in a Claude transcript aren't things the human typed: they're
 // slash-command invocations and injected <system-reminder>/<local-command-stdout>
 // blocks. Turn a command into a chip, strip the injected wrappers, and only show a
@@ -705,18 +659,6 @@ function renderToolResults(rec, ctx) {
       </div>
     </div>
   );
-}
-
-function renderRecord(rec, ctx) {
-  if (rec.type === 'assistant') return renderAssistant(rec, ctx);
-  if (rec.type === 'user') {
-    if (rec.isMeta) return null;
-    const content = rec.message?.content;
-    const hasToolResult = Array.isArray(content) && content.some((b) => b && b.type === 'tool_result');
-    if (hasToolResult) return ctx && ctx.messagesOnly ? null : renderToolResults(rec, ctx);
-    return renderUserPrompt(rec);
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -854,41 +796,109 @@ function CodexPatchCard({ payload }) {
   );
 }
 
-function renderCodexRecords(records, ctx) {
-  const mo = ctx && ctx.messagesOnly; // hide tool calls / results / patch cards
-  const out = [];
-  records.forEach((rec, i) => {
-    if (!rec || typeof rec !== 'object') return;
-    const p = rec.payload || {};
-    const key = `cx-${i}-${p.call_id || p.id || rec.timestamp || i}`;
-    let el = null;
-    if (rec.type === 'event_msg' && p.type === 'user_message' && p.message) {
-      el = (
+// Split a Claude record into a message part (user/assistant text) and a tool part
+// (thinking + tool_use cards, or tool_result cards); toolCount = number of tool_use
+// calls. Lets messages-only mode collapse a run of tool activity into one marker.
+function claudeParts(rec, ctx) {
+  if (rec.type === 'assistant') {
+    const content = rec.message?.content;
+    const blocks = typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : [];
+    const msg = [];
+    const tool = [];
+    let toolCount = 0;
+    blocks.forEach((block, i) => {
+      if (!block) return;
+      const key = `${rec.uuid}-${i}`;
+      if (block.type === 'text') {
+        if (block.text && block.text.trim()) msg.push(<Markdown key={key}>{block.text}</Markdown>);
+      } else if (block.type === 'thinking') {
+        tool.push(<ThinkingBlock key={key} text={block.thinking} />);
+      } else if (block.type === 'tool_use') {
+        toolCount += 1;
+        if (block.name === 'AskUserQuestion') {
+          const rt = ctx && ctx.results ? ctx.results[block.id] : undefined;
+          const answered = rt !== undefined;
+          tool.push(<QuestionCard key={key} block={block} answered={answered} chosen={answered ? parseAnswers(rt) : null} onAnswer={ctx && ctx.onAnswer} />);
+        } else {
+          tool.push(<ToolUseCard key={key} block={block} />);
+        }
+      }
+    });
+    return {
+      message: msg.length ? <div className="flex justify-start"><div className="min-w-0 max-w-[92%] space-y-1">{msg}</div></div> : null,
+      tool: tool.length ? <div className="flex justify-start"><div className="min-w-0 max-w-[92%] space-y-1">{tool}</div></div> : null,
+      toolCount,
+    };
+  }
+  if (rec.type === 'user') {
+    if (rec.isMeta) return { message: null, tool: null, toolCount: 0 };
+    const content = rec.message?.content;
+    const hasToolResult = Array.isArray(content) && content.some((b) => b && b.type === 'tool_result');
+    if (hasToolResult) return { message: null, tool: renderToolResults(rec, ctx), toolCount: 0 };
+    return { message: renderUserPrompt(rec), tool: null, toolCount: 0 };
+  }
+  return { message: null, tool: null, toolCount: 0 };
+}
+
+// The same message/tool split for a single Codex record.
+function codexPart(rec, ctx) {
+  const p = rec.payload || {};
+  if (rec.type === 'event_msg' && p.type === 'user_message' && p.message) {
+    return {
+      message: (
         <div className="flex justify-end">
           <div className="min-w-0 max-w-[85%] rounded-lg bg-blue-600/20 border border-blue-500/30 px-3 py-2">
             <div className="text-[10px] uppercase tracking-wide text-blue-300/70 mb-0.5">you</div>
             <Markdown>{p.message}</Markdown>
           </div>
         </div>
-      );
-    } else if (rec.type === 'event_msg' && p.type === 'agent_message' && p.message) {
-      el = (
-        <div className="flex justify-start">
-          <div className="min-w-0 max-w-[92%] space-y-1"><Markdown>{p.message}</Markdown></div>
-        </div>
-      );
-    } else if (!mo && rec.type === 'response_item' && p.type === 'custom_tool_call') {
-      // apply_patch is rendered by its patch_apply_end card; skip the raw-JS tool call.
-      if (codexToolName(p.input) !== 'apply_patch') el = <CodexToolCard input={p.input} />;
-    } else if (!mo && rec.type === 'response_item' && p.type === 'custom_tool_call_output') {
-      const text = codexOutputText(p.output);
-      if (text.trim()) el = <ToolResultCard result={{ content: text }} onImage={ctx && ctx.onImage} />;
-    } else if (!mo && rec.type === 'event_msg' && p.type === 'patch_apply_end') {
-      el = <CodexPatchCard payload={p} />;
-    }
-    if (el) out.push(<div key={key}>{el}</div>);
-  });
-  return out;
+      ),
+      tool: null, toolCount: 0,
+    };
+  }
+  if (rec.type === 'event_msg' && p.type === 'agent_message' && p.message) {
+    return { message: <div className="flex justify-start"><div className="min-w-0 max-w-[92%] space-y-1"><Markdown>{p.message}</Markdown></div></div>, tool: null, toolCount: 0 };
+  }
+  if (rec.type === 'response_item' && p.type === 'custom_tool_call') {
+    if (codexToolName(p.input) === 'apply_patch') return { message: null, tool: null, toolCount: 0 };
+    return { message: null, tool: <CodexToolCard input={p.input} />, toolCount: 1 };
+  }
+  if (rec.type === 'response_item' && p.type === 'custom_tool_call_output') {
+    const text = codexOutputText(p.output);
+    return text.trim() ? { message: null, tool: <ToolResultCard result={{ content: text }} onImage={ctx && ctx.onImage} />, toolCount: 0 } : { message: null, tool: null, toolCount: 0 };
+  }
+  if (rec.type === 'event_msg' && p.type === 'patch_apply_end') {
+    return { message: null, tool: <CodexPatchCard payload={p} />, toolCount: 1 };
+  }
+  return { message: null, tool: null, toolCount: 0 };
+}
+
+// In messages-only mode a run of hidden tool activity collapses into this clickable
+// marker; click to expand the real tool cards inline.
+function CollapsedToolGroup({ count, children }) {
+  const [open, setOpen] = useState(false);
+  const label = count > 0 ? `${count} tool call${count === 1 ? '' : 's'}` : 'tool activity';
+  return (
+    <div className="flex justify-start my-0.5">
+      <div className="min-w-0 max-w-[92%] w-full">
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          className="flex items-center gap-1.5 text-[11px] text-gray-500 hover:text-gray-300 border border-gray-700/70 rounded-full px-2 py-0.5 transition-colors"
+        >
+          <svg className={`w-3 h-3 flex-shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+          <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z" />
+          </svg>
+          {label}
+        </button>
+        {open && <div className="mt-1 space-y-1">{children}</div>}
+      </div>
+    </div>
+  );
 }
 
 // In-app file viewer: fetches a working-dir file and renders markdown with the same
@@ -1294,34 +1304,49 @@ function ChatView({ agentId, session }) {
   }, [agentId, getAgentPane]);
 
   const renderedRecords = useMemo(() => {
-    if (provider === 'codex') {
-      return renderCodexRecords(records, { onImage: setLightbox, messagesOnly });
-    }
-    // Map each answered tool_use_id -> its result text (used to mark AskUserQuestion
-    // cards answered and highlight the chosen option).
+    // Map each answered tool_use_id -> its result text (Claude AskUserQuestion).
     const results = {};
-    records.forEach((rec) => {
-      const c = rec.message?.content;
-      if (Array.isArray(c)) {
-        c.forEach((b) => {
-          if (b && b.type === 'tool_result' && b.tool_use_id) {
-            results[b.tool_use_id] =
-              typeof b.content === 'string' ? b.content : JSON.stringify(b.content);
-          }
-        });
+    if (provider !== 'codex') {
+      records.forEach((rec) => {
+        const c = rec.message?.content;
+        if (Array.isArray(c)) {
+          c.forEach((b) => {
+            if (b && b.type === 'tool_result' && b.tool_use_id) {
+              results[b.tool_use_id] = typeof b.content === 'string' ? b.content : JSON.stringify(b.content);
+            }
+          });
+        }
+      });
+    }
+    const ctx = { onImage: setLightbox, onAnswer: onAnswerQuestion, results };
+    const partsOf = provider === 'codex' ? codexPart : claudeParts;
+
+    const out = [];
+    let buf = [];
+    let bufCount = 0;
+    const flushTools = () => {
+      if (buf.length) {
+        out.push(<CollapsedToolGroup key={`tg-${out.length}`} count={bufCount}>{buf}</CollapsedToolGroup>);
+        buf = [];
+        bufCount = 0;
+      }
+    };
+    records.forEach((rec, idx) => {
+      if (!rec || typeof rec !== 'object') return;
+      const pt = partsOf(rec, ctx);
+      if (!pt.message && !pt.tool) return;
+      const rkey = rec.uuid || (rec.payload ? codexKey(rec) : idx);
+      const dim = rec.isSidechain ? 'opacity-70' : '';
+      if (messagesOnly) {
+        // Collapse a run of tool activity into one clickable marker between messages.
+        if (pt.message) { flushTools(); out.push(<div key={`m-${rkey}`} className={dim}>{pt.message}</div>); }
+        if (pt.tool) { buf.push(<div key={`t-${rkey}`} className={dim}>{pt.tool}</div>); bufCount += pt.toolCount || 0; }
+      } else {
+        if (pt.message) out.push(<div key={`m-${rkey}`} className={dim}>{pt.message}</div>);
+        if (pt.tool) out.push(<div key={`t-${rkey}`} className={dim}>{pt.tool}</div>);
       }
     });
-    const ctx = { onImage: setLightbox, onAnswer: onAnswerQuestion, results, messagesOnly };
-    const out = [];
-    records.forEach((rec) => {
-      const el = renderRecord(rec, ctx);
-      if (!el) return;
-      out.push(
-        <div key={rec.uuid} className={rec.isSidechain ? 'opacity-70' : ''}>
-          {el}
-        </div>
-      );
-    });
+    if (messagesOnly) flushTools();
     return out;
   }, [records, onAnswerQuestion, provider, messagesOnly]);
 
