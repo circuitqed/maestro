@@ -98,10 +98,74 @@ export async function resolveCodexTranscriptFile(host, cwd) {
   }
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// The trailing UUID of a Codex rollout filename
+// (rollout-<ISO ts>-<uuid>.jsonl); null if the name doesn't match.
+function rolloutIdFromPath(p) {
+  const m = /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$/.exec(p || '');
+  return m ? m[1] : null;
+}
+
+// Locate the exact rollout for a pinned Codex session id (captured at start). This is
+// what lets two Codex agents sharing a working dir resolve to their own transcripts.
+export async function findCodexRolloutById(host, id) {
+  if (!isUuid(id)) return null;
+  // `id` is validated hex+dashes, so it is safe to inline; the * do the globbing.
+  const script = `ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*-${id}.jsonl 2>/dev/null | head -1`;
+  try {
+    const { stdout } = await execOnHost(host, script);
+    return firstLine(stdout);
+  } catch {
+    return null;
+  }
+}
+
+// UUIDs of the rollouts whose session_meta cwd matches `cwd` (newest first). Used to
+// diff before/after a Codex start and capture the freshly created session's id.
+export async function listCodexRolloutIdsForCwd(host, cwd) {
+  if (!cwd) return [];
+  const needle = `"cwd":"${cwd}"`;
+  const script =
+    `ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -80 | while read f; do ` +
+    `head -1 "$f" | grep -qF ${shellQuote(needle)} && echo "$f"; done`;
+  try {
+    const { stdout } = await execOnHost(host, script);
+    return String(stdout || '')
+      .split('\n')
+      .map((s) => rolloutIdFromPath(s.trim()))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+// Poll (bounded) for a rollout that appeared after a Codex start — i.e. a matching-cwd
+// rollout id not present in `beforeIds`. Returns the new id, or null on timeout.
+// Best-effort: callers must treat null as "leave unpinned, fall back to cwd match".
+export async function captureCodexRolloutId(host, cwd, beforeIds, tries = 12, delayMs = 600) {
+  if (!cwd) return null;
+  const before = new Set(beforeIds || []);
+  for (let i = 0; i < tries; i++) {
+    const ids = await listCodexRolloutIdsForCwd(host, cwd);
+    const fresh = ids.find((id) => !before.has(id)); // ids are newest-first
+    if (fresh) return fresh;
+    await sleep(delayMs);
+  }
+  return null;
+}
+
 export async function resolveTranscriptFile(agent, host) {
   // Codex keeps its own transcript format/location — resolve by matching the
-  // rollout's recorded cwd to this agent's (host-aware) working directory.
+  // rollout's recorded cwd to this agent's (host-aware) working directory. A pinned
+  // session id (captured at start) takes precedence so that multiple Codex agents
+  // sharing one working dir each resolve to their own rollout instead of collapsing
+  // onto the single newest one.
   if (agent && agent.config && agent.config.provider === 'codex') {
+    if (agent.claude_session_id && isUuid(agent.claude_session_id)) {
+      const pinned = await findCodexRolloutById(host, agent.claude_session_id);
+      if (pinned) return pinned;
+    }
     const project = agent.project_id ? getProject(agent.project_id) : null;
     const cwd = project ? resolveWorkingDir(project, host) : null;
     return resolveCodexTranscriptFile(host, cwd);

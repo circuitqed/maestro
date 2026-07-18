@@ -27,7 +27,7 @@ import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js'
 import { appendAgentLane } from '../services/scaffold.js';
 import { resolveWorkingDir, ensureDirOnHost } from '../services/projectPaths.js';
 import { pinnedTranscriptExists } from '../services/transcript.js';
-import { resolveTranscriptFile, readTranscriptTail } from '../services/transcript.js';
+import { resolveTranscriptFile, readTranscriptTail, listCodexRolloutIdsForCwd, captureCodexRolloutId } from '../services/transcript.js';
 
 const router = Router();
 
@@ -356,6 +356,18 @@ router.post('/:id/start', async (req, res) => {
       }
     }
 
+    // Codex has no --session-id to pin ahead of time, so snapshot the rollout ids for
+    // this cwd BEFORE launching; after start we diff to find the one this launch made.
+    // Best-effort — never blocks or fails the start.
+    let codexBeforeIds = [];
+    if (provider.id === 'codex' && workingDir) {
+      try {
+        codexBeforeIds = await listCodexRolloutIdsForCwd(host, workingDir);
+      } catch {
+        codexBeforeIds = [];
+      }
+    }
+
     let result;
     try {
       if (provider.id === 'shell') {
@@ -381,9 +393,22 @@ router.post('/:id/start', async (req, res) => {
       return res.json({ success: true, message: 'Session already running', agent: getAgent(req.params.id) });
     }
 
-    const updatedAgent = updateAgentStatus(req.params.id, 'running');
+    updateAgentStatus(req.params.id, 'running');
     if (provider.monitorable) registerAgent(agent.id, agent.screen_session, host);
-    res.json({ success: true, message: `${provider.name} started`, agent: updatedAgent });
+
+    // Pin the freshly created Codex rollout so this agent's chat resolves to ITS OWN
+    // transcript rather than the newest one in a shared working dir. Bounded poll,
+    // best-effort: on timeout the resolver falls back to the newest-cwd match.
+    if (provider.id === 'codex' && workingDir) {
+      try {
+        const rolloutId = await captureCodexRolloutId(host, workingDir, codexBeforeIds);
+        if (rolloutId) setAgentClaudeSessionId(agent.id, rolloutId);
+      } catch {
+        /* leave unpinned */
+      }
+    }
+
+    res.json({ success: true, message: `${provider.name} started`, agent: getAgent(req.params.id) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
