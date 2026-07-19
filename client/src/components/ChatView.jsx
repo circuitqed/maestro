@@ -705,7 +705,23 @@ function cleanUserText(text) {
     const args = (text.match(/<command-args>([\s\S]*?)<\/command-args>/) || [])[1];
     return { kind: 'command', name: cmd[1].trim(), args: (args || '').trim() };
   }
+  // Background-task completion notices are injected as user records but aren't things
+  // the human typed — surface them as a system notification, not a "you" bubble.
+  const tn = text.match(/<task-notification>([\s\S]*?)<\/task-notification>/);
+  if (tn) {
+    const rest = text
+      .replace(/<task-notification>[\s\S]*?<\/task-notification>/g, '')
+      .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+      .trim();
+    if (!rest) {
+      const body = tn[1];
+      const summary = (body.match(/<summary>([\s\S]*?)<\/summary>/) || [])[1] || '';
+      const status = (body.match(/<status>([\s\S]*?)<\/status>/) || [])[1] || '';
+      return { kind: 'notification', summary: summary.trim(), status: status.trim() };
+    }
+  }
   const t = text
+    .replace(/<task-notification>[\s\S]*?<\/task-notification>/g, '')
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
     .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, '')
     .replace(/<command-message>[\s\S]*?<\/command-message>/g, '')
@@ -728,6 +744,19 @@ function renderUserPrompt(rec) {
         <div className="text-[11px] text-gray-400 bg-gray-800/60 border border-gray-700 rounded-full px-2.5 py-0.5">
           ran <span className="text-blue-300 font-mono">/{c.name}</span>
           {c.args ? <span className="text-gray-500 font-mono"> {c.args}</span> : null}
+        </div>
+      </div>
+    );
+  }
+  if (c.kind === 'notification') {
+    const failed = /fail|error/i.test(c.status);
+    return (
+      <div className="flex justify-center my-1">
+        <div className={`inline-flex items-center gap-1.5 max-w-[92%] text-[11px] rounded-full border px-3 py-0.5 ${failed ? 'text-red-300 border-red-700/50 bg-red-900/20' : 'text-gray-400 border-gray-700 bg-gray-800/60'}`}>
+          <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+          </svg>
+          <span className="truncate">{c.summary || 'Task notification'}{c.status && !/^completed$/i.test(c.status) ? ` · ${c.status}` : ''}</span>
         </div>
       </div>
     );
