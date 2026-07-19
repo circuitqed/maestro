@@ -5,6 +5,7 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { useApp } from '../context/AppContext';
+import useMediaQuery from '../hooks/useMediaQuery';
 
 // Claude also emits LaTeX with \(...\) and \[...\] delimiters; remark-math only
 // understands $...$ / $$...$$. Rewrite those to dollar delimiters, but protect
@@ -1048,7 +1049,7 @@ const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'])
 // In-app file viewer for a working-dir file: markdown rendered via the safe
 // <Markdown> pipeline, other text as a mono block, images/PDF inline; everything
 // has a Download button (?download=1 forces an attachment).
-function FileViewer({ agentId, path, onClose }) {
+function FileViewer({ agentId, path, onClose, variant = 'modal' }) {
   const [text, setText] = useState(null);
   const [err, setErr] = useState(null);
   const name = String(path).split('/').pop();
@@ -1077,48 +1078,75 @@ function FileViewer({ agentId, path, onClose }) {
       .catch((e) => { if (!cancelled) setErr(e.message); });
     return () => { cancelled = true; };
   }, [url, isTextish]);
+
+  const popOut = () => { try { window.open(url, '_blank', 'noopener'); } catch { /* blocked */ } };
+
+  const header = (
+    <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-700 flex-shrink-0">
+      <span className="text-sm text-gray-200 font-mono truncate flex-1 min-w-0" title={path}>{name}</span>
+      <a href={dlUrl} download={name} className="flex items-center gap-1 text-xs text-gray-300 hover:text-white" title="Download file">
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+        </svg>
+        Download
+      </a>
+      <button type="button" onClick={popOut} title="Open in a new tab" className="text-gray-400 hover:text-white">
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+        </svg>
+      </button>
+      <button type="button" onClick={onClose} title="Close" className="text-gray-400 hover:text-white">
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+  );
+
+  const body = (
+    <div className="flex-1 min-h-0 overflow-auto p-4">
+      {isImage ? (
+        <img src={url} alt={name} className="max-w-full mx-auto rounded" />
+      ) : isPdf ? (
+        <iframe src={url} title={name} className="w-full h-[80vh] rounded bg-white" />
+      ) : !isTextish ? (
+        <div className="text-gray-400 text-sm text-center py-8">No preview for this file type — use Download above.</div>
+      ) : err ? (
+        <div className="text-sm">
+          <div className="text-red-400">{err}</div>
+          <div className="text-gray-500 mt-1 font-mono text-xs break-all">{path}</div>
+          <div className="text-gray-500 mt-2 text-xs">
+            Relative paths are resolved against the agent&apos;s working directory. If the agent
+            referenced a file in a different directory, use its full path.
+          </div>
+        </div>
+      ) : text == null ? (
+        <div className="text-gray-500 text-sm">Loading…</div>
+      ) : isMd ? (
+        <Markdown>{text}</Markdown>
+      ) : (
+        <pre className="text-xs font-mono text-gray-300 whitespace-pre-wrap break-words">{text}</pre>
+      )}
+    </div>
+  );
+
+  // Desktop: a full-height panel docked beside the chat. Mobile: a modal overlay.
+  if (variant === 'panel') {
+    return (
+      <div
+        className="flex flex-col h-full min-w-0 flex-shrink-0 bg-gray-900 border-l border-gray-700"
+        style={{ width: '42%', minWidth: 320, maxWidth: 760 }}
+      >
+        {header}
+        {body}
+      </div>
+    );
+  }
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
       <div className="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center gap-3 px-3 py-2 border-b border-gray-700 flex-shrink-0">
-          <span className="text-sm text-gray-200 font-mono truncate flex-1" title={path}>{name}</span>
-          <a href={dlUrl} download={name} className="flex items-center gap-1 text-xs text-gray-300 hover:text-white" title="Download file">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
-            </svg>
-            Download
-          </a>
-          <a href={url} target="_blank" rel="noopener noreferrer" className="text-xs text-gray-400 hover:text-gray-200">raw</a>
-          <button type="button" onClick={onClose} title="Close" className="text-gray-400 hover:text-white">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <div className="overflow-auto p-4 min-h-0">
-          {isImage ? (
-            <img src={url} alt={name} className="max-w-full mx-auto rounded" />
-          ) : isPdf ? (
-            <iframe src={url} title={name} className="w-full h-[75vh] rounded bg-white" />
-          ) : !isTextish ? (
-            <div className="text-gray-400 text-sm text-center py-8">No preview for this file type — use Download above.</div>
-          ) : err ? (
-            <div className="text-sm">
-              <div className="text-red-400">{err}</div>
-              <div className="text-gray-500 mt-1 font-mono text-xs break-all">{path}</div>
-              <div className="text-gray-500 mt-2 text-xs">
-                Relative paths are resolved against the agent&apos;s working directory. If the agent
-                referenced a file in a different directory, use its full path.
-              </div>
-            </div>
-          ) : text == null ? (
-            <div className="text-gray-500 text-sm">Loading…</div>
-          ) : isMd ? (
-            <Markdown>{text}</Markdown>
-          ) : (
-            <pre className="text-xs font-mono text-gray-300 whitespace-pre-wrap break-words">{text}</pre>
-          )}
-        </div>
+        {header}
+        {body}
       </div>
     </div>
   );
@@ -1130,6 +1158,8 @@ function FileViewer({ agentId, path, onClose }) {
 
 function ChatView({ agentId, session }) {
   const { sendAgentInput, answerAgentQuestion, getAgentPane, agentStates, agents } = useApp();
+  // Desktop docks the file viewer as a side panel; mobile uses a modal (no room to dock).
+  const isDesktop = useMediaQuery('(min-width: 768px)');
 
   // Which provider's transcript format to render (Claude vs Codex). Kept in a ref
   // too, so the long-lived WebSocket onmessage closure dedupes with the right key.
@@ -1581,7 +1611,8 @@ function ChatView({ agentId, session }) {
 
   return (
     <ChatAgentContext.Provider value={chatCtx}>
-    <div className="relative h-full w-full flex flex-col bg-gray-900">
+    <div className="relative h-full w-full flex bg-gray-900">
+      <div className="relative flex-1 min-w-0 flex flex-col bg-gray-900">
       {/* Filter toggle: hide all tool activity, show only the conversation */}
       <button
         type="button"
@@ -1734,6 +1765,12 @@ function ChatView({ agentId, session }) {
           </button>
         </div>
       </div>
+      </div>{/* end chat column */}
+
+      {/* Desktop: the file viewer docks as a side panel next to the chat */}
+      {fileViewerPath && isDesktop && (
+        <FileViewer variant="panel" agentId={agentId} path={fileViewerPath} onClose={() => setFileViewerPath(null)} />
+      )}
 
       {/* Full-size image viewer (data: URLs can't open in a new tab, so overlay) */}
       {lightbox && (
@@ -1760,9 +1797,9 @@ function ChatView({ agentId, session }) {
         </div>
       )}
 
-      {/* In-app file viewer (markdown rendered, other text as a mono block) */}
-      {fileViewerPath && (
-        <FileViewer agentId={agentId} path={fileViewerPath} onClose={() => setFileViewerPath(null)} />
+      {/* Mobile: the file viewer is a modal overlay (not enough room to dock) */}
+      {fileViewerPath && !isDesktop && (
+        <FileViewer variant="modal" agentId={agentId} path={fileViewerPath} onClose={() => setFileViewerPath(null)} />
       )}
     </div>
     </ChatAgentContext.Provider>
