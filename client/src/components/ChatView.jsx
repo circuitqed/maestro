@@ -1385,25 +1385,34 @@ function ChatView({ agentId, session }) {
   }, [isBusy, assistantCount]);
 
   // --- Sending --------------------------------------------------------------
-  // Upload each picked/dropped file into the agent's working dir; track per-file status.
-  const uploadFiles = useCallback(async (fileList) => {
+  // Upload each picked/dropped file into the agent's working dir. Uses XHR (not fetch)
+  // so large files show live progress instead of an indefinite spinner.
+  const uploadFiles = useCallback((fileList) => {
     const files = Array.from(fileList || []);
     if (!files.length) return;
     setSendError(null);
     for (const file of files) {
       const id = `${file.name}:${file.size}:${Math.random().toString(36).slice(2, 8)}`;
-      setAttachments((a) => [...a, { id, name: file.name, size: file.size, status: 'uploading', path: null }]);
-      try {
-        const res = await fetch(
-          `/api/agents/${encodeURIComponent(agentId)}/upload?name=${encodeURIComponent(file.name)}`,
-          { method: 'POST', body: file }
-        );
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
-        setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'done', name: data.name, path: data.path } : x)));
-      } catch (err) {
-        setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'error', error: err.message } : x)));
-      }
+      setAttachments((a) => [...a, { id, name: file.name, size: file.size, status: 'uploading', progress: 0, path: null }]);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `/api/agents/${encodeURIComponent(agentId)}/upload?name=${encodeURIComponent(file.name)}`);
+      xhr.upload.onprogress = (e) => {
+        if (!e.lengthComputable) return;
+        const pct = Math.round((e.loaded / e.total) * 100);
+        setAttachments((a) => a.map((x) => (x.id === id && x.status === 'uploading' ? { ...x, progress: pct } : x)));
+      };
+      xhr.onload = () => {
+        let data = {};
+        try { data = JSON.parse(xhr.responseText); } catch { /* non-JSON */ }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'done', name: data.name || x.name, path: data.path, progress: 100 } : x)));
+        } else {
+          setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'error', error: data.error || `Upload failed (${xhr.status})` } : x)));
+        }
+      };
+      xhr.onerror = () => setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'error', error: 'Network error during upload' } : x)));
+      xhr.onabort = () => setAttachments((a) => a.filter((x) => x.id !== id));
+      xhr.send(file);
     }
   }, [agentId]);
 
@@ -1641,6 +1650,9 @@ function ChatView({ agentId, session }) {
                   <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg>
                 )}
                 <span className="max-w-[160px] truncate">{a.name}</span>
+                {a.status === 'uploading' && typeof a.progress === 'number' && (
+                  <span className="text-gray-500 tabular-nums">{a.progress}%</span>
+                )}
                 <button type="button" onClick={() => removeAttachment(a.id)} className="text-gray-500 hover:text-gray-200" title="Remove">
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>

@@ -494,7 +494,9 @@ router.post('/:id/input', async (req, res) => {
 // (which is per-project, so uploads never leak across projects) so the agent can read
 // them by path; the chat then references the returned relative path.
 const UPLOAD_SUBDIR = 'uploads';
-const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+// Generous by default (attachments can be zips/datasets); override with MAESTRO_MAX_UPLOAD_MB.
+const MAX_UPLOAD_MB = Number(process.env.MAESTRO_MAX_UPLOAD_MB) || 2048;
+const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 
 // Sanitize a client filename to a safe basename: no path separators/traversal, a tight
 // charset, no leading dot (avoid hidden/".." names). Preserves the extension.
@@ -526,7 +528,7 @@ router.post('/:id/upload', async (req, res) => {
 
     const name = safeUploadName(req.query.name);
     if (Number(req.headers['content-length'] || 0) > MAX_UPLOAD_BYTES) {
-      return done(413, { error: 'File exceeds the 50 MB upload limit' });
+      return done(413, { error: `File exceeds the ${MAX_UPLOAD_MB} MB upload limit` });
     }
 
     const wd = workingDir.replace(/\/+$/, '');
@@ -573,7 +575,7 @@ router.post('/:id/upload', async (req, res) => {
       child.stderr.on('data', (d) => { stderr += d.toString(); });
       child.on('error', (e) => done(502, { error: `Upload failed: ${e.message}` }));
       child.on('close', (code) => {
-        if (aborted) return done(413, { error: 'File exceeds the 50 MB upload limit' });
+        if (aborted) return done(413, { error: `File exceeds the ${MAX_UPLOAD_MB} MB upload limit` });
         if (code === 0) return done(200, { name: finalName, path: relPath, absPath });
         return done(502, { error: `Upload failed (ssh ${code}): ${stderr.trim()}` });
       });
@@ -584,7 +586,7 @@ router.post('/:id/upload', async (req, res) => {
       const ws = fs.createWriteStream(absPath);
       ws.on('error', (e) => done(500, { error: `Upload failed: ${e.message}` }));
       ws.on('close', () => {
-        if (aborted) { try { fs.unlinkSync(absPath); } catch { /* ignore */ } return done(413, { error: 'File exceeds the 50 MB upload limit' }); }
+        if (aborted) { try { fs.unlinkSync(absPath); } catch { /* ignore */ } return done(413, { error: `File exceeds the ${MAX_UPLOAD_MB} MB upload limit` }); }
         return done(200, { name: finalName, path: relPath, absPath });
       });
       req.on('error', () => ws.destroy());
