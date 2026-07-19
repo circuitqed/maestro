@@ -2,6 +2,19 @@ import { randomUUID } from 'crypto';
 import { execOnHost, shellQuote } from './hosts.js';
 
 /**
+ * Shell-quoted EXACT target for a tmux `-t` argument.
+ *
+ * tmux treats `-t <name>` as a PATTERN, not a literal: it prefix-matches, so
+ * `-t maestro` silently resolves to a session named `maestro_shell` when no
+ * exact `maestro` exists. That made two agents whose names are prefixes of one
+ * another share one session (input, capture, kill and attach all hit the wrong
+ * one). The `=` prefix forces an exact-name match.
+ */
+function target(sessionName) {
+  return shellQuote(`=${sessionName}`);
+}
+
+/**
  * Get list of available tmux sessions
  * @param {object|null} host - Host row (null => local)
  */
@@ -31,7 +44,7 @@ export async function getTmuxSessions(host = null) {
  */
 export async function sessionExists(sessionName, host = null) {
   try {
-    await execOnHost(host, `tmux has-session -t ${shellQuote(sessionName)} 2>/dev/null`);
+    await execOnHost(host, `tmux has-session -t ${target(sessionName)} 2>/dev/null`);
     return true;
   } catch (err) {
     // tmux has-session exits 1 when the session/server genuinely doesn't exist.
@@ -108,7 +121,7 @@ export async function startAgentSession(sessionName, workingDir = null) {
  */
 export async function killSession(sessionName, host = null) {
   try {
-    await execOnHost(host, `tmux kill-session -t ${shellQuote(sessionName)}`);
+    await execOnHost(host, `tmux kill-session -t ${target(sessionName)}`);
     return { name: sessionName, killed: true };
   } catch (err) {
     if (err.message.includes('session not found') || err.message.includes("can't find session")) {
@@ -122,7 +135,7 @@ export async function killSession(sessionName, host = null) {
  * Send keys to a tmux session
  */
 export async function sendKeys(sessionName, keys, host = null) {
-  await execOnHost(host, `tmux send-keys -t ${shellQuote(sessionName)} "${keys}"`);
+  await execOnHost(host, `tmux send-keys -t ${target(sessionName)} "${keys}"`);
 }
 
 /**
@@ -141,7 +154,7 @@ export async function sendKeys(sessionName, keys, host = null) {
  */
 export async function sendText(sessionName, text, host = null) {
   const buf = `maestro-${randomUUID()}`;
-  const s = shellQuote(sessionName);
+  const s = target(sessionName);
   // Paste the text, then submit with Enter as a SEPARATE step after a short pause.
   // The Claude Code / Codex TUIs ingest a bracketed paste asynchronously, so an
   // Enter sent in the same instant can arrive before the paste is committed to the
@@ -166,7 +179,7 @@ export async function sendText(sessionName, text, host = null) {
 export async function sendAnswer(sessionName, choice, host = null) {
   const digit = String(parseInt(choice, 10));
   if (!/^[1-9]$/.test(digit)) throw new Error('choice must be 1-9');
-  await execOnHost(host, `tmux send-keys -t ${shellQuote(sessionName)} ${shellQuote(digit)}`);
+  await execOnHost(host, `tmux send-keys -t ${target(sessionName)} ${shellQuote(digit)}`);
 }
 
 /**
@@ -174,6 +187,6 @@ export async function sendAnswer(sessionName, choice, host = null) {
  * interactive prompt that isn't in the transcript yet).
  */
 export async function capturePane(sessionName, host = null) {
-  const { stdout } = await execOnHost(host, `tmux capture-pane -t ${shellQuote(sessionName)} -p`);
+  const { stdout } = await execOnHost(host, `tmux capture-pane -t ${target(sessionName)} -p`);
   return stdout;
 }

@@ -82,8 +82,11 @@ export async function execOnHost(host, command, opts = {}) {
  * Build the {file, args} pair for pty.spawn to attach to a tmux session
  */
 export function attachSpawnArgs(host, sessionName) {
+  // `=` forces an EXACT session match — tmux otherwise prefix-matches `-t`, so
+  // attaching to `maestro` would land in `maestro_shell`. See tmux.js target().
+  const exact = `=${sessionName}`;
   if (!isRemote(host)) {
-    return { file: 'tmux', args: ['attach-session', '-t', sessionName] };
+    return { file: 'tmux', args: ['attach-session', '-t', exact] };
   }
   return {
     file: 'ssh',
@@ -91,7 +94,7 @@ export function attachSpawnArgs(host, sessionName) {
       ...sshBaseArgs(host),
       '-t',
       host.ssh_target,
-      remoteWrap(host, `exec tmux attach-session -t ${shellQuote(sessionName)}`),
+      remoteWrap(host, `exec tmux attach-session -t ${shellQuote(exact)}`),
     ],
   };
 }
