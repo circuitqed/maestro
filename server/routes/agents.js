@@ -104,6 +104,18 @@ async function hostIsFile(host, p) {
   }
 }
 
+async function hostIsDir(host, p) {
+  try {
+    if (isRemote(host)) {
+      const { stdout } = await execOnHost(host, `test -d ${shellQuote(p)} && echo y`);
+      return String(stdout).trim() === 'y';
+    }
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 // List agents (scoped to user's accessible projects)
 router.get('/', (req, res) => {
   try {
@@ -478,9 +490,10 @@ router.post('/:id/input', async (req, res) => {
   }
 });
 
-// Chat file attachments are stored under this dir (relative to the working dir) so the
-// agent can read them by path; the chat then references the returned relative path.
-const UPLOAD_SUBDIR = '.maestro/uploads';
+// Chat file attachments are stored under this dir inside the agent's own working dir
+// (which is per-project, so uploads never leak across projects) so the agent can read
+// them by path; the chat then references the returned relative path.
+const UPLOAD_SUBDIR = 'uploads';
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 // Sanitize a client filename to a safe basename: no path separators/traversal, a tight
@@ -492,7 +505,7 @@ function safeUploadName(name) {
   return n.slice(0, 120);
 }
 
-// Upload one file into the agent's working dir (<wd>/.maestro/uploads/<name>) so a chat
+// Upload one file into the agent's working dir (<wd>/uploads/<name>) so a chat
 // message can reference it for the agent to read. The body is the raw file bytes
 // (express.json skips non-JSON content types); streamed to disk locally or piped over
 // SSH (`cat >`) remotely — never fully buffered. Returns the working-dir-relative path.
@@ -518,16 +531,17 @@ router.post('/:id/upload', async (req, res) => {
 
     const wd = workingDir.replace(/\/+$/, '');
     const dir = `${wd}/${UPLOAD_SUBDIR}`;
+    // Only self-manage a .gitignore when WE first create the uploads dir, so a project
+    // that already keeps a tracked uploads/ of its own is never clobbered.
+    const dirPreexisted = await hostIsDir(host, dir);
     await ensureDirOnHost(host, dir);
-    // Keep uploads out of the user's git history (agents run `git add .`): drop a
-    // self-contained .maestro/.gitignore ignoring everything under it. Best-effort.
-    try {
-      const gitignore = `${wd}/.maestro/.gitignore`;
-      if (!(await hostIsFile(host, gitignore))) {
-        await execOnHost(host, `printf '*\\n' > ${shellQuote(gitignore)}`);
+    if (!dirPreexisted) {
+      // Keep chat attachments out of the user's git history (agents run `git add .`).
+      try {
+        await execOnHost(host, `printf '*\\n' > ${shellQuote(`${dir}/.gitignore`)}`);
+      } catch {
+        /* non-fatal */
       }
-    } catch {
-      /* non-fatal */
     }
 
     // Don't clobber an existing upload with the same name.
