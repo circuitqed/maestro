@@ -1113,6 +1113,11 @@ function ChatView({ agentId, session }) {
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState(null);
   const [pendingSent, setPendingSent] = useState(false);
+  // Files attached to the next message: each { id, name, size, status, path?, error? }.
+  // Uploaded into the agent's working dir; the sent message references them by path.
+  const [attachments, setAttachments] = useState([]);
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef(null);
   // Hidden until the initial history burst settles, so we reveal already pinned
   // at the bottom instead of visibly scrolling through the whole transcript.
   const [ready, setReady] = useState(false);
@@ -1380,21 +1385,59 @@ function ChatView({ agentId, session }) {
   }, [isBusy, assistantCount]);
 
   // --- Sending --------------------------------------------------------------
+  // Upload each picked/dropped file into the agent's working dir; track per-file status.
+  const uploadFiles = useCallback(async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    setSendError(null);
+    for (const file of files) {
+      const id = `${file.name}:${file.size}:${Math.random().toString(36).slice(2, 8)}`;
+      setAttachments((a) => [...a, { id, name: file.name, size: file.size, status: 'uploading', path: null }]);
+      try {
+        const res = await fetch(
+          `/api/agents/${encodeURIComponent(agentId)}/upload?name=${encodeURIComponent(file.name)}`,
+          { method: 'POST', body: file }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
+        setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'done', name: data.name, path: data.path } : x)));
+      } catch (err) {
+        setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'error', error: err.message } : x)));
+      }
+    }
+  }, [agentId]);
+
+  const removeAttachment = useCallback((id) => {
+    setAttachments((a) => a.filter((x) => x.id !== id));
+  }, []);
+
   const handleSend = useCallback(async () => {
-    const text = input;
-    if (!text.trim() || sending) return;
+    const text = input.trim();
+    const ready = attachments.filter((a) => a.status === 'done' && a.path);
+    const uploading = attachments.some((a) => a.status === 'uploading');
+    if (sending || uploading) return;
+    if (!text && ready.length === 0) return;
     setSending(true);
     setSendError(null);
+    // Reference each uploaded file by its working-dir path so the agent can open it.
+    // Claude auto-reads @-mentioned files; Codex just needs the path.
+    const ref = (p) => (provider === 'codex' ? p : `@${p}`);
+    let composed = text;
+    if (ready.length) {
+      const list = ready.map((a) => ref(a.path)).join('\n');
+      composed = composed ? `${composed}\n\nAttached file(s):\n${list}` : `Attached file(s):\n${list}`;
+    }
     try {
-      await sendAgentInput(agentId, text);
+      await sendAgentInput(agentId, composed);
       setInput('');
+      setAttachments([]);
       setPendingSent(true);
     } catch (err) {
       setSendError(err.message || 'Failed to send');
     } finally {
       setSending(false);
     }
-  }, [input, sending, sendAgentInput, agentId]);
+  }, [input, attachments, sending, sendAgentInput, agentId, provider]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1572,9 +1615,56 @@ function ChatView({ agentId, session }) {
       )}
 
       {/* Send box */}
-      <div className="flex-shrink-0 border-t border-gray-700 bg-gray-800 p-2">
+      <div
+        className={`flex-shrink-0 border-t bg-gray-800 p-2 transition-colors ${dragging ? 'border-blue-500 bg-blue-500/5' : 'border-gray-700'}`}
+        onDragOver={(e) => { e.preventDefault(); if (!dragging) setDragging(true); }}
+        onDragLeave={(e) => { e.preventDefault(); if (e.currentTarget === e.target) setDragging(false); }}
+        onDrop={(e) => { e.preventDefault(); setDragging(false); if (e.dataTransfer && e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files); }}
+      >
         {sendError && <div className="text-xs text-red-400 mb-1">{sendError}</div>}
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-1.5">
+            {attachments.map((a) => (
+              <span
+                key={a.id}
+                title={a.status === 'error' ? a.error : (a.path || a.name)}
+                className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs border ${a.status === 'error' ? 'border-red-500/50 bg-red-500/10 text-red-300' : 'border-gray-600 bg-gray-900 text-gray-300'}`}
+              >
+                {a.status === 'uploading' ? (
+                  <svg className="w-3 h-3 animate-spin flex-shrink-0" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                  </svg>
+                ) : a.status === 'error' ? (
+                  <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /></svg>
+                ) : (
+                  <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg>
+                )}
+                <span className="max-w-[160px] truncate">{a.name}</span>
+                <button type="button" onClick={() => removeAttachment(a.id)} className="text-gray-500 hover:text-gray-200" title="Remove">
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2 w-full min-w-0">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => { uploadFiles(e.target.files); e.target.value = ''; }}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current && fileInputRef.current.click()}
+            title="Attach files"
+            aria-label="Attach files"
+            className="flex-shrink-0 self-end p-2 text-gray-400 hover:text-gray-200 hover:bg-gray-700 rounded transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg>
+          </button>
           <textarea
             ref={textareaRef}
             value={input}
@@ -1587,7 +1677,7 @@ function ChatView({ agentId, session }) {
           <button
             type="button"
             onClick={handleSend}
-            disabled={sending || !input.trim()}
+            disabled={sending || attachments.some((a) => a.status === 'uploading') || (!input.trim() && !attachments.some((a) => a.status === 'done'))}
             className="flex-shrink-0 px-4 py-2 text-sm font-medium rounded bg-blue-600 text-white hover:bg-blue-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {sending ? '…' : 'Send'}

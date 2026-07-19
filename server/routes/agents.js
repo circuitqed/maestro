@@ -478,6 +478,109 @@ router.post('/:id/input', async (req, res) => {
   }
 });
 
+// Chat file attachments are stored under this dir (relative to the working dir) so the
+// agent can read them by path; the chat then references the returned relative path.
+const UPLOAD_SUBDIR = '.maestro/uploads';
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+// Sanitize a client filename to a safe basename: no path separators/traversal, a tight
+// charset, no leading dot (avoid hidden/".." names). Preserves the extension.
+function safeUploadName(name) {
+  let n = path.posix.basename(String(name || '').replace(/\\/g, '/')).trim();
+  n = n.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^\.+/, '');
+  if (!n) n = 'file';
+  return n.slice(0, 120);
+}
+
+// Upload one file into the agent's working dir (<wd>/.maestro/uploads/<name>) so a chat
+// message can reference it for the agent to read. The body is the raw file bytes
+// (express.json skips non-JSON content types); streamed to disk locally or piped over
+// SSH (`cat >`) remotely — never fully buffered. Returns the working-dir-relative path.
+router.post('/:id/upload', async (req, res) => {
+  let responded = false;
+  const done = (code, body) => { if (!responded) { responded = true; res.status(code).json(body); } };
+  try {
+    const agent = getAgent(req.params.id);
+    if (!agent) return done(404, { error: 'Agent not found' });
+    if (!checkAgentAccess(req, res, agent)) return;
+
+    const host = agent.host_id ? getHost(agent.host_id) : null;
+    if (agent.host_id && !host) return done(400, { error: 'Unknown host' });
+
+    const project = agent.project_id ? getProject(agent.project_id) : null;
+    const workingDir = project ? resolveWorkingDir(project, host) : null;
+    if (!workingDir) return done(400, { error: 'No working directory for this agent' });
+
+    const name = safeUploadName(req.query.name);
+    if (Number(req.headers['content-length'] || 0) > MAX_UPLOAD_BYTES) {
+      return done(413, { error: 'File exceeds the 50 MB upload limit' });
+    }
+
+    const wd = workingDir.replace(/\/+$/, '');
+    const dir = `${wd}/${UPLOAD_SUBDIR}`;
+    await ensureDirOnHost(host, dir);
+    // Keep uploads out of the user's git history (agents run `git add .`): drop a
+    // self-contained .maestro/.gitignore ignoring everything under it. Best-effort.
+    try {
+      const gitignore = `${wd}/.maestro/.gitignore`;
+      if (!(await hostIsFile(host, gitignore))) {
+        await execOnHost(host, `printf '*\\n' > ${shellQuote(gitignore)}`);
+      }
+    } catch {
+      /* non-fatal */
+    }
+
+    // Don't clobber an existing upload with the same name.
+    let finalName = name;
+    if (await hostIsFile(host, `${dir}/${finalName}`)) {
+      const dot = name.lastIndexOf('.');
+      const stem = dot > 0 ? name.slice(0, dot) : name;
+      const ext = dot > 0 ? name.slice(dot) : '';
+      finalName = `${stem}-${randomUUID().slice(0, 8)}${ext}`;
+    }
+    const relPath = `${UPLOAD_SUBDIR}/${finalName}`;
+    const absPath = `${dir}/${finalName}`;
+
+    // Enforce the cap even when Content-Length is absent/lying.
+    let received = 0;
+    let aborted = false;
+    req.on('data', (chunk) => {
+      received += chunk.length;
+      if (!aborted && received > MAX_UPLOAD_BYTES) { aborted = true; req.destroy(); }
+    });
+
+    if (isRemote(host)) {
+      const child = spawn(
+        'ssh',
+        [...sshBaseArgs(host), host.ssh_target, remoteWrap(host, `cat > ${shellQuote(absPath)}`)],
+        { stdio: ['pipe', 'ignore', 'pipe'] }
+      );
+      let stderr = '';
+      child.stderr.on('data', (d) => { stderr += d.toString(); });
+      child.on('error', (e) => done(502, { error: `Upload failed: ${e.message}` }));
+      child.on('close', (code) => {
+        if (aborted) return done(413, { error: 'File exceeds the 50 MB upload limit' });
+        if (code === 0) return done(200, { name: finalName, path: relPath, absPath });
+        return done(502, { error: `Upload failed (ssh ${code}): ${stderr.trim()}` });
+      });
+      child.stdin.on('error', () => { /* EPIPE if ssh dies first */ });
+      req.on('error', () => { try { child.kill('SIGTERM'); } catch { /* gone */ } });
+      req.pipe(child.stdin);
+    } else {
+      const ws = fs.createWriteStream(absPath);
+      ws.on('error', (e) => done(500, { error: `Upload failed: ${e.message}` }));
+      ws.on('close', () => {
+        if (aborted) { try { fs.unlinkSync(absPath); } catch { /* ignore */ } return done(413, { error: 'File exceeds the 50 MB upload limit' }); }
+        return done(200, { name: finalName, path: relPath, absPath });
+      });
+      req.on('error', () => ws.destroy());
+      req.pipe(ws);
+    }
+  } catch (err) {
+    done(500, { error: err.message });
+  }
+});
+
 // Current pane content (to detect an active interactive prompt / question)
 router.get('/:id/pane', async (req, res) => {
   try {
