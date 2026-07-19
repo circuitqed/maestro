@@ -15,6 +15,18 @@ function target(sessionName) {
 }
 
 /**
+ * Shell-quoted EXACT target for commands taking a target-PANE rather than a
+ * target-session (send-keys, paste-buffer, capture-pane).
+ *
+ * A bare `=name` is not a valid pane target ("can't find pane"); the session must
+ * be qualified with a trailing `:` so tmux resolves it to that session's active
+ * window/pane — `=name:` — while still matching the session name exactly.
+ */
+function paneTarget(sessionName) {
+  return shellQuote(`=${sessionName}:`);
+}
+
+/**
  * Get list of available tmux sessions
  * @param {object|null} host - Host row (null => local)
  */
@@ -135,7 +147,7 @@ export async function killSession(sessionName, host = null) {
  * Send keys to a tmux session
  */
 export async function sendKeys(sessionName, keys, host = null) {
-  await execOnHost(host, `tmux send-keys -t ${target(sessionName)} "${keys}"`);
+  await execOnHost(host, `tmux send-keys -t ${paneTarget(sessionName)} "${keys}"`);
 }
 
 /**
@@ -154,7 +166,7 @@ export async function sendKeys(sessionName, keys, host = null) {
  */
 export async function sendText(sessionName, text, host = null) {
   const buf = `maestro-${randomUUID()}`;
-  const s = target(sessionName);
+  const s = paneTarget(sessionName); // paste-buffer/send-keys take a pane target
   // Paste the text, then submit with Enter as a SEPARATE step after a short pause.
   // The Claude Code / Codex TUIs ingest a bracketed paste asynchronously, so an
   // Enter sent in the same instant can arrive before the paste is committed to the
@@ -179,7 +191,7 @@ export async function sendText(sessionName, text, host = null) {
 export async function sendAnswer(sessionName, choice, host = null) {
   const digit = String(parseInt(choice, 10));
   if (!/^[1-9]$/.test(digit)) throw new Error('choice must be 1-9');
-  await execOnHost(host, `tmux send-keys -t ${target(sessionName)} ${shellQuote(digit)}`);
+  await execOnHost(host, `tmux send-keys -t ${paneTarget(sessionName)} ${shellQuote(digit)}`);
 }
 
 /**
@@ -187,6 +199,6 @@ export async function sendAnswer(sessionName, choice, host = null) {
  * interactive prompt that isn't in the transcript yet).
  */
 export async function capturePane(sessionName, host = null) {
-  const { stdout } = await execOnHost(host, `tmux capture-pane -t ${target(sessionName)} -p`);
+  const { stdout } = await execOnHost(host, `tmux capture-pane -t ${paneTarget(sessionName)} -p`);
   return stdout;
 }
