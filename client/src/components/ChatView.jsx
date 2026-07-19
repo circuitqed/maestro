@@ -460,9 +460,13 @@ function ToolResultCard({ result, onImage, isError, diff }) {
   } else if (Array.isArray(content)) {
     content.forEach((b) => {
       if (!b) return;
-      if (b.type === 'text') texts.push(stripToolError(b.text));
+      // Claude uses {type:'text'} / {type:'image',source:{base64}}; Codex tool output
+      // uses {type:'input_text'} / {type:'input_image',image_url:'data:...'}.
+      if (b.type === 'text' || b.type === 'input_text') texts.push(stripToolError(b.text));
       else if (b.type === 'image' && b.source?.type === 'base64') {
         images.push(`data:${b.source.media_type};base64,${b.source.data}`);
+      } else if (b.type === 'input_image' && typeof b.image_url === 'string' && b.image_url.startsWith('data:')) {
+        images.push(b.image_url);
       }
     });
   }
@@ -968,8 +972,13 @@ function codexPart(rec, ctx) {
     return { message: null, tool: <CodexToolCard input={p.input} />, toolCount: 1 };
   }
   if (rec.type === 'response_item' && p.type === 'custom_tool_call_output') {
-    const text = codexOutputText(p.output);
-    return text.trim() ? { message: null, tool: <ToolResultCard result={{ content: text }} onImage={ctx && ctx.onImage} />, toolCount: 0 } : { message: null, tool: null, toolCount: 0 };
+    // Pass the raw output through so ToolResultCard renders embedded images
+    // (Codex view_image / script plots come back as input_image data URLs), not
+    // just the text. Skip only when there's neither text nor an image.
+    const out = p.output;
+    const hasImage = Array.isArray(out) && out.some((b) => b && ((b.type === 'input_image' && b.image_url) || (b.type === 'image' && b.source)));
+    if (!codexOutputText(out).trim() && !hasImage) return { message: null, tool: null, toolCount: 0 };
+    return { message: null, tool: <ToolResultCard result={{ content: out }} onImage={ctx && ctx.onImage} />, toolCount: 0 };
   }
   if (rec.type === 'event_msg' && p.type === 'patch_apply_end') {
     return { message: null, tool: <CodexPatchCard payload={p} />, toolCount: 1 };
