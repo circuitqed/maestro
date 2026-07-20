@@ -84,15 +84,23 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
   // Smart default: when the project already has agents, pre-select the first
   // provider it doesn't have yet (Claude → Codex → Gemini → Aider) so "add another
   // agent" naturally reaches for a complementary tool. Stops once the user picks.
+  //
+  // Only ever suggests a provider already in use SOMEWHERE in this deployment.
+  // Suggesting one that isn't installed on the target host fails silently and
+  // confusingly: the provider command is wrapped in `bash -lc '<cmd>; exec bash'`,
+  // so a missing binary just prints "command not found" and leaves a bare shell —
+  // it looks like the agent "wouldn't start" rather than a bad provider choice.
   useEffect(() => {
     if (hideProviderSelector || providerTouched || !effectiveProjectId) return;
+    const providerOf = (a) => a.config?.provider || 'claude';
+    const known = new Set((agents || []).map(providerOf)); // proven to exist here
     const used = new Set(
       (agents || [])
         .filter((a) => String(a.project_id) === String(effectiveProjectId))
-        .map((a) => a.config?.provider || 'claude')
+        .map(providerOf)
     );
     if (used.size === 0) return; // first agent on the project → keep the Claude default
-    const next = ['claude', 'codex', 'gemini', 'aider'].find((p) => !used.has(p));
+    const next = ['claude', 'codex', 'gemini', 'aider'].find((p) => known.has(p) && !used.has(p));
     if (next && next !== provider) setProvider(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveProjectId, agents]);
