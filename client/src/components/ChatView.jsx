@@ -209,8 +209,36 @@ function MarkdownLink({ node, href, children, ...props }) {
   );
 }
 
+// A markdown image ![alt](src). An external URL (http/data/blob) renders directly;
+// a working-dir path is routed through the agent's file endpoint (otherwise the
+// browser resolves it against the maestro origin and shows a broken-image icon).
+// Click opens it in the file viewer.
+function MarkdownImage({ src, alt }) {
+  const ctx = useContext(ChatAgentContext);
+  const agentId = ctx && ctx.agentId;
+  const openFile = ctx && ctx.openFile;
+  const raw = typeof src === 'string' ? src : '';
+  const external = /^\/\//.test(raw) || /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || /^(data|blob):/i.test(raw);
+  if (!raw || external || !agentId) {
+    return <img src={raw || undefined} alt={alt || ''} loading="lazy" className="max-w-full rounded my-1" />;
+  }
+  const clean = raw.replace(/#.*$/, '');
+  const url = `/api/agents/${encodeURIComponent(agentId)}/file?path=${encodeURIComponent(clean)}`;
+  return (
+    <img
+      src={url}
+      alt={alt || ''}
+      title={openFile ? `Open ${clean}` : clean}
+      loading="lazy"
+      onClick={openFile ? () => openFile(clean) : undefined}
+      className={`max-w-full rounded my-1 ${openFile ? 'cursor-zoom-in' : ''}`}
+    />
+  );
+}
+
 const markdownComponents = {
   a: MarkdownLink,
+  img: MarkdownImage,
   p: ({ node, ...props }) => <p className="my-1 leading-relaxed" {...props} />,
   ul: ({ node, ...props }) => <ul className="list-disc pl-5 my-1 space-y-0.5" {...props} />,
   ol: ({ node, ...props }) => <ol className="list-decimal pl-5 my-1 space-y-0.5" {...props} />,
