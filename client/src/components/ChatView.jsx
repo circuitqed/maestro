@@ -1132,11 +1132,9 @@ function FileViewer({ agentId, path, onClose, variant = 'modal' }) {
 
   // Desktop: a full-height panel docked beside the chat. Mobile: a modal overlay.
   if (variant === 'panel') {
+    // Fills its wrapper; the wrapper in ChatView owns the (resizable) width.
     return (
-      <div
-        className="flex flex-col h-full min-w-0 flex-shrink-0 bg-gray-900 border-l border-gray-700"
-        style={{ width: '42%', minWidth: 320, maxWidth: 760 }}
-      >
+      <div className="flex flex-col h-full w-full min-w-0 bg-gray-900">
         {header}
         {body}
       </div>
@@ -1172,6 +1170,35 @@ function ChatView({ agentId, session }) {
 
   // Open a working-dir file in the in-app viewer; provided to file links via context.
   const openFile = useCallback((path) => setFileViewerPath(path), []);
+
+  // Drag the divider to resize the file side panel. Width is measured from the
+  // container's right edge, clamped so the chat keeps a usable minimum, and
+  // persisted on release. The chat column stays a plain flex-1 div throughout,
+  // so resizing never remounts the transcript (no scroll jump / re-fetch).
+  const startFileResize = useCallback((e) => {
+    e.preventDefault();
+    let last = 0;
+    const onMove = (ev) => {
+      const el = outerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const max = Math.max(300, rect.width - 340); // keep >= ~340px of chat
+      const w = Math.max(300, Math.min(rect.right - ev.clientX, max));
+      last = w;
+      setFilePanelWidth(w);
+    };
+    const onUp = () => {
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      if (last) { try { localStorage.setItem('maestro-file-panel-w', String(Math.round(last))); } catch { /* ignore */ } }
+    };
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, []);
   const chatCtx = useMemo(() => ({ agentId, openFile }), [agentId, openFile]);
 
   const [records, setRecords] = useState([]);
@@ -1191,6 +1218,10 @@ function ChatView({ agentId, session }) {
   const [ready, setReady] = useState(false);
   const [lightbox, setLightbox] = useState(null); // full-size image src, or null
   const [fileViewerPath, setFileViewerPath] = useState(null); // in-app file viewer, or null
+  // Width (px) of the desktop file side panel; drag-resizable and persisted.
+  const [filePanelWidth, setFilePanelWidth] = useState(() => {
+    try { const v = Number(localStorage.getItem('maestro-file-panel-w')); return v >= 280 ? v : 460; } catch { return 460; }
+  });
   // "Messages only" hides all tool activity (calls, results, diffs, thinking); persisted.
   const [messagesOnly, setMessagesOnly] = useState(() => {
     try { return localStorage.getItem('maestro-chat-messages-only') === '1'; } catch { return false; }
@@ -1207,6 +1238,7 @@ function ChatView({ agentId, session }) {
   const mountedRef = useRef(true);
   const seenUuidsRef = useRef(new Set());
   const scrollRef = useRef(null);
+  const outerRef = useRef(null); // the chat|file-panel flex row (for resize math)
   const contentRef = useRef(null);
   const atBottomRef = useRef(true);
   const lastTopRef = useRef(0);
@@ -1611,7 +1643,7 @@ function ChatView({ agentId, session }) {
 
   return (
     <ChatAgentContext.Provider value={chatCtx}>
-    <div className="relative h-full w-full flex bg-gray-900">
+    <div ref={outerRef} className="relative h-full w-full flex bg-gray-900">
       <div className="relative flex-1 min-w-0 flex flex-col bg-gray-900">
       {/* Filter toggle: hide all tool activity, show only the conversation */}
       <button
@@ -1767,9 +1799,22 @@ function ChatView({ agentId, session }) {
       </div>
       </div>{/* end chat column */}
 
-      {/* Desktop: the file viewer docks as a side panel next to the chat */}
+      {/* Desktop: the file viewer docks as a resizable side panel next to the chat */}
       {fileViewerPath && isDesktop && (
-        <FileViewer variant="panel" agentId={agentId} path={fileViewerPath} onClose={() => setFileViewerPath(null)} />
+        <>
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            title="Drag to resize"
+            onMouseDown={startFileResize}
+            className="w-2 flex-shrink-0 bg-gray-700 hover:bg-primary-500 cursor-col-resize transition-colors flex items-center justify-center group"
+          >
+            <div className="w-1 h-8 bg-gray-600 group-hover:bg-primary-400 rounded-full transition-colors" />
+          </div>
+          <div className="h-full flex-shrink-0 min-w-0" style={{ width: filePanelWidth }}>
+            <FileViewer variant="panel" agentId={agentId} path={fileViewerPath} onClose={() => setFileViewerPath(null)} />
+          </div>
+        </>
       )}
 
       {/* Full-size image viewer (data: URLs can't open in a new tab, so overlay) */}
