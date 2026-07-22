@@ -199,16 +199,12 @@ function useTerminal(sessionName, hostId) {
         return false;
       }
 
-      // Paste: Ctrl+Shift+V or Cmd+V (Mac)
-      if ((event.ctrlKey && event.shiftKey && event.code === 'KeyV') ||
-          (isMac && event.metaKey && event.code === 'KeyV')) {
-        navigator.clipboard.readText().then(text => {
-          if (text && wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({ type: 'input', data: text }));
-          }
-        }).catch(() => {});
-        return false;
-      }
+      // Paste is intentionally NOT handled here. xterm handles the browser's native
+      // `paste` event itself (for Cmd+V, Ctrl+V, Ctrl+Shift+V, right-click paste)
+      // and sends it via onData — and it wraps the text in bracketed-paste markers
+      // the shell/tmux expect. A custom Cmd+V handler here caused a DOUBLE paste:
+      // returning false prevent-defaults the keydown but not the separate `paste`
+      // event, so both this handler and xterm's native paste fired for one Cmd+V.
 
       return true;
     });
