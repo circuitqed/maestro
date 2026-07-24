@@ -27,7 +27,7 @@ import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js'
 import { appendAgentLane } from '../services/scaffold.js';
 import { resolveWorkingDir, ensureDirOnHost } from '../services/projectPaths.js';
 import { pinnedTranscriptExists } from '../services/transcript.js';
-import { resolveTranscriptFile, readTranscriptTail, listCodexRolloutIdsForCwd, captureCodexRolloutId } from '../services/transcript.js';
+import { resolveTranscriptFile, readTranscriptTail } from '../services/transcript.js';
 
 const router = Router();
 
@@ -368,18 +368,6 @@ router.post('/:id/start', async (req, res) => {
       }
     }
 
-    // Codex has no --session-id to pin ahead of time, so snapshot the rollout ids for
-    // this cwd BEFORE launching; after start we diff to find the one this launch made.
-    // Best-effort — never blocks or fails the start.
-    let codexBeforeIds = [];
-    if (provider.id === 'codex' && workingDir) {
-      try {
-        codexBeforeIds = await listCodexRolloutIdsForCwd(host, workingDir);
-      } catch {
-        codexBeforeIds = [];
-      }
-    }
-
     let result;
     try {
       if (provider.id === 'shell') {
@@ -408,17 +396,9 @@ router.post('/:id/start', async (req, res) => {
     updateAgentStatus(req.params.id, 'running');
     if (provider.monitorable) registerAgent(agent.id, agent.screen_session, host);
 
-    // Pin the freshly created Codex rollout so this agent's chat resolves to ITS OWN
-    // transcript rather than the newest one in a shared working dir. Bounded poll,
-    // best-effort: on timeout the resolver falls back to the newest-cwd match.
-    if (provider.id === 'codex' && workingDir) {
-      try {
-        const rolloutId = await captureCodexRolloutId(host, workingDir, codexBeforeIds);
-        if (rolloutId) setAgentClaudeSessionId(agent.id, rolloutId);
-      } catch {
-        /* leave unpinned */
-      }
-    }
+    // Codex is NOT pinned here: it creates its rollout file on the first user message,
+    // not at launch, so there is nothing to capture yet. resolveTranscriptFile reads it
+    // off the running process instead and refreshes the pin then.
 
     res.json({ success: true, message: `${provider.name} started`, agent: getAgent(req.params.id) });
   } catch (err) {
@@ -660,7 +640,9 @@ router.get('/:id/transcript/meta', async (req, res) => {
     }
 
     const filePath = await resolveTranscriptFile(agent, host);
-    res.json({ available: !!filePath, sessionId: agent.claude_session_id || null });
+    // Re-read: resolving a Codex agent can refresh the pin (it is discovered from the
+    // running session, not at start), so `agent` may hold a stale id by now.
+    res.json({ available: !!filePath, sessionId: getAgent(agent.id)?.claude_session_id || null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

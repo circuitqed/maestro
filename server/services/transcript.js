@@ -6,8 +6,15 @@ import {
   isRemote,
   sshBaseArgs,
   remoteWrap,
+  isValidSessionName,
 } from './hosts.js';
-import { getAgent, getHost, getProject } from './db.js';
+import {
+  getAgent,
+  getHost,
+  getProject,
+  getPinnedSessionIdsOnHost,
+  setAgentClaudeSessionId,
+} from './db.js';
 import { resolveWorkingDir } from './projectPaths.js';
 
 // A single transcript line can legitimately be large (base64 images embedded in
@@ -77,29 +84,6 @@ export async function pinnedTranscriptExists(host, sessionId) {
   return !!(await findPinnedTranscript(host, sessionId));
 }
 
-/**
- * Locate a Codex agent's rollout transcript. Codex stores sessions as
- * ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl, organised by DATE (not
- * cwd), and the first line (session_meta) records the cwd. So: scan the newest
- * rollout files and return the first whose session_meta cwd matches the agent's
- * working directory. Host-aware; returns an absolute path (valid on host) or null.
- */
-export async function resolveCodexTranscriptFile(host, cwd) {
-  if (!cwd) return null;
-  const needle = `"cwd":"${cwd}"`; // matched literally against line 1 (session_meta)
-  const script =
-    `ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -50 | while read f; do ` +
-    `head -1 "$f" | grep -qF ${shellQuote(needle)} && { echo "$f"; break; }; done`;
-  try {
-    const { stdout } = await execOnHost(host, script);
-    return firstLine(stdout);
-  } catch {
-    return null;
-  }
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 // The trailing UUID of a Codex rollout filename
 // (rollout-<ISO ts>-<uuid>.jsonl); null if the name doesn't match.
 function rolloutIdFromPath(p) {
@@ -107,52 +91,68 @@ function rolloutIdFromPath(p) {
   return m ? m[1] : null;
 }
 
-// Locate the exact rollout for a pinned Codex session id (captured at start). This is
-// what lets two Codex agents sharing a working dir resolve to their own transcripts.
-export async function findCodexRolloutById(host, id) {
-  if (!isUuid(id)) return null;
-  // `id` is validated hex+dashes, so it is safe to inline; the * do the globbing.
-  const script = `ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*-${id}.jsonl 2>/dev/null | head -1`;
+/**
+ * Resolve a Codex agent's rollout from the RUNNING session rather than from
+ * bookkeeping done at start time.
+ *
+ * Why: Codex creates its rollout file lazily — on the first user message, not at
+ * launch — so a snapshot-diff taken during `start` almost always finds nothing and
+ * the agent keeps the pin from its PREVIOUS run. The chat then tails a dead session
+ * while tmux shows the live one (and after a working-dir change the two aren't even
+ * the same conversation). Asking the live process removes that whole class of drift.
+ *
+ * Order, most authoritative first:
+ *  1. the rollout the agent's own pane process currently holds open (`/proc/<pid>/fd`
+ *     on Linux, `lsof` on macOS) — exact, and correct even when several agents share
+ *     one working directory;
+ *  2. the pinned id, but only if that file was written during the CURRENT tmux
+ *     session — an older mtime means it belongs to a previous run;
+ *  3. the newest rollout whose recorded cwd matches, skipping ids pinned by sibling
+ *     agents so a shared working dir can't hand back someone else's conversation.
+ *
+ * Codex holds the rollout open on Linux but not on macOS, so (1) is best-effort and
+ * the later steps still carry macOS hosts. Returns an absolute host path, or null.
+ */
+export async function resolveCodexRollout(host, sessionName, cwd, pinnedId, excludeIds = []) {
+  if (!sessionName || !isValidSessionName(sessionName)) return null;
+  const pin = isUuid(pinnedId) ? pinnedId : '';
+  const exclude = (excludeIds || []).filter((id) => isUuid(id) && id !== pin).join(' ');
+  const S = shellQuote(sessionName);
+  const C = shellQuote(cwd || '');
+  const P = shellQuote(pin);
+  const X = shellQuote(exclude);
+
+  // `created` is the current tmux session's start time; a rollout last written before
+  // it cannot belong to this run. list-sessions (not display-message, which needs a
+  // client and prints nothing over ssh) is what actually reports it.
+  const script = [
+    `S=${S}; C=${C}; P=${P}; X=${X}`,
+    `created=$(tmux list-sessions -f "#{==:#{session_name},$S}" -F '#{session_created}' 2>/dev/null | head -1)`,
+    `[ -n "$created" ] || created=0`,
+    `m(){ stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }`,
+    `tty=$(tmux list-panes -t "=$S:" -F '#{pane_tty}' 2>/dev/null | head -1 | sed 's|^/dev/||')`,
+    `if [ -n "$tty" ]; then for p in $(ps -t "$tty" -o pid= 2>/dev/null); do`,
+    `  f=$(ls -l "/proc/$p/fd" 2>/dev/null | sed -n 's|.* -> \\(/.*\\.codex/sessions/.*\\.jsonl\\)$|\\1|p' | head -1)`,
+    `  [ -n "$f" ] || f=$(lsof -p "$p" -Fn 2>/dev/null | sed -n 's|^n\\(/.*\\.codex/sessions/.*\\.jsonl\\)$|\\1|p' | head -1)`,
+    `  [ -n "$f" ] && { echo "$f"; exit 0; }`,
+    `done; fi`,
+    `if [ -n "$P" ]; then f=$(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*-"$P".jsonl 2>/dev/null | head -1)`,
+    `  if [ -n "$f" ] && [ "$(m "$f")" -ge "$created" ]; then echo "$f"; exit 0; fi; fi`,
+    `[ -n "$C" ] || exit 0`,
+    `best=$(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -50 | while read -r f; do`,
+    `  skip=0; for x in $X; do case "$f" in *"$x"*) skip=1 ;; esac; done`,
+    `  [ "$skip" -eq 1 ] && continue`,
+    `  head -1 "$f" | grep -qF "\\"cwd\\":\\"$C\\"" && { echo "$f"; break; }`,
+    `done)`,
+    `[ -n "$best" ] && [ "$(m "$best")" -ge "$created" ] && echo "$best"`,
+  ].join('\n');
+
   try {
     const { stdout } = await execOnHost(host, script);
-    return firstLine(stdout);
+    return firstLine(stdout) || null;
   } catch {
     return null;
   }
-}
-
-// UUIDs of the rollouts whose session_meta cwd matches `cwd` (newest first). Used to
-// diff before/after a Codex start and capture the freshly created session's id.
-export async function listCodexRolloutIdsForCwd(host, cwd) {
-  if (!cwd) return [];
-  const needle = `"cwd":"${cwd}"`;
-  const script =
-    `ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -80 | while read f; do ` +
-    `head -1 "$f" | grep -qF ${shellQuote(needle)} && echo "$f"; done`;
-  try {
-    const { stdout } = await execOnHost(host, script);
-    return String(stdout || '')
-      .split('\n')
-      .map((s) => rolloutIdFromPath(s.trim()))
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-// Poll (bounded) for a rollout that appeared after a Codex start — i.e. a matching-cwd
-// rollout id not present in `beforeIds`. Returns the new id, or null on timeout.
-// Best-effort: callers must treat null as "leave unpinned, fall back to cwd match".
-export async function captureCodexRolloutId(host, cwd, beforeIds, tries = 12, delayMs = 600) {
-  if (!cwd) return null;
-  const before = new Set(beforeIds || []);
-  for (let i = 0; i < tries; i++) {
-    const ids = await listCodexRolloutIdsForCwd(host, cwd);
-    const fresh = ids.find((id) => !before.has(id)); // ids are newest-first
-    if (fresh) return fresh;
-    await sleep(delayMs);
-  }
-  return null;
 }
 
 export async function resolveTranscriptFile(agent, host) {
@@ -162,13 +162,28 @@ export async function resolveTranscriptFile(agent, host) {
   // sharing one working dir each resolve to their own rollout instead of collapsing
   // onto the single newest one.
   if (agent && agent.config && agent.config.provider === 'codex') {
-    if (agent.claude_session_id && isUuid(agent.claude_session_id)) {
-      const pinned = await findCodexRolloutById(host, agent.claude_session_id);
-      if (pinned) return pinned;
-    }
     const project = agent.project_id ? getProject(agent.project_id) : null;
     const cwd = project ? resolveWorkingDir(project, host) : null;
-    return resolveCodexTranscriptFile(host, cwd);
+    const siblings = getPinnedSessionIdsOnHost(agent.id, agent.host_id);
+    const file = await resolveCodexRollout(
+      host,
+      agent.screen_session,
+      cwd,
+      agent.claude_session_id,
+      siblings
+    );
+    if (!file) return null;
+    // Keep the pin in step with what the live session actually resolved to, so the
+    // transcript stays readable once the process is gone (stopped agent, dead pane).
+    const id = rolloutIdFromPath(file);
+    if (id && id !== agent.claude_session_id) {
+      try {
+        setAgentClaudeSessionId(agent.id, id);
+      } catch {
+        /* pin refresh is an optimisation, never a reason to fail resolution */
+      }
+    }
+    return file;
   }
 
   // 1. Pinned session id: the transcript filename equals the session id.
@@ -230,7 +245,18 @@ export function tailSpawnArgs(host, filePath) {
       '-o',
       'ServerAliveInterval=15',
       host.ssh_target,
-      remoteWrap(host, `exec tail -n ${INITIAL_TAIL_LINES} -F ${shellQuote(filePath)}`),
+      // NOT `exec tail`: killing the local ssh leaves the remote tail running, because
+      // `tail -F` on a quiet transcript never writes and so never sees the closed pipe.
+      // (27 of these had accumulated on the Mac mini, the oldest 9 days old.) Instead
+      // run tail in the background and heartbeat a blank line — the parser skips empty
+      // lines — so a dead channel surfaces as a failed write within 20s and the trap
+      // takes the tail down with the shell. Self-healing even if Maestro itself dies.
+      remoteWrap(
+        host,
+        `tail -n ${INITIAL_TAIL_LINES} -F ${shellQuote(filePath)} & tp=$!; ` +
+          `trap 'kill $tp 2>/dev/null' EXIT HUP INT TERM PIPE; ` +
+          `while kill -0 $tp 2>/dev/null; do printf '\\n' || exit 0; sleep 20; done`
+      ),
     ],
   };
 }

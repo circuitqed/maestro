@@ -373,6 +373,17 @@ export function updateAgentUserActivity(id) {
   db.prepare('UPDATE agents SET last_user_at = ? WHERE id = ?').run(now, id);
 }
 
+// Session ids pinned by the OTHER agents on the same host. A Codex agent's cwd
+// fallback uses this to skip a sibling's rollout when several agents share one
+// working directory — otherwise they all collapse onto the newest transcript.
+export function getPinnedSessionIdsOnHost(excludeAgentId, hostId) {
+  const sql = hostId
+    ? 'SELECT claude_session_id FROM agents WHERE id != ? AND host_id = ? AND claude_session_id IS NOT NULL'
+    : 'SELECT claude_session_id FROM agents WHERE id != ? AND host_id IS NULL AND claude_session_id IS NOT NULL';
+  const rows = hostId ? db.prepare(sql).all(excludeAgentId, hostId) : db.prepare(sql).all(excludeAgentId);
+  return rows.map((r) => r.claude_session_id).filter(Boolean);
+}
+
 export function setAgentClaudeSessionId(id, sessionId) {
   db.prepare('UPDATE agents SET claude_session_id = ? WHERE id = ?').run(sessionId, id);
   return getAgent(id);
