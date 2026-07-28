@@ -61,6 +61,19 @@ const IMAGE_TYPES = {
   bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif',
 };
 
+// Is `child` the same path as `parent`, or inside it? (posix, already normalized)
+const within = (child, parent) => child === parent || child.startsWith(parent + '/');
+
+// Roots outside the project tree that file links may point into, colon-separated.
+// Defaults to the host temp dir because that is where agents put scratch artifacts
+// they then show in chat. Set MAESTRO_FILE_ROOTS='' to confine strictly to the
+// project tree. Note /tmp is shared: any file there becomes readable by a Maestro
+// user with access to this agent (symlinks out are still refused — see the route).
+const EXTRA_FILE_ROOTS = (process.env.MAESTRO_FILE_ROOTS ?? '/tmp')
+  .split(':')
+  .map((s) => s.trim().replace(/\/+$/, ''))
+  .filter((s) => s.startsWith('/'));
+
 // Canonical extension-less text files, matched by whole (lowercased) name.
 const TEXT_FILENAMES = new Set([
   'dockerfile','makefile','rakefile','gemfile','procfile','jenkinsfile','vagrantfile','brewfile',
@@ -706,12 +719,17 @@ router.get('/:id/file', async (req, res) => {
       const dr = host.default_root.replace(/\/+$/, '');
       if (dr && (wd === dr || wd.startsWith(dr + '/'))) root = dr;
     }
+    // …and agents stage scratch artifacts in the host temp dir — a preview render, an
+    // exported plot — then link them in chat. Those 403'd even though the file is
+    // exactly what the agent just told the user to look at. Symlink escapes are still
+    // blocked: confinement is re-checked against the RESOLVED path below, so a link in
+    // /tmp pointing at /etc/shadow resolves outside every root and is refused.
+    const roots = [root, ...EXTRA_FILE_ROOTS.filter((r) => !within(r, root))];
     const candidate = rawPath.startsWith('/')
       ? path.posix.normalize(rawPath)
       : path.posix.normalize(path.posix.join(wd, rawPath));
 
-    const within = (child, parent) => child === parent || child.startsWith(parent + '/');
-    if (!within(candidate, root)) {
+    if (!roots.some((r) => within(candidate, r))) {
       return res.status(403).json({ error: 'Path is outside the allowed directory' });
     }
 
@@ -737,9 +755,11 @@ router.get('/:id/file', async (req, res) => {
       // boundary (it can already read any same-fs file it has access to).
       setHeaders();
       const script =
-        `root=$(realpath ${shellQuote(root)} 2>/dev/null) || exit 2; ` +
         `f=$(realpath ${shellQuote(candidate)} 2>/dev/null) || exit 3; ` +
-        `case "$f" in "$root"/*) ;; *) exit 4;; esac; ` +
+        `ok=0; for r in ${roots.map(shellQuote).join(' ')}; do ` +
+        `rr=$(realpath "$r" 2>/dev/null) || continue; ` +
+        `case "$f" in "$rr"/*) ok=1; break;; esac; done; ` +
+        `[ "$ok" = 1 ] || exit 4; ` +
         `[ -f "$f" ] || exit 5; ` +
         `exec cat -- "$f"`;
       const child = spawn('ssh', [...sshBaseArgs(host), host.ssh_target, remoteWrap(host, script)], { stdio: ['ignore', 'pipe', 'ignore'] });
@@ -755,10 +775,12 @@ router.get('/:id/file', async (req, res) => {
     } else {
       // Local: re-confine after resolving symlinks. (The realpath->open window is a
       // sub-ms in-process race; same hardlink caveat as above.)
-      const realRoot = await hostRealpath(host, root);
       const realTarget = await hostRealpath(host, candidate);
       if (!realTarget) return res.status(404).json({ error: 'File not found' });
-      if (!realRoot || !within(realTarget, realRoot)) return res.status(403).json({ error: 'Path is outside the allowed directory' });
+      const realRoots = (await Promise.all(roots.map((r) => hostRealpath(host, r)))).filter(Boolean);
+      if (!realRoots.some((r) => within(realTarget, r))) {
+        return res.status(403).json({ error: 'Path is outside the allowed directory' });
+      }
       if (!(await hostIsFile(host, realTarget))) return res.status(404).json({ error: 'Not a file' });
       setHeaders();
       const stream = fs.createReadStream(realTarget);
