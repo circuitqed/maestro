@@ -10,6 +10,20 @@ function quoteForBashLc(s) {
   return sqQuoted.replace(/'/g, `'\\''`);
 }
 
+// Who this Codex agent is, and the warning that matters most for it: siblings share
+// its working directory, so repo state is not evidence about its own past work.
+function codexIdentity(agentName) {
+  const name = String(agentName || '').replace(/[\r\n]/g, ' ').trim();
+  if (!name) return '';
+  return (
+    `You are the agent named "${name}", one of several agents orchestrated by Maestro. ` +
+    `Other agents share this working directory and git repository, so uncommitted changes, ` +
+    `running jobs and recent commits are often theirs, not yours. Never adopt work you find ` +
+    `in the repo as your own: if your conversation has no history of it, say the context is ` +
+    `not yours and ask, rather than reconstructing a task from repo state.`
+  );
+}
+
 const PROVIDERS = {
   claude: {
     id: 'claude',
@@ -42,10 +56,20 @@ const PROVIDERS = {
     defaultFlags: '--dangerously-bypass-approvals-and-sandbox',
     envVars: ['OPENAI_API_KEY'],
     monitorable: true,
-    buildCommand(config) {
+    buildCommand(config, agentName) {
       const binary = config.binaryPath || 'codex';
       const flags = config.flags ?? this.defaultFlags;
-      return `bash -lc '${binary} ${flags}; exec bash'`;
+      // Codex has no `--name`, so without this a Codex agent has no idea which agent
+      // it is. Asked "where were we" with a fresh session, it reconstructs context from
+      // the repo — and since the project convention is one SHARED working dir, the
+      // uncommitted work it finds is usually a sibling's. (Observed: the
+      // qubit-designer-sonnet agent reporting the transducer agent's v37/v39 campaign
+      // as its own.) developer_instructions rides in as a developer message, so it
+      // costs no turn. JSON.stringify emits a valid TOML basic string; the whole
+      // key=value is one shell word so `-c` still gets its own argv.
+      const identity = codexIdentity(agentName);
+      const idFlag = identity ? `-c ${quoteForBashLc(`developer_instructions=${JSON.stringify(identity)}`)} ` : '';
+      return `bash -lc '${binary} ${idFlag}${flags}; exec bash'`;
     },
   },
   gemini: {
