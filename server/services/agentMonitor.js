@@ -188,9 +188,14 @@ async function syncHostGroup(host, hostAgents) {
         registerAgent(agent.id, agent.screen_session, host);
       }
 
-      // Mark running non-monitorable agents that aren't already tracked
-      if (!provider.monitorable && agent.status === 'stopped') {
-        updateAgentStatus(agent.id, 'running');
+      // Non-monitorable agents (shell) are up whenever their session exists, but we
+      // can't tell whether they're working — there's no pane parsing behind them and
+      // nothing ever transitions them out of 'running', so they'd pin the dashboard's
+      // Active section indefinitely (maestro_shell sat there for 13 days). 'idle' is
+      // the accurate state for up-but-not-observably-working. Written unconditionally
+      // so rows left 'running' by an older build heal on the next tick.
+      if (!provider.monitorable && agent.status !== 'idle') {
+        updateAgentStatus(agent.id, 'idle');
       }
 
       // Check pane content for activity (fallback detection, monitorable agents only)

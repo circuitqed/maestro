@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import fs from 'fs';
+import fsp from 'fs/promises';
 import path from 'path';
 import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
@@ -60,6 +61,55 @@ const IMAGE_TYPES = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
   bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif',
 };
+
+// Agents name files the way people do — "committed `treatment.md`", "see
+// `providers.js`" — and the chat linkifies those bare names. Resolved literally they
+// land at <workingDir>/treatment.md and 404 unless the file happens to sit at the
+// repo root, so a correct reference reads as a broken link (this is what made a
+// quantum-courseware brief unreachable: it lived in content/concepts/quantum-lc/).
+// So when the literal path isn't a file, search the working dir for that basename.
+// Only an unambiguous single hit is served — several same-named files (index.mdx,
+// __init__.py) must not resolve to an arbitrary one. Depth- and count-bounded, with
+// the usual heavy dirs pruned, so this stays cheap on a large repo. No new exposure:
+// hits are inside the working dir, which is already served in full.
+const FIND_MAX_DEPTH = 6;
+const FIND_PRUNE_DIRS = ['.git', 'node_modules', '.venv', 'venv', '__pycache__', 'dist', 'build', '.next', '.cache'];
+
+// POSIX-sh fragment that sets `f` to the unique match, or leaves it empty.
+function findByBaseSh(wd, base) {
+  const prune = FIND_PRUNE_DIRS.map((d) => `-name ${shellQuote(d)}`).join(' -o ');
+  return (
+    `hits=$(find ${shellQuote(wd)} -maxdepth ${FIND_MAX_DEPTH} \\( ${prune} \\) -prune -o ` +
+    `-type f -name ${shellQuote(base)} -print 2>/dev/null | head -5); ` +
+    `if [ "$(printf '%s\\n' "$hits" | grep -c .)" = 1 ]; then ` +
+    `f=$(realpath "$hits" 2>/dev/null); else f=""; fi;`
+  );
+}
+
+// Same search for a local agent: bounded walk, unique hit or null.
+async function findByBaseLocal(wd, base) {
+  const hits = [];
+  const walk = async (dir, depth) => {
+    if (depth > FIND_MAX_DEPTH || hits.length > 1) return;
+    let entries;
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (hits.length > 1) return;
+      const full = path.posix.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (!FIND_PRUNE_DIRS.includes(e.name)) await walk(full, depth + 1);
+      } else if (e.name === base && (e.isFile() || e.isSymbolicLink())) {
+        hits.push(full);
+      }
+    }
+  };
+  await walk(wd, 0);
+  return hits.length === 1 ? hits[0] : null;
+}
 
 // Is `child` the same path as `parent`, or inside it? (posix, already normalized)
 const within = (child, parent) => child === parent || child.startsWith(parent + '/');
@@ -400,13 +450,19 @@ router.post('/:id/start', async (req, res) => {
       throw err;
     }
 
+    // A non-monitorable provider (shell) has no pane parsing behind it, so nothing
+    // would ever move it off 'running' — it would sit in the dashboard's Active
+    // section forever. A bare shell is up-but-not-working, which is what 'idle'
+    // means; 'running' is reserved for providers we can actually observe working.
+    const startedStatus = provider.monitorable ? 'running' : 'idle';
+
     if (result.alreadyRunning || !result.created) {
-      updateAgentStatus(req.params.id, 'running');
+      updateAgentStatus(req.params.id, startedStatus);
       if (provider.monitorable) registerAgent(agent.id, agent.screen_session, host);
       return res.json({ success: true, message: 'Session already running', agent: getAgent(req.params.id) });
     }
 
-    updateAgentStatus(req.params.id, 'running');
+    updateAgentStatus(req.params.id, startedStatus);
     if (provider.monitorable) registerAgent(agent.id, agent.screen_session, host);
 
     // Codex is NOT pinned here: it creates its rollout file on the first user message,
@@ -755,7 +811,9 @@ router.get('/:id/file', async (req, res) => {
       // boundary (it can already read any same-fs file it has access to).
       setHeaders();
       const script =
-        `f=$(realpath ${shellQuote(candidate)} 2>/dev/null) || exit 3; ` +
+        `f=$(realpath ${shellQuote(candidate)} 2>/dev/null); ` +
+        `if [ -z "$f" ] || [ ! -f "$f" ]; then ${findByBaseSh(wd, base)} fi; ` +
+        `[ -n "$f" ] || exit 3; ` +
         `ok=0; for r in ${roots.map(shellQuote).join(' ')}; do ` +
         `rr=$(realpath "$r" 2>/dev/null) || continue; ` +
         `case "$f" in "$rr"/*) ok=1; break;; esac; done; ` +
@@ -775,7 +833,11 @@ router.get('/:id/file', async (req, res) => {
     } else {
       // Local: re-confine after resolving symlinks. (The realpath->open window is a
       // sub-ms in-process race; same hardlink caveat as above.)
-      const realTarget = await hostRealpath(host, candidate);
+      let realTarget = await hostRealpath(host, candidate);
+      if (!realTarget || !(await hostIsFile(host, realTarget))) {
+        const found = await findByBaseLocal(wd, base); // bare-name fallback, see findByBaseSh
+        realTarget = found ? await hostRealpath(host, found) : null;
+      }
       if (!realTarget) return res.status(404).json({ error: 'File not found' });
       const realRoots = (await Promise.all(roots.map((r) => hostRealpath(host, r)))).filter(Boolean);
       if (!realRoots.some((r) => within(realTarget, r))) {
