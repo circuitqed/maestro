@@ -67,6 +67,35 @@ export async function sessionExists(sessionName, host = null) {
   }
 }
 
+// Commands that mean "this pane is sitting at a prompt", i.e. whatever the session
+// was supposed to run is not running. Deliberately just the shells: anything else
+// (node, python, claude, codex, ssh, vim…) counts as a live program.
+const SHELL_COMMANDS = new Set(['bash', 'zsh', 'sh', 'fish', 'dash', 'ksh', 'tcsh', 'csh', 'login', '-zsh', '-bash']);
+
+/**
+ * The command running in a session's active pane, or null if it can't be read.
+ */
+export async function paneCommand(sessionName, host = null) {
+  try {
+    const { stdout } = await execOnHost(
+      host,
+      `tmux list-panes -t ${paneTarget(sessionName)} -F '#{pane_current_command}'`
+    );
+    return String(stdout).trim().split('\n')[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is this session sitting at a bare shell prompt (nothing running in it)?
+ * Unknown/unreadable => false, so we never disturb a session we can't inspect.
+ */
+export async function sessionIsBareShell(sessionName, host = null) {
+  const cmd = await paneCommand(sessionName, host);
+  return !!cmd && SHELL_COMMANDS.has(cmd.replace(/^-/, '').toLowerCase());
+}
+
 /**
  * Create a new tmux session and optionally run a command
  * @param {string} sessionName - Name for the tmux session
@@ -105,6 +134,23 @@ export async function createSession(sessionName, workingDir = null, command = nu
  */
 export async function startProviderSession(sessionName, command, workingDir = null, host = null) {
   if (await sessionExists(sessionName, host)) {
+    // A session with the right NAME is not proof the provider is running in it.
+    // The Mac mini restores its whole session set via tmux-continuum, and
+    // tmux-resurrect brings panes back as bare shells (it doesn't re-run the
+    // programs), so a restored `puzzleparlor-mini` looked "already running" while
+    // Claude had never started — the agent showed green and was a plain zsh prompt.
+    // Same trap for a session the user made by hand under a colliding name.
+    // If the pane is idle at a prompt, launch the provider into it rather than
+    // reporting a success that didn't happen. A session with something already
+    // running is left strictly alone.
+    if (await sessionIsBareShell(sessionName, host)) {
+      // cd first: a restored pane keeps whatever directory it was saved in, which
+      // need not be this agent's working dir (a restore had `inkglass` sitting in
+      // the hot-qubits directory), and the provider must start in the right place.
+      const line = workingDir ? `cd ${shellQuote(workingDir)} && ${command}` : command;
+      await sendText(sessionName, line, host);
+      return { name: sessionName, created: true, adopted: true };
+    }
     return { name: sessionName, created: false, alreadyRunning: true };
   }
 

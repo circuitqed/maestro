@@ -263,11 +263,25 @@ router.post('/', async (req, res) => {
     // the base; otherwise we slugify the agent name. uniqueSessionName auto-suffixes
     // (-2, -3, ...) so a second agent that would collide can't silently attach to
     // (hijack) an existing agent's tmux session.
-    const sessionBase = (screenSession && screenSession.trim()) || sanitizeSessionName(name);
+    const explicitSession = !!(screenSession && screenSession.trim());
+    const sessionBase = explicitSession ? screenSession.trim() : sanitizeSessionName(name);
     if (!sessionBase) {
       return res.status(400).json({ error: 'Could not derive a session name from the agent name; set one explicitly.' });
     }
-    const session = uniqueSessionName(host ? host.id : null, sessionBase);
+    // A derived name must also dodge sessions that exist on the host but aren't
+    // Maestro's — otherwise the new agent adopts a stranger's session (see
+    // startProviderSession). An explicit name is an intentional attach, so it is
+    // only de-duped against other agents. Best-effort: an unreachable host just
+    // falls back to the DB-only check rather than blocking agent creation.
+    let hostSessions = [];
+    if (!explicitSession) {
+      try {
+        hostSessions = (await getTmuxSessions(host)).map((s) => s.name);
+      } catch {
+        hostSessions = [];
+      }
+    }
+    const session = uniqueSessionName(host ? host.id : null, sessionBase, hostSessions);
     if (projectId && req.user && req.user.role !== 'admin' && !userHasProjectAccess(req.user.id, projectId)) {
       return res.status(403).json({ error: 'Access denied to this project' });
     }
@@ -460,6 +474,16 @@ router.post('/:id/start', async (req, res) => {
       updateAgentStatus(req.params.id, startedStatus);
       if (provider.monitorable) registerAgent(agent.id, agent.screen_session, host);
       return res.json({ success: true, message: 'Session already running', agent: getAgent(req.params.id) });
+    }
+
+    if (result.adopted) {
+      updateAgentStatus(req.params.id, startedStatus);
+      if (provider.monitorable) registerAgent(agent.id, agent.screen_session, host);
+      return res.json({
+        success: true,
+        message: `${provider.name} started in the existing session`,
+        agent: getAgent(req.params.id),
+      });
     }
 
     updateAgentStatus(req.params.id, startedStatus);

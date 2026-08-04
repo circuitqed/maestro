@@ -18,12 +18,19 @@ export function sanitizeSessionName(name) {
  * name slugs the same as an existing one from silently attaching to (hijacking)
  * the first agent's tmux session.
  */
-export function uniqueSessionName(hostId, base) {
+export function uniqueSessionName(hostId, base, existingOnHost = null) {
   const root = base || 'agent';
-  if (!isSessionNameTaken(hostId, root)) return root;
+  // `existingOnHost` are session names that live on the host but aren't Maestro
+  // agents — the user's own sessions, or a set restored by tmux-continuum. Only a
+  // DERIVED name avoids them: an explicitly chosen session name means "attach to
+  // that one", which is a supported flow. Without this, a new agent whose slug
+  // happens to match a stranger's session silently binds to it.
+  const onHost = existingOnHost instanceof Set ? existingOnHost : new Set(existingOnHost || []);
+  const taken = (n) => isSessionNameTaken(hostId, n) || onHost.has(n);
+  if (!taken(root)) return root;
   for (let i = 2; i < 1000; i++) {
     const cand = `${root}-${i}`;
-    if (!isSessionNameTaken(hostId, cand)) return cand;
+    if (!taken(cand)) return cand;
   }
   return `${root}-${Date.now()}`;
 }
