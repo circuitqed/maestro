@@ -1,4 +1,4 @@
-import { getAgents, updateAgentStatus, updateAgentLastSeen } from './db.js';
+import { getAgents, updateAgentStatus, updateAgentLastSeen, getHost, updateHostStatus } from './db.js';
 import { getTmuxSessions } from './tmux.js';
 import { getProvider } from './providers.js';
 import { execOnHost, isRemote } from './hosts.js';
@@ -163,6 +163,23 @@ async function syncAgentStates() {
   }
 }
 
+// Publish a host's reachability from the monitor's own probe. Only remote hosts
+// have a meaningful up/down, and only a CHANGE is written so the 2s tick doesn't
+// hammer the DB with identical updates.
+function noteHostReachable(host, reachable) {
+  if (!host || !host.id || !isRemote(host)) return;
+  const next = reachable ? 'online' : 'offline';
+  try {
+    const row = getHost(host.id);
+    if (row && row.status !== next) {
+      updateHostStatus(host.id, next);
+      console.log(`Host ${row.name}: ${row.status} -> ${next}`);
+    }
+  } catch {
+    /* status publishing must never break the monitor tick */
+  }
+}
+
 /**
  * Reconcile one host's agents against a single tmux probe of that host.
  */
@@ -174,8 +191,15 @@ async function syncHostGroup(host, hostAgents) {
   try {
     const sessions = await getTmuxSessions(host);
     sessionNames = new Set(sessions.map((s) => s.name));
+    noteHostReachable(host, true);
   } catch {
-    return; // host unreachable — leave its agents' state untouched this tick
+    // Host unreachable — leave its agents' state untouched (a sleeping Mac mini
+    // must not flip its still-running agents to stopped), but DO record that the
+    // host is down. This probe already knows; without publishing it, hosts.status
+    // only ever changed on a manual Test, so a mini that had been asleep for hours
+    // still read "online" and the only symptom the user got was a raw ssh timeout.
+    noteHostReachable(host, false);
+    return;
   }
 
   for (const agent of hostAgents) {
