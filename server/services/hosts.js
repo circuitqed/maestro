@@ -79,6 +79,43 @@ export async function execOnHost(host, command, opts = {}) {
 }
 
 /**
+ * Did this fail because we couldn't reach the host at all (as opposed to the
+ * remote command itself failing)? ssh exits 255 for every transport-level
+ * failure — connect timeout, refused, DNS, auth, host key — and our own
+ * execFile timeout shows up as a kill.
+ */
+export function isHostUnreachable(err) {
+  if (!err) return false;
+  if (err.code === 255) return true;
+  if (err.killed || err.signal === 'SIGTERM' || err.code === 'ETIMEDOUT') return true;
+  return /Connection timed out|Connection refused|Could not resolve hostname|No route to host|Host is down|Operation timed out|Network is unreachable|Connection closed by remote host/i.test(
+    `${err.message || ''} ${err.stderr || ''}`
+  );
+}
+
+/**
+ * A message safe and useful to show a user for a failed host command.
+ *
+ * execFile stringifies the ENTIRE argv into err.message ("Command failed: ssh -o
+ * BatchMode=yes … tmux set-buffer -b … -- 'how did things go?' …"), so returning
+ * err.message raw dumped the whole internal ssh invocation — including the text
+ * the user had just typed — into the UI, while never actually saying the host was
+ * asleep. Report the condition instead, and never echo the command.
+ */
+export function describeHostError(err, host) {
+  const name = (host && host.name) || 'the host';
+  if (isHostUnreachable(err)) {
+    return `Can't reach host ${name} — it looks offline or asleep. The agent's session is untouched and will still be there when the host is back.`;
+  }
+  const stderr = String((err && err.stderr) || '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (stderr.length) return `Host ${name}: ${stderr[stderr.length - 1]}`;
+  return `Host ${name}: command failed`;
+}
+
+/**
  * Build the {file, args} pair for pty.spawn to attach to a tmux session
  */
 export function attachSpawnArgs(host, sessionName) {

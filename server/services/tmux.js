@@ -73,27 +73,33 @@ export async function sessionExists(sessionName, host = null) {
 const SHELL_COMMANDS = new Set(['bash', 'zsh', 'sh', 'fish', 'dash', 'ksh', 'tcsh', 'csh', 'login', '-zsh', '-bash']);
 
 /**
- * The command running in a session's active pane, or null if it can't be read.
- */
-export async function paneCommand(sessionName, host = null) {
-  try {
-    const { stdout } = await execOnHost(
-      host,
-      `tmux list-panes -t ${paneTarget(sessionName)} -F '#{pane_current_command}'`
-    );
-    return String(stdout).trim().split('\n')[0] || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Is this session sitting at a bare shell prompt (nothing running in it)?
+ * Is this session sitting at a bare shell prompt with nothing running in it?
+ *
+ * `pane_current_command` alone is NOT enough: a provider is launched as
+ * `bash -lc 'claude …; exec bash'`, and tmux reports that pane as **bash** while
+ * Claude is running happily inside it. Treating that as idle typed the launch
+ * command into a live agent as a chat message. So also require the pane's process
+ * to have no children — a bare shell has none, a shell running a provider has the
+ * provider as a child.
+ *
  * Unknown/unreadable => false, so we never disturb a session we can't inspect.
  */
 export async function sessionIsBareShell(sessionName, host = null) {
-  const cmd = await paneCommand(sessionName, host);
-  return !!cmd && SHELL_COMMANDS.has(cmd.replace(/^-/, '').toLowerCase());
+  try {
+    const { stdout } = await execOnHost(
+      host,
+      `info=$(tmux list-panes -t ${paneTarget(sessionName)} -F '#{pane_current_command} #{pane_pid}' | head -1); ` +
+        `set -- $info; ` +
+        `kids=$(pgrep -P "$2" 2>/dev/null | head -1); ` +
+        `echo "$1 ${'${kids:-none}'}"`
+    );
+    const [cmd, kids] = String(stdout).trim().split(/\s+/);
+    if (!cmd) return false;
+    const isShell = SHELL_COMMANDS.has(cmd.replace(/^-/, '').toLowerCase());
+    return isShell && kids === 'none';
+  } catch {
+    return false;
+  }
 }
 
 /**

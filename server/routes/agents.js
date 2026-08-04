@@ -23,7 +23,7 @@ import {
 import { getTmuxSessions, startProviderSession, createSession, killSession, sessionExists, sendText, sendAnswer, capturePane } from '../services/tmux.js';
 import { registerAgent, unregisterAgent } from '../services/agentMonitor.js';
 import { getProvider, getProviderList } from '../services/providers.js';
-import { isRemote, isValidSessionName, execOnHost, shellQuote, sshBaseArgs, remoteWrap } from '../services/hosts.js';
+import { isRemote, isValidSessionName, execOnHost, shellQuote, sshBaseArgs, remoteWrap, isHostUnreachable, describeHostError } from '../services/hosts.js';
 import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js';
 import { appendAgentLane } from '../services/scaffold.js';
 import { resolveWorkingDir, ensureDirOnHost } from '../services/projectPaths.js';
@@ -109,6 +109,16 @@ async function findByBaseLocal(wd, base) {
   };
   await walk(wd, 0);
   return hits.length === 1 ? hits[0] : null;
+}
+
+// Report a failure that involved a (possibly remote) host. An unreachable host is
+// a 503, not a 500 — it's transient and says nothing about the request. Never
+// returns err.message for a remote failure: execFile puts the whole ssh argv in it.
+function failHost(res, err, host) {
+  if (isRemote(host)) {
+    return res.status(isHostUnreachable(err) ? 503 : 500).json({ error: describeHostError(err, host) });
+  }
+  return res.status(500).json({ error: err.message });
 }
 
 // Is `child` the same path as `parent`, or inside it? (posix, already normalized)
@@ -410,7 +420,7 @@ router.post('/:id/start', async (req, res) => {
               error: `Project path does not exist: ${workingDir}. Update the project settings.`,
             });
           }
-          return res.status(503).json({ error: `Cannot reach host ${host.name}: ${err.message}` });
+          return res.status(503).json({ error: describeHostError(err, host) });
         }
       } else if (!fs.existsSync(workingDir)) {
         return res.status(400).json({
@@ -459,7 +469,7 @@ router.post('/:id/start', async (req, res) => {
       }
     } catch (err) {
       if (isRemote(host)) {
-        return res.status(503).json({ error: `Failed to start on host ${host.name}: ${err.message}` });
+        return res.status(isHostUnreachable(err) ? 503 : 500).json({ error: describeHostError(err, host) });
       }
       throw err;
     }
@@ -501,6 +511,7 @@ router.post('/:id/start', async (req, res) => {
 
 // Stop agent (kill tmux session)
 router.post('/:id/stop', async (req, res) => {
+  let errHost = null; // captured for the catch: `agent`/`host` are try-scoped
   try {
     const agent = getAgent(req.params.id);
     if (!agent) {
@@ -521,6 +532,7 @@ router.post('/:id/stop', async (req, res) => {
       return res.status(400).json({ error: 'Agent references an unknown host' });
     }
 
+    errHost = host;
     const result = await killSession(agent.screen_session, host);
 
     // Update agent status to stopped and unregister from monitoring
@@ -528,12 +540,13 @@ router.post('/:id/stop', async (req, res) => {
     const updatedAgent = updateAgentStatus(req.params.id, 'stopped');
     res.json({ success: true, message: result.killed ? 'Agent stopped' : 'Session not found', agent: updatedAgent });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    failHost(res, err, errHost);
   }
 });
 
 // Inject text into the agent's tmux session (used by the chat view send box)
 router.post('/:id/input', async (req, res) => {
+  let errHost = null; // captured for the catch: `agent`/`host` are try-scoped
   try {
     const agent = getAgent(req.params.id);
     if (!agent) {
@@ -554,12 +567,13 @@ router.post('/:id/input', async (req, res) => {
     if (agent.host_id && !host) {
       return res.status(400).json({ error: 'Agent references an unknown host' });
     }
+    errHost = host;
 
     await sendText(agent.screen_session, text, host);
     updateAgentUserActivity(agent.id); // track most-recent user input for sorting
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    failHost(res, err, errHost);
   }
 });
 
@@ -695,6 +709,7 @@ router.get('/:id/pane', async (req, res) => {
 
 // Answer an active question (e.g. AskUserQuestion) by pressing an option number
 router.post('/:id/answer', async (req, res) => {
+  let errHost = null; // captured for the catch: `agent`/`host` are try-scoped
   try {
     const agent = getAgent(req.params.id);
     if (!agent) return res.status(404).json({ error: 'Agent not found' });
@@ -710,11 +725,12 @@ router.post('/:id/answer', async (req, res) => {
     const host = agent.host_id ? getHost(agent.host_id) : null;
     if (agent.host_id && !host) return res.status(400).json({ error: 'Agent references an unknown host' });
 
+    errHost = host;
     await sendAnswer(agent.screen_session, choice, host);
     updateAgentUserActivity(agent.id);
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    failHost(res, err, errHost);
   }
 });
 
