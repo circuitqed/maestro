@@ -174,11 +174,14 @@ function UserManagement({ onClose }) {
                     type="text"
                     placeholder="Username"
                     value={newUsername}
-                    onChange={(e) => setNewUsername(e.target.value)}
+                    onChange={(e) => setNewUsername(e.target.value.toLowerCase())}
                     className="flex-1 px-3 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white
                                focus:outline-none focus:ring-1 focus:ring-primary-500"
                     required
                     autoFocus
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
                   />
                   <select
                     value={newRole}

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcrypt';
 import {
-  getUserByUsername, getUserById, getUserCount, getUsers,
+  getUserByUsername, getUserById, getUserCount, getUsers, normalizeUsername,
   createUser, updateUser, deleteUser, getAdminCount,
   addProjectContributor, getOrphanedProjectIds,
 } from '../services/db.js';
@@ -40,7 +40,7 @@ router.post('/setup', async (req, res) => {
   }
 
   const { username, password } = req.body;
-  if (!username || !password) {
+  if (!normalizeUsername(username) || !password) {
     return res.status(400).json({ error: 'Username and password required' });
   }
 
@@ -113,10 +113,11 @@ router.get('/users', requireAuth, requireAdmin, (req, res) => {
 router.post('/users', requireAuth, requireAdmin, async (req, res) => {
   const { username, password, role } = req.body;
 
-  if (!username || !password) {
+  if (!normalizeUsername(username) || !password) {
     return res.status(400).json({ error: 'Username and password required' });
   }
 
+  // Case-insensitive: getUserByUsername normalizes, so "Dave" collides with "dave"
   const existing = getUserByUsername(username);
   if (existing) {
     return res.status(400).json({ error: 'Username already taken' });

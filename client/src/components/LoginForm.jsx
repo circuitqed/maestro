@@ -55,17 +55,23 @@ function LoginForm() {
             <label htmlFor="username" className="block text-gray-300 text-sm font-medium mb-2">
               Username
             </label>
+            {/* Usernames are lowercase. Phone keyboards autocapitalize the first
+                letter of a text field, which turned a correct username into
+                "Invalid username or password" — hence autoCapitalize + toLowerCase. */}
             <input
               type="text"
               id="username"
               value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              onChange={(e) => setUsername(e.target.value.toLowerCase())}
               className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded text-white
                          focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               placeholder="Enter username"
               required
               autoFocus
               autoComplete="username"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
             />
           </div>
 

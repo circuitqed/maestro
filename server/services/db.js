@@ -421,14 +421,28 @@ export function getRecentActivity(limit = 50) {
 }
 
 // Users
+/**
+ * Usernames are case-insensitive and stored lowercase.
+ *
+ * Phone keyboards autocapitalize the first letter of a text field, so someone
+ * logging in from mobile types "Dave" and gets "Invalid username or password"
+ * with no hint why. Normalizing here — the one choke point every insert and
+ * lookup passes through — makes "Dave", "DAVE" and " dave " all the same user,
+ * and keeps the UNIQUE index effectively case-insensitive without a migration.
+ */
+export function normalizeUsername(username) {
+  return String(username ?? '').trim().toLowerCase();
+}
+
 export function createUser(username, passwordHash, role = 'user') {
+  const name = normalizeUsername(username);
   const stmt = db.prepare('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)');
-  const result = stmt.run(username, passwordHash, role);
-  return { id: result.lastInsertRowid, username, role };
+  const result = stmt.run(name, passwordHash, role);
+  return { id: result.lastInsertRowid, username: name, role };
 }
 
 export function getUserByUsername(username) {
-  return db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+  return db.prepare('SELECT * FROM users WHERE username = ?').get(normalizeUsername(username));
 }
 
 export function getUserById(id) {
