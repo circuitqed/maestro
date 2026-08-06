@@ -1072,7 +1072,7 @@ function CollapsedToolGroup({ count, children }) {
   );
 }
 
-const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif']);
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'svg']);
 
 // In-app file viewer for a working-dir file: markdown rendered via the safe
 // <Markdown> pipeline, other text as a mono block, images/PDF inline; everything
@@ -1082,7 +1082,12 @@ function FileViewer({ agentId, path, onClose, variant = 'modal' }) {
   const [err, setErr] = useState(null);
   const name = String(path).split('/').pop();
   const ext = fileExt(path);
-  const isImage = IMAGE_EXTS.has(ext);
+  // An SVG is both a picture and source, so it gets a Rendered/Source toggle
+  // rather than one or the other. Default to rendered — an agent that emits an SVG
+  // is showing you a diagram.
+  const isSvg = ext === 'svg';
+  const [svgSource, setSvgSource] = useState(false);
+  const isImage = IMAGE_EXTS.has(ext) && !(isSvg && svgSource);
   const isPdf = ext === 'pdf';
   const isMd = ext === 'md' || ext === 'markdown';
   // Text-ish: a known text/code ext, or a dotless name (Dockerfile, LICENSE, …).
@@ -1112,6 +1117,16 @@ function FileViewer({ agentId, path, onClose, variant = 'modal' }) {
   const header = (
     <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-700 flex-shrink-0">
       <span className="text-sm text-gray-200 font-mono truncate flex-1 min-w-0" title={path}>{name}</span>
+      {isSvg && (
+        <button
+          type="button"
+          onClick={() => setSvgSource((v) => !v)}
+          title={svgSource ? 'Show the rendered image' : 'Show the SVG source'}
+          className="text-xs px-1.5 py-0.5 rounded border border-gray-600 text-gray-300 hover:text-white hover:border-gray-400"
+        >
+          {svgSource ? 'Rendered' : 'Source'}
+        </button>
+      )}
       <a href={dlUrl} download={name} className="flex items-center gap-1 text-xs text-gray-300 hover:text-white" title="Download file">
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
@@ -1134,7 +1149,13 @@ function FileViewer({ agentId, path, onClose, variant = 'modal' }) {
   const body = (
     <div className="flex-1 min-h-0 overflow-auto p-4">
       {isImage ? (
-        <img src={url} alt={name} className="max-w-full mx-auto rounded" />
+        // SVGs are usually dark strokes on a transparent background, which is
+        // invisible against the dark chat theme — give those a light backdrop.
+        <img
+          src={url}
+          alt={name}
+          className={`max-w-full mx-auto rounded ${isSvg ? 'bg-white p-2' : ''}`}
+        />
       ) : isPdf ? (
         <iframe src={url} title={name} className="w-full h-[80vh] rounded bg-white" />
       ) : !isTextish ? (

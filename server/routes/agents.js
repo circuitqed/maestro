@@ -140,11 +140,22 @@ const TEXT_FILENAMES = new Set([
   'license','readme','changelog','authors','notice','copying','todo','install','manifest',
 ]);
 
-// Conservative content type: images/pdf inline; text-likes (incl. html/svg) as
+// An SVG is a picture AND an executable document — it can carry <script> and
+// remote references. It used to be served as text/plain with the other text-likes,
+// which was safe but meant an agent's diagram showed up as angle brackets. Serve
+// the real type so it renders, and take the teeth out with CSP instead:
+// `sandbox` drops it into a unique opaque origin even when opened as a top-level
+// document (the pop-out button), so it can't reach Maestro's cookies, storage or
+// DOM; `default-src 'none'` blocks scripts and any outbound fetch. The viewer also
+// renders it via <img>, where browsers don't run SVG script at all — belt and braces.
+const SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox";
+
+// Conservative content type: images/pdf inline; text-likes (incl. html) as
 // text/plain so nothing executes in our origin; everything else is a download.
 function fileServeType(name) {
   const ext = (name.includes('.') ? name.split('.').pop() : '').toLowerCase();
   if (IMAGE_TYPES[ext]) return { type: IMAGE_TYPES[ext], inline: true };
+  if (ext === 'svg') return { type: 'image/svg+xml', inline: true, csp: SVG_CSP };
   if (ext === 'pdf') return { type: 'application/pdf', inline: true };
   if (TEXT_FILE_EXTS.has(ext) || (!name.includes('.') && TEXT_FILENAMES.has(name.toLowerCase()))) {
     return { type: 'text/plain; charset=utf-8', inline: true };
@@ -830,11 +841,12 @@ router.get('/:id/file', async (req, res) => {
     }
 
     const base = path.posix.basename(candidate);
-    const { type, inline } = fileServeType(base);
+    const { type, inline, csp } = fileServeType(base);
     const forceDownload = req.query.download === '1' || req.query.download === 'true';
     const setHeaders = () => {
       res.setHeader('Content-Type', type);
       res.setHeader('X-Content-Type-Options', 'nosniff');
+      if (csp) res.setHeader('Content-Security-Policy', csp);
       res.setHeader('Content-Disposition', `${inline && !forceDownload ? 'inline' : 'attachment'}; filename="${base.replace(/[\r\n"\\]/g, '_')}"`);
       res.setHeader('Cache-Control', 'private, no-store');
     };
