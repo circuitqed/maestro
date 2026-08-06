@@ -116,7 +116,9 @@ function rolloutIdFromPath(p) {
 export async function resolveCodexRollout(host, sessionName, cwd, pinnedId, excludeIds = []) {
   if (!sessionName || !isValidSessionName(sessionName)) return null;
   const pin = isUuid(pinnedId) ? pinnedId : '';
-  const exclude = (excludeIds || []).filter((id) => isUuid(id) && id !== pin).join(' ');
+  // A single alternation, built here rather than looped over in the shell (below).
+  // UUIDs are hex+dashes only, so they need no regex escaping.
+  const exclude = (excludeIds || []).filter((id) => isUuid(id) && id !== pin).join('|');
   const S = shellQuote(sessionName);
   const C = shellQuote(cwd || '');
   const P = shellQuote(pin);
@@ -139,9 +141,13 @@ export async function resolveCodexRollout(host, sessionName, cwd, pinnedId, excl
     `if [ -n "$P" ]; then f=$(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*-"$P".jsonl 2>/dev/null | head -1)`,
     `  if [ -n "$f" ] && [ "$(m "$f")" -ge "$created" ]; then echo "$f"; exit 0; fi; fi`,
     `[ -n "$C" ] || exit 0`,
-    `best=$(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -50 | while read -r f; do`,
-    `  skip=0; for x in $X; do case "$f" in *"$x"*) skip=1 ;; esac; done`,
-    `  [ "$skip" -eq 1 ] && continue`,
+    // Sibling ids are dropped with ONE grep -Ev over an alternation, not a
+    // `for x in $X` loop: ssh runs the host's login shell, and zsh (the macOS
+    // default) does not word-split an unquoted expansion — the loop would have
+    // tested the whole list as a single token and excluded nothing.
+    `best=$(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -50 \\`,
+    `  | { if [ -n "$X" ]; then grep -Ev "$X"; else cat; fi; } \\`,
+    `  | while read -r f; do`,
     `  head -1 "$f" | grep -qF "\\"cwd\\":\\"$C\\"" && { echo "$f"; break; }`,
     `done)`,
     `[ -n "$best" ] && [ "$(m "$best")" -ge "$created" ] && echo "$best"`,

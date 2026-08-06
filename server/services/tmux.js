@@ -88,10 +88,15 @@ export async function sessionIsBareShell(sessionName, host = null) {
   try {
     const { stdout } = await execOnHost(
       host,
+      // Split with awk, NOT `set -- $info`: ssh runs the host's login shell, which
+      // on macOS is zsh — and zsh does not word-split an unquoted expansion. That
+      // left the pid empty and the command as the whole "zsh 1234" string, so every
+      // Mac session looked non-idle and adoption silently stopped working there.
       `info=$(tmux list-panes -t ${paneTarget(sessionName)} -F '#{pane_current_command} #{pane_pid}' | head -1); ` +
-        `set -- $info; ` +
-        `kids=$(pgrep -P "$2" 2>/dev/null | head -1); ` +
-        `echo "$1 ${'${kids:-none}'}"`
+        `cmd=$(printf '%s\\n' "$info" | awk '{print $1}'); ` +
+        `pid=$(printf '%s\\n' "$info" | awk '{print $2}'); ` +
+        `kids=$(pgrep -P "$pid" 2>/dev/null | head -1); ` +
+        `echo "$cmd ${'${kids:-none}'}"`
     );
     const [cmd, kids] = String(stdout).trim().split(/\s+/);
     if (!cmd) return false;
@@ -103,6 +108,49 @@ export async function sessionIsBareShell(sessionName, host = null) {
 }
 
 /**
+ * Make sure the tmux server is up and any restore-on-start has finished, before
+ * we decide whether an agent's session exists.
+ *
+ * The Mac mini runs tmux-continuum with `@continuum-restore on`. When no server is
+ * running, the FIRST tmux command starts one — which fires tmux-resurrect's
+ * restore, recreating the whole saved session set as bare shells in their saved
+ * directories. That raced with Maestro's own `new-session`: the create hung (one
+ * was still stuck after 3 minutes, orphaned on the host because our ssh had
+ * already timed out at 15s), and the agent ended up bound to a restored husk
+ * sitting in some unrelated project's directory — "it restored a tmux session into
+ * a random directory".
+ *
+ * So start the server deliberately, wait for the session set to stop changing,
+ * and only then look. Best-effort: on any failure we just proceed as before.
+ */
+export async function ensureTmuxServer(host = null) {
+  const script = [
+    // Already up? Then there is no restore to wait for — report and return.
+    `if tmux list-sessions >/dev/null 2>&1; then tmux list-sessions 2>/dev/null | wc -l | tr -d " "; exit 0; fi`,
+    // We are starting it, so a restore is likely about to run. Give it a grace
+    // period BEFORE watching for stability: the restore takes a moment to begin,
+    // and two early polls of "0 sessions" otherwise look stable and we'd return
+    // while the restore was still to come — which is exactly what raced before.
+    `tmux start-server >/dev/null 2>&1 || true`,
+    `sleep 2`,
+    `prev=-1; stable=0; i=0; n=0`,
+    `while [ "$i" -lt 60 ]; do`,
+    `  n=$(tmux list-sessions 2>/dev/null | wc -l | tr -d " ")`,
+    `  if [ "$n" = "$prev" ]; then stable=$((stable+1)); else stable=0; fi`,
+    `  [ "$stable" -ge 3 ] && break`,
+    `  prev=$n; i=$((i+1)); sleep 0.5`,
+    `done`,
+    `echo "$n"`,
+  ].join('\n');
+  try {
+    const { stdout } = await execOnHost(host, script, { timeout: 60000 });
+    return parseInt(String(stdout).trim(), 10) || 0;
+  } catch {
+    return 0; // never block a start on this
+  }
+}
+
+/**
  * Create a new tmux session and optionally run a command
  * @param {string} sessionName - Name for the tmux session
  * @param {string} workingDir - Working directory for the session
@@ -110,6 +158,7 @@ export async function sessionIsBareShell(sessionName, host = null) {
  * @param {object|null} host - Host row (null => local)
  */
 export async function createSession(sessionName, workingDir = null, command = null, host = null) {
+  await ensureTmuxServer(host); // let any continuum restore settle first
   // Check if session already exists
   if (await sessionExists(sessionName, host)) {
     return { name: sessionName, created: false, message: 'Session already exists' };
@@ -139,6 +188,7 @@ export async function createSession(sessionName, workingDir = null, command = nu
  * @param {object|null} host - Host row (null => local)
  */
 export async function startProviderSession(sessionName, command, workingDir = null, host = null) {
+  await ensureTmuxServer(host); // let any continuum restore settle before we look
   if (await sessionExists(sessionName, host)) {
     // A session with the right NAME is not proof the provider is running in it.
     // The Mac mini restores its whole session set via tmux-continuum, and
