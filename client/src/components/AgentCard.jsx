@@ -16,6 +16,12 @@ function AgentCard({ agent }) {
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(agent.name);
   const editInputRef = useRef(null);
+  // Per-agent working directory. Blank = inherit the project's directory for this
+  // host; set = this agent alone runs there.
+  const [editingDir, setEditingDir] = useState(false);
+  const [editDir, setEditDir] = useState(agent.working_dir || '');
+  const [dirErr, setDirErr] = useState('');
+  const dirInputRef = useRef(null);
 
   useEffect(() => {
     if (editing && editInputRef.current) {
@@ -23,6 +29,10 @@ function AgentCard({ agent }) {
       editInputRef.current.select();
     }
   }, [editing]);
+
+  useEffect(() => {
+    if (editingDir && dirInputRef.current) dirInputRef.current.focus();
+  }, [editingDir]);
 
   const startEdit = () => {
     setEditName(agent.name);
@@ -46,6 +56,27 @@ function AgentCard({ agent }) {
     } catch (err) {
       console.error('Failed to rename agent:', err);
       cancelEdit();
+    }
+  };
+
+  const startEditDir = () => {
+    setEditDir(agent.working_dir || '');
+    setDirErr('');
+    setEditingDir(true);
+  };
+
+  const saveDir = async () => {
+    const next = editDir.trim();
+    if (next === (agent.working_dir || '')) {
+      setEditingDir(false);
+      return;
+    }
+    try {
+      await updateAgent(agent.id, { workingDir: next });
+      setEditingDir(false);
+      setDirErr('');
+    } catch (err) {
+      setDirErr(err.message || 'Could not set directory');
     }
   };
 
@@ -182,6 +213,44 @@ function AgentCard({ agent }) {
           )}
         </div>
       )}
+
+      {/* Per-agent working directory. Click to set; blank inherits the project's. */}
+      <div className="mb-3 min-w-0">
+        {editingDir ? (
+          <div>
+            <input
+              ref={dirInputRef}
+              type="text"
+              value={editDir}
+              onChange={(e) => setEditDir(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') saveDir();
+                else if (e.key === 'Escape') { setEditingDir(false); setDirErr(''); }
+              }}
+              placeholder="/absolute/path (blank = project default)"
+              spellCheck={false}
+              autoCapitalize="none"
+              autoCorrect="off"
+              className="w-full px-2 py-1 bg-gray-900 border border-gray-600 rounded text-[11px] font-mono text-white
+                         focus:outline-none focus:border-blue-500"
+            />
+            <div className="flex gap-2 mt-1">
+              <button type="button" onClick={saveDir} className="text-[11px] text-blue-400 hover:text-blue-300">Save</button>
+              <button type="button" onClick={() => { setEditingDir(false); setDirErr(''); }} className="text-[11px] text-gray-500 hover:text-gray-300">Cancel</button>
+            </div>
+            {dirErr && <p className="text-[11px] text-red-400 mt-1">{dirErr}</p>}
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={startEditDir}
+            title={agent.working_dir ? `Working directory: ${agent.working_dir}` : "Uses the project's directory — click to give this agent its own"}
+            className="text-[11px] font-mono truncate max-w-full text-left text-gray-500 hover:text-gray-300"
+          >
+            {agent.working_dir || 'project directory'}
+          </button>
+        )}
+      </div>
 
       <div className="flex items-center gap-2">
         <button

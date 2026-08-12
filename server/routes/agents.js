@@ -16,6 +16,7 @@ import {
   updateAgentUserActivity,
   setAgentClaudeSessionId,
   setProjectHostPath,
+  getProjectHostPath,
   deleteAgent,
   getAgentsForUser,
   userHasProjectAccess,
@@ -26,7 +27,7 @@ import { getProvider, getProviderList } from '../services/providers.js';
 import { isRemote, isValidSessionName, execOnHost, shellQuote, sshBaseArgs, remoteWrap, isHostUnreachable, describeHostError } from '../services/hosts.js';
 import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js';
 import { appendAgentLane } from '../services/scaffold.js';
-import { resolveWorkingDir, ensureDirOnHost } from '../services/projectPaths.js';
+import { resolveAgentWorkingDir, ensureDirOnHost } from '../services/projectPaths.js';
 import { pinnedTranscriptExists } from '../services/transcript.js';
 import { resolveTranscriptFile, readTranscriptTail } from '../services/transcript.js';
 
@@ -307,10 +308,13 @@ router.post('/', async (req, res) => {
       return res.status(403).json({ error: 'Access denied to this project' });
     }
 
-    // Optionally pin a per-host working directory for a remote agent so it is
-    // immediately startable. Validate + create the dir on that host first; only
-    // persist the mapping (and the agent) once the host accepts it.
-    if (projectId && host && isRemote(host) && typeof workingDir === 'string' && workingDir.trim()) {
+    // A working directory given here belongs to THIS AGENT. It used to be written
+    // to project_host_paths, which holds one path per (project, host) — so the form
+    // asked per agent but stored per project, and each new agent silently relocated
+    // every sibling on that host. Validate + create the dir first; only persist once
+    // the host accepts it.
+    let agentDir = null;
+    if (typeof workingDir === 'string' && workingDir.trim()) {
       const dir = workingDir.trim();
       if (!isValidProjectPath(dir)) {
         return res.status(400).json({ error: 'Working directory must be an absolute path' });
@@ -320,13 +324,19 @@ router.post('/', async (req, res) => {
       } catch (err) {
         const detail = (err.stderr || err.message || '').toString().trim().split('\n')[0];
         return res.status(400).json({
-          error: `Could not create working directory ${dir} on host ${host.name}: ${detail || 'command failed'}`,
+          error: `Could not create working directory ${dir} on host ${host ? host.name : 'this host'}: ${detail || 'command failed'}`,
         });
       }
-      setProjectHostPath(projectId, host.id, dir);
+      agentDir = dir;
+      // Still seed the project's per-host path when it has none, so the FIRST agent
+      // on a host establishes a sensible default for later ones — but never
+      // overwrite a path that already exists.
+      if (projectId && host && isRemote(host) && !getProjectHostPath(projectId, host.id)) {
+        setProjectHostPath(projectId, host.id, dir);
+      }
     }
 
-    const agent = createAgent(projectId, name, session, status, config, host ? host.id : null);
+    const agent = createAgent(projectId, name, session, status, config, host ? host.id : null, agentDir);
 
     // Record this agent's ownership lane in the project's canonical AGENTS.md
     // (local project path). Best-effort — never blocks agent creation.
@@ -344,7 +354,7 @@ router.post('/', async (req, res) => {
 });
 
 // Update agent (name only, for now)
-router.patch('/:id', (req, res) => {
+router.patch('/:id', async (req, res) => {
   try {
     const agent = getAgent(req.params.id);
     if (!agent) {
@@ -352,12 +362,33 @@ router.patch('/:id', (req, res) => {
     }
     if (!checkAgentAccess(req, res, agent)) return;
 
-    const { name } = req.body;
-    if (typeof name !== 'string' || !name.trim()) {
+    const { name, workingDir } = req.body;
+    if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
       return res.status(400).json({ error: 'Valid name required' });
     }
+    // '' clears the override and falls back to the project's path for this host.
+    if (workingDir !== undefined) {
+      if (typeof workingDir !== 'string') {
+        return res.status(400).json({ error: 'workingDir must be a string' });
+      }
+      if (workingDir.trim() && !isValidProjectPath(workingDir)) {
+        return res.status(400).json({ error: 'Working directory must be an absolute path' });
+      }
+      if (workingDir.trim()) {
+        const host = agent.host_id ? getHost(agent.host_id) : null;
+        if (agent.host_id && !host) return res.status(400).json({ error: 'Unknown host' });
+        try {
+          await ensureDirOnHost(host, workingDir.trim());
+        } catch (err) {
+          const detail = (err.stderr || err.message || '').toString().trim().split('\n')[0];
+          return res.status(400).json({
+            error: `Could not use working directory ${workingDir.trim()}: ${detail || 'command failed'}`,
+          });
+        }
+      }
+    }
 
-    const updated = updateAgent(req.params.id, { name });
+    const updated = updateAgent(req.params.id, { name, workingDir });
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -410,7 +441,7 @@ router.post('/:id/start', async (req, res) => {
     if (agent.project_id) {
       const project = getProject(agent.project_id);
       if (project) {
-        workingDir = resolveWorkingDir(project, host);
+        workingDir = resolveAgentWorkingDir(agent, project, host);
         if (workingDir === null && isRemote(host)) {
           return res.status(400).json({
             error: `No working directory is set for project "${project.name}" on host ${host.name}. Set a working directory for this host in the project settings before starting the agent.`,
@@ -621,7 +652,7 @@ router.post('/:id/upload', async (req, res) => {
     if (agent.host_id && !host) return done(400, { error: 'Unknown host' });
 
     const project = agent.project_id ? getProject(agent.project_id) : null;
-    const workingDir = project ? resolveWorkingDir(project, host) : null;
+    const workingDir = resolveAgentWorkingDir(agent, project, host);
     if (!workingDir) return done(400, { error: 'No working directory for this agent' });
 
     const name = safeUploadName(req.query.name);
@@ -807,7 +838,7 @@ router.get('/:id/file', async (req, res) => {
     if (agent.host_id && !host) return res.status(400).json({ error: 'Unknown host' });
 
     const project = agent.project_id ? getProject(agent.project_id) : null;
-    const workingDir = project ? resolveWorkingDir(project, host) : null;
+    const workingDir = resolveAgentWorkingDir(agent, project, host);
     if (!workingDir) return res.status(400).json({ error: 'No working directory for this agent' });
 
     const rawPath = typeof req.query.path === 'string' ? req.query.path.trim() : '';

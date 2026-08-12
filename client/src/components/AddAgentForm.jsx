@@ -220,7 +220,7 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
       {isRemoteHost && (
         <div className="mb-2">
           <div className="text-xs text-gray-400 mb-1">
-            Working directory on {selectedHost?.name}
+            Working directory for this agent on {selectedHost?.name}
           </div>
           <input
             type="text"
@@ -233,9 +233,14 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
             className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-white
                        focus:outline-none focus:ring-1 focus:ring-primary-500 font-mono text-xs"
           />
-          {!existingHostPath && !workingDir.trim() && (
+          {!existingHostPath && !workingDir.trim() ? (
             <p className="text-xs text-amber-400/80 mt-1">
               No working directory set for {selectedHost?.name}; the agent won&apos;t start until one is set.
+            </p>
+          ) : (
+            <p className="text-xs text-gray-500 mt-1">
+              This agent only. Leave blank to use the project&apos;s directory
+              {existingHostPath ? ` (${existingHostPath})` : ''}.
             </p>
           )}
         </div>

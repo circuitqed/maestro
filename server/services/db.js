@@ -138,6 +138,15 @@ export async function initDb() {
     db.exec('ALTER TABLE agents ADD COLUMN last_user_at DATETIME');
   } catch (e) { /* Column already exists */ }
 
+  // Per-agent working directory, overriding the project's (per-host) path.
+  // project_host_paths holds ONE path per (project, host), so giving a new agent
+  // its own directory silently moved every other agent of that project on that
+  // host — seven qubit_designer agents ended up sharing one subdirectory. NULL
+  // means "use the project's path", so existing agents are unaffected.
+  try {
+    db.exec('ALTER TABLE agents ADD COLUMN working_dir TEXT');
+  } catch (e) { /* Column already exists */ }
+
   // Seed the local host row (ssh_target NULL => local) on first run
   const hostCount = db.prepare('SELECT COUNT(*) as count FROM hosts').get().count;
   if (hostCount === 0) {
@@ -343,10 +352,21 @@ export function isSessionNameTaken(hostId, screenSession) {
     .get(screenSession, hostId ?? null);
 }
 
-export function createAgent(projectId, name, screenSession, status = 'stopped', config = {}, hostId = null) {
-  const stmt = db.prepare('INSERT INTO agents (project_id, name, screen_session, status, config, host_id) VALUES (?, ?, ?, ?, ?, ?)');
-  const result = stmt.run(projectId, name, screenSession, status, JSON.stringify(config), hostId);
-  return { id: result.lastInsertRowid, project_id: projectId, name, screen_session: screenSession, status, config, host_id: hostId };
+export function createAgent(projectId, name, screenSession, status = 'stopped', config = {}, hostId = null, workingDir = null) {
+  const stmt = db.prepare(
+    'INSERT INTO agents (project_id, name, screen_session, status, config, host_id, working_dir) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  );
+  const result = stmt.run(projectId, name, screenSession, status, JSON.stringify(config), hostId, workingDir || null);
+  return {
+    id: result.lastInsertRowid,
+    project_id: projectId,
+    name,
+    screen_session: screenSession,
+    status,
+    config,
+    host_id: hostId,
+    working_dir: workingDir || null,
+  };
 }
 
 export function updateAgentStatus(id, status) {
@@ -355,9 +375,14 @@ export function updateAgentStatus(id, status) {
   return getAgent(id);
 }
 
-export function updateAgent(id, { name } = {}) {
+export function updateAgent(id, { name, workingDir } = {}) {
   if (typeof name === 'string' && name.trim()) {
     db.prepare('UPDATE agents SET name = ? WHERE id = ?').run(name.trim(), id);
+  }
+  // '' clears the override (fall back to the project's path); undefined leaves it.
+  if (workingDir !== undefined) {
+    const v = typeof workingDir === 'string' && workingDir.trim() ? workingDir.trim() : null;
+    db.prepare('UPDATE agents SET working_dir = ? WHERE id = ?').run(v, id);
   }
   return getAgent(id);
 }

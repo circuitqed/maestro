@@ -15,7 +15,7 @@ import {
   getPinnedSessionIdsOnHost,
   setAgentClaudeSessionId,
 } from './db.js';
-import { resolveWorkingDir } from './projectPaths.js';
+import { resolveAgentWorkingDir } from './projectPaths.js';
 
 // A single transcript line can legitimately be large (base64 images embedded in
 // tool_result records), so the cap is generous. It only exists to bound memory
@@ -169,7 +169,7 @@ export async function resolveTranscriptFile(agent, host) {
   // onto the single newest one.
   if (agent && agent.config && agent.config.provider === 'codex') {
     const project = agent.project_id ? getProject(agent.project_id) : null;
-    const cwd = project ? resolveWorkingDir(project, host) : null;
+    const cwd = resolveAgentWorkingDir(agent, project, host);
     const siblings = getPinnedSessionIdsOnHost(agent.id, agent.host_id);
     const file = await resolveCodexRollout(
       host,
@@ -199,10 +199,14 @@ export async function resolveTranscriptFile(agent, host) {
   }
 
   // 2. Fallback: newest *.jsonl in the project's encoded-cwd folder.
-  if (agent && agent.project_id) {
-    const project = getProject(agent.project_id);
-    if (project && project.path) {
-      const enc = encodeCwd(project.path);
+  if (agent) {
+    const project = agent.project_id ? getProject(agent.project_id) : null;
+    // The agent's OWN directory, not project.path: Claude encodes the cwd it was
+    // launched in, which differs per agent once a working_dir override is set
+    // (and, for a remote agent, was never project.path to begin with).
+    const cwd = resolveAgentWorkingDir(agent, project, host);
+    if (cwd) {
+      const enc = encodeCwd(cwd);
       // enc is [A-Za-z0-9-] only, so it is safe to splice unquoted. "$HOME" is
       // double-quoted so it expands; the /*.jsonl glob stays OUTSIDE the quotes
       // so the shell (local sh or remote login shell) expands it.
