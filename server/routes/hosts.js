@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { resetHostBackoff } from '../services/agentMonitor.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { getHosts, getHost, createHost, updateHost, deleteHost, countAgentsOnHost } from '../services/db.js';
 import { testHost } from '../services/hosts.js';
@@ -97,6 +98,7 @@ router.post('/:id/test', async (req, res) => {
     if (!host) {
       return res.status(404).json({ error: 'Host not found' });
     }
+    resetHostBackoff(host.id);
     const result = await testHost(host);
     res.json(result);
   } catch (err) {

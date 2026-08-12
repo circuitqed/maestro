@@ -180,10 +180,52 @@ function noteHostReachable(host, reachable) {
   }
 }
 
+// An unreachable host costs a full ssh ConnectTimeout (5s) on EVERY probe. With a
+// 5s sync interval that is not a small tax — it means the sync never finishes
+// before the next one is due, the reentrancy guard is permanently engaged, and
+// every agent's state update on every OTHER host is delayed behind a host that has
+// been dead for days (the Mac mini sat offline for six). So back off: after a
+// failure, skip that host for a growing interval (10s, 20s, 40s … capped at 5min)
+// instead of retrying every tick. Any success resets it immediately, so a host
+// that wakes up is picked back up within one backoff window.
+const HOST_BACKOFF_BASE_MS = 10_000;
+const HOST_BACKOFF_MAX_MS = 300_000;
+const hostBackoff = new Map(); // hostId -> { fails, nextAttempt }
+
+function hostIsBackedOff(host) {
+  if (!host || !host.id) return false;
+  const b = hostBackoff.get(host.id);
+  return !!(b && Date.now() < b.nextAttempt);
+}
+
+// Manual "Test host" is an explicit override: clear the backoff so a host the user
+// just woke is picked up on the next sync rather than up to 5 minutes later.
+export function resetHostBackoff(hostId) {
+  if (hostId) hostBackoff.delete(Number(hostId));
+}
+
+function noteHostProbe(host, ok) {
+  if (!host || !host.id) return;
+  if (ok) {
+    hostBackoff.delete(host.id);
+    return;
+  }
+  const prev = hostBackoff.get(host.id);
+  const fails = (prev ? prev.fails : 0) + 1;
+  const wait = Math.min(HOST_BACKOFF_BASE_MS * 2 ** (fails - 1), HOST_BACKOFF_MAX_MS);
+  hostBackoff.set(host.id, { fails, nextAttempt: Date.now() + wait });
+  if (fails === 1 || wait === HOST_BACKOFF_MAX_MS) {
+    console.log(`Host ${host.name || host.id} unreachable — backing off ${Math.round(wait / 1000)}s`);
+  }
+}
+
 /**
  * Reconcile one host's agents against a single tmux probe of that host.
  */
 async function syncHostGroup(host, hostAgents) {
+  // Skip a host we already know is down until its backoff expires; its agents are
+  // left exactly as they are, same as an in-tick failure would.
+  if (hostIsBackedOff(host)) return;
   // One probe per host. getTmuxSessions returns [] for a reachable host with
   // no server (exit 1) but throws on transport failure — so a throw means
   // "unreachable", and we skip the host's agents rather than mark them stopped.
@@ -191,6 +233,7 @@ async function syncHostGroup(host, hostAgents) {
   try {
     const sessions = await getTmuxSessions(host);
     sessionNames = new Set(sessions.map((s) => s.name));
+    noteHostProbe(host, true);
     noteHostReachable(host, true);
   } catch {
     // Host unreachable — leave its agents' state untouched (a sleeping Mac mini
@@ -198,6 +241,7 @@ async function syncHostGroup(host, hostAgents) {
     // host is down. This probe already knows; without publishing it, hosts.status
     // only ever changed on a manual Test, so a mini that had been asleep for hours
     // still read "online" and the only symptom the user got was a raw ssh timeout.
+    noteHostProbe(host, false);
     noteHostReachable(host, false);
     return;
   }
