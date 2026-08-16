@@ -73,21 +73,15 @@ function AgentRow({ agent, showProject = false }) {
 
       {/* Agent info */}
       <div className="flex-1 min-w-0">
-        <div className="font-medium text-white text-sm truncate flex items-center gap-1.5">
-          <ProviderIcon provider={provider} className="w-3.5 h-3.5" />
-          {agent.name}
-          {agent.host_ssh_target && (
-            <span
-              className="flex items-center gap-1 rounded bg-gray-700 text-[10px] text-gray-300 px-1.5 py-0.5 flex-shrink-0"
-              title={agent.host_ssh_target}
-            >
-              <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                      d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-              </svg>
-              {agent.host_name}
-            </span>
-          )}
+        {/* `truncate` and `flex` must not sit on the SAME element: truncate is
+            overflow-hidden + text-overflow:ellipsis + nowrap, but ellipsis does not
+            apply to a flex container's items, so a bare text child can never be
+            clipped and instead overflows the row — long agent names ran under the
+            Stop button and off the right edge of a phone screen. The name needs its
+            own truncating span, and the provider icon must not shrink. */}
+        <div className="font-medium text-white text-sm flex items-center gap-1.5 min-w-0">
+          <ProviderIcon provider={provider} className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className="truncate">{agent.name}</span>
         </div>
         {(agent.screen_session || (showProject && agent.project_name)) && (
           <div className="text-xs text-gray-500 truncate">
@@ -98,6 +92,16 @@ function AgentRow({ agent, showProject = false }) {
               <span className="text-gray-600"> · </span>
             )}
             {agent.screen_session && <span className="font-mono">{agent.screen_session}</span>}
+            {/* The host lives on the metadata line, not beside the name: a fixed
+                "garage-wsl" badge on the title line left barely 35px for the name on
+                a 390px phone, truncating every agent to "qu…"/"ra…" — unusable for
+                telling them apart. Identity first, context second. */}
+            {agent.host_ssh_target && (
+              <>
+                <span className="text-gray-600"> · </span>
+                <span className="text-gray-400" title={agent.host_ssh_target}>{agent.host_name}</span>
+              </>
+            )}
           </div>
         )}
       </div>
