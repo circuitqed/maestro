@@ -649,6 +649,137 @@ function parseActivePrompt(text) {
   return { question: qLines.join(' ').slice(0, 400), options };
 }
 
+// Characters that can legitimately appear in a URL — used to decide whether the
+// next pane line is a continuation of a wrapped URL rather than the next widget row.
+const URL_CHARS = /^[A-Za-z0-9%\-._~:/?#[\]@!$&'()*+,;=]+$/;
+
+/**
+ * Detect Claude Code's `/login` widget in the live pane.
+ *
+ * The pane hard-wraps the OAuth URL at the terminal width with NO continuation
+ * marker, e.g.
+ *     https://claude.com/cai/oauth/authorize?code=true&client_id=…&response_type=
+ *     code&redirect_uri=…&scope=org%3Acreate_api_key+user%
+ *     3Aprofile+…&state=…
+ * so the link is only usable if the fragments are concatenated back together. The
+ * widget's own rows are indented; the URL fragments start at column 0 and contain
+ * no spaces, which is what separates them cleanly.
+ */
+function parseLoginPrompt(text) {
+  if (!text) return null;
+  const lines = text.split('\n');
+  if (!lines.some((l) => /Browser didn.t open|Paste code here/i.test(l))) return null;
+
+  let url = '';
+  for (let i = 0; i < lines.length; i++) {
+    const head = lines[i].replace(/\s+$/, '');
+    if (!/^https?:\/\/\S+$/.test(head)) continue;
+    url = head;
+    for (let j = i + 1; j < lines.length; j++) {
+      const cont = lines[j].replace(/\s+$/, '');
+      if (!cont || !URL_CHARS.test(cont)) break; // indented or non-URL => end of the link
+      url += cont;
+    }
+    break;
+  }
+  if (!url) return null;
+  return { url, wantsCode: lines.some((l) => /Paste code here/i.test(l)) };
+}
+
+// The `/login` flow rendered as a real form: open the page, then paste the code
+// back. Doing this in the terminal meant selecting a 400-character soft-wrapped
+// URL by hand, which is exactly what the terminal is worst at on a phone.
+function LoginPromptCard({ prompt, onSubmitCode }) {
+  const [code, setCode] = useState('');
+  const [sending, setSending] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(prompt.url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard blocked (non-https origin); the link and the raw text are still there */
+    }
+  };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    const v = code.trim();
+    if (!v || sending) return;
+    setSending(true);
+    try {
+      await onSubmitCode(v);
+      setCode('');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="flex justify-start">
+      <div className="min-w-0 max-w-[92%] w-full my-1 rounded-lg border border-amber-500/60 bg-amber-950/20 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-xs text-amber-300 mb-2">
+          <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M12 11c0-1.105.895-2 2-2h.5a2.5 2.5 0 000-5H12m0 7v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span className="font-medium">This agent needs you to sign in</span>
+        </div>
+
+        <div className="flex flex-wrap gap-2 mb-2">
+          <a
+            href={prompt.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded bg-amber-600/80 hover:bg-amber-600 px-3 py-1.5 text-sm text-white font-medium"
+          >
+            Open sign-in page
+          </a>
+          <button
+            type="button"
+            onClick={copy}
+            className="rounded border border-gray-600 hover:border-gray-400 px-3 py-1.5 text-sm text-gray-200"
+          >
+            {copied ? 'Copied' : 'Copy link'}
+          </button>
+        </div>
+
+        {prompt.wantsCode && (
+          <form onSubmit={submit} className="flex gap-2">
+            <input
+              type="text"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="Paste the code from that page"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              className="flex-1 min-w-0 px-2 py-1.5 bg-gray-900 border border-gray-600 rounded text-sm text-white font-mono
+                         focus:outline-none focus:border-amber-500"
+            />
+            <button
+              type="submit"
+              disabled={!code.trim() || sending}
+              className="rounded bg-amber-600/80 hover:bg-amber-600 disabled:opacity-40 px-3 py-1.5 text-sm text-white font-medium flex-shrink-0"
+            >
+              {sending ? '…' : 'Submit'}
+            </button>
+          </form>
+        )}
+
+        {/* The reassembled link, in full, for the case where neither the button nor
+            the clipboard is usable (e.g. copying it to another device by hand). */}
+        <details className="mt-2">
+          <summary className="text-xs text-gray-400 cursor-pointer">Show full URL</summary>
+          <div className="mt-1 text-[11px] font-mono text-gray-300 break-all select-all">{prompt.url}</div>
+        </details>
+      </div>
+    </div>
+  );
+}
+
 function ActivePromptCard({ prompt, onAnswer }) {
   return (
     <div className="flex justify-start">
@@ -1276,6 +1407,7 @@ function ChatView({ agentId, session }) {
     try { return localStorage.getItem('maestro-chat-messages-only') === '1'; } catch { return false; }
   });
   const [activePrompt, setActivePrompt] = useState(null); // live select prompt, or null
+  const [loginPrompt, setLoginPrompt] = useState(null);   // live /login widget, or null
   // "Load earlier" paging: chat opens on the last CHAT_TAIL_CAP records; older
   // history is fetched on demand. atStart => the whole file is loaded (hide button).
   const [atStart, setAtStart] = useState(true);
@@ -1621,6 +1753,19 @@ function ChatView({ agentId, session }) {
     [answerAgentQuestion, agentId]
   );
 
+  // The pasted OAuth code goes in over the same tmux paste path as a chat message,
+  // which is what the widget's "Paste code here" field is waiting on.
+  const onSubmitLoginCode = useCallback(
+    async (code) => {
+      try {
+        await sendAgentInput(agentId, code);
+      } catch (err) {
+        console.error('Failed to submit login code:', err);
+      }
+    },
+    [sendAgentInput, agentId]
+  );
+
   // Poll the live pane for an active interactive prompt (which isn't in the
   // transcript until answered) so we can render it with clickable options.
   useEffect(() => {
@@ -1630,7 +1775,13 @@ function ChatView({ agentId, session }) {
     const poll = async () => {
       try {
         const text = await getAgentPane(agentId);
-        if (!cancelled) setActivePrompt(parseActivePrompt(text));
+        if (!cancelled) {
+          // A /login widget also ends in "Esc to cancel", so check it first and
+          // don't let the select parser claim it.
+          const login = parseLoginPrompt(text);
+          setLoginPrompt(login);
+          setActivePrompt(login ? null : parseActivePrompt(text));
+        }
       } catch {
         /* ignore */
       }
@@ -1729,7 +1880,7 @@ function ChatView({ agentId, session }) {
           </div>
         )}
         <div ref={contentRef} className={`px-3 py-3 space-y-2 min-h-full ${ready ? '' : 'invisible'}`}>
-          {renderedRecords.length === 0 && !isWorking && !activePrompt ? (
+          {renderedRecords.length === 0 && !isWorking && !activePrompt && !loginPrompt ? (
             <div className="h-full flex items-center justify-center text-center text-sm text-gray-500 px-4">
               {connected
                 ? 'No messages yet. Send something below to get started.'
@@ -1750,7 +1901,9 @@ function ChatView({ agentId, session }) {
                 </div>
               )}
               {renderedRecords}
-              {activePrompt ? (
+              {loginPrompt ? (
+                <LoginPromptCard prompt={loginPrompt} onSubmitCode={onSubmitLoginCode} />
+              ) : activePrompt ? (
                 <ActivePromptCard prompt={activePrompt} onAnswer={onAnswerQuestion} />
               ) : (
                 isWorking && <WorkingIndicator label={activityLabel} />
