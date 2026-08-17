@@ -668,7 +668,26 @@ const URL_CHARS = /^[A-Za-z0-9%\-._~:/?#[\]@!$&'()*+,;=]+$/;
 function parseLoginPrompt(text) {
   if (!text) return null;
   const lines = text.split('\n');
-  if (!lines.some((l) => /Browser didn.t open|Paste code here/i.test(l))) return null;
+  const widgetOpen = lines.some((l) => /Browser didn.t open|Paste code here/i.test(l));
+  if (!widgetOpen) {
+    // Not signed in, but the widget is not up: Claude parks on a status line like
+    // "Not logged in · Run /login" next to the input box. Offer to START the flow,
+    // otherwise the user still has to go to tmux just to type /login — which is the
+    // whole thing we are trying to avoid.
+    //
+    // Two ways to get this wrong, both seen live: the agent's OWN message text
+    // ("⏺ Login expired · Please run /login") is not a status line and stays on
+    // screen after the fact, so bulleted lines are excluded; and the status only
+    // means anything near the input, so only the tail of the visible pane counts.
+    const tail = lines.slice(-12);
+    const needs = tail.some(
+      (l) =>
+        /\/login\b/.test(l) &&
+        /not logged in|login expired|session expired/i.test(l) &&
+        !/[⏺●○✻]/.test(l)
+    );
+    return needs ? { stage: 'needed' } : null;
+  }
 
   let url = '';
   for (let i = 0; i < lines.length; i++) {
@@ -683,16 +702,17 @@ function parseLoginPrompt(text) {
     break;
   }
   if (!url) return null;
-  return { url, wantsCode: lines.some((l) => /Paste code here/i.test(l)) };
+  return { stage: 'prompt', url, wantsCode: lines.some((l) => /Paste code here/i.test(l)) };
 }
 
 // The `/login` flow rendered as a real form: open the page, then paste the code
 // back. Doing this in the terminal meant selecting a 400-character soft-wrapped
 // URL by hand, which is exactly what the terminal is worst at on a phone.
-function LoginPromptCard({ prompt, onSubmitCode }) {
+function LoginPromptCard({ prompt, onSubmitCode, onStartLogin }) {
   const [code, setCode] = useState('');
   const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [starting, setStarting] = useState(false);
 
   const copy = async () => {
     try {
@@ -717,6 +737,16 @@ function LoginPromptCard({ prompt, onSubmitCode }) {
     }
   };
 
+  const startLogin = async () => {
+    if (starting) return;
+    setStarting(true);
+    try {
+      await onStartLogin();
+    } finally {
+      setStarting(false);
+    }
+  };
+
   return (
     <div className="flex justify-start">
       <div className="min-w-0 max-w-[92%] w-full my-1 rounded-lg border border-amber-500/60 bg-amber-950/20 px-3 py-2">
@@ -728,6 +758,22 @@ function LoginPromptCard({ prompt, onSubmitCode }) {
           <span className="font-medium">This agent needs you to sign in</span>
         </div>
 
+        {prompt.stage === 'needed' ? (
+          <div>
+            <p className="text-sm text-gray-200 mb-2">
+              The agent is signed out. Start the sign-in and the link will appear here.
+            </p>
+            <button
+              type="button"
+              onClick={startLogin}
+              disabled={starting}
+              className="rounded bg-amber-600/80 hover:bg-amber-600 disabled:opacity-40 px-3 py-1.5 text-sm text-white font-medium"
+            >
+              {starting ? 'Starting…' : 'Start sign-in'}
+            </button>
+          </div>
+        ) : (
+        <>
         <div className="flex flex-wrap gap-2 mb-2">
           <a
             href={prompt.url}
@@ -775,6 +821,8 @@ function LoginPromptCard({ prompt, onSubmitCode }) {
           <summary className="text-xs text-gray-400 cursor-pointer">Show full URL</summary>
           <div className="mt-1 text-[11px] font-mono text-gray-300 break-all select-all">{prompt.url}</div>
         </details>
+        </>
+        )}
       </div>
     </div>
   );
@@ -1766,6 +1814,15 @@ function ChatView({ agentId, session }) {
     [sendAgentInput, agentId]
   );
 
+  // Kick off /login from chat, so being signed out never sends the user to tmux.
+  const onStartLogin = useCallback(async () => {
+    try {
+      await sendAgentInput(agentId, '/login');
+    } catch (err) {
+      console.error('Failed to start login:', err);
+    }
+  }, [sendAgentInput, agentId]);
+
   // Poll the live pane for an active interactive prompt (which isn't in the
   // transcript until answered) so we can render it with clickable options.
   useEffect(() => {
@@ -1776,11 +1833,24 @@ function ChatView({ agentId, session }) {
       try {
         const text = await getAgentPane(agentId);
         if (!cancelled) {
-          // A /login widget also ends in "Esc to cancel", so check it first and
-          // don't let the select parser claim it.
+          // Precedence matters. The OAuth widget also ends in "Esc to cancel" — the
+          // footer the select parser keys on — so it must win. But a plain select
+          // must in turn beat the "signed out" status: /login opens a *method*
+          // chooser (1 Claude account / 2 Console / 3 third-party) while the
+          // "Login expired" line is still on screen, and treating that as "signed
+          // out" hid the very menu the button had just opened.
           const login = parseLoginPrompt(text);
-          setLoginPrompt(login);
-          setActivePrompt(login ? null : parseActivePrompt(text));
+          const select = parseActivePrompt(text);
+          if (login && login.stage === 'prompt') {
+            setLoginPrompt(login);
+            setActivePrompt(null);
+          } else if (select) {
+            setLoginPrompt(null);
+            setActivePrompt(select);
+          } else {
+            setLoginPrompt(login);
+            setActivePrompt(null);
+          }
         }
       } catch {
         /* ignore */
@@ -1902,7 +1972,11 @@ function ChatView({ agentId, session }) {
               )}
               {renderedRecords}
               {loginPrompt ? (
-                <LoginPromptCard prompt={loginPrompt} onSubmitCode={onSubmitLoginCode} />
+                <LoginPromptCard
+                  prompt={loginPrompt}
+                  onSubmitCode={onSubmitLoginCode}
+                  onStartLogin={onStartLogin}
+                />
               ) : activePrompt ? (
                 <ActivePromptCard prompt={activePrompt} onAnswer={onAnswerQuestion} />
               ) : (
