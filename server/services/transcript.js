@@ -132,12 +132,25 @@ export async function resolveCodexRollout(host, sessionName, cwd, pinnedId, excl
     `created=$(tmux list-sessions -f "#{==:#{session_name},$S}" -F '#{session_created}' 2>/dev/null | head -1)`,
     `[ -n "$created" ] || created=0`,
     `m(){ stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }`,
+    // A codex process can hold SEVERAL rollouts open at once — an aborted turn
+    // spawns a fresh one while the conversation keeps being written to the
+    // original. Taking the first fd found picked the newer-CREATED file, which was
+    // already dead, so the chat tailed a transcript frozen at the abort while the
+    // agent went on replying. Collect every open rollout and take the most recently
+    // WRITTEN one. printf | while-read, not `for f in $list`, because ssh runs the
+    // host's login shell and zsh does not word-split unquoted expansions.
     `tty=$(tmux list-panes -t "=$S:" -F '#{pane_tty}' 2>/dev/null | head -1 | sed 's|^/dev/||')`,
-    `if [ -n "$tty" ]; then for p in $(ps -t "$tty" -o pid= 2>/dev/null); do`,
-    `  f=$(ls -l "/proc/$p/fd" 2>/dev/null | sed -n 's|.* -> \\(/.*\\.codex/sessions/.*\\.jsonl\\)$|\\1|p' | head -1)`,
-    `  [ -n "$f" ] || f=$(lsof -p "$p" -Fn 2>/dev/null | sed -n 's|^n\\(/.*\\.codex/sessions/.*\\.jsonl\\)$|\\1|p' | head -1)`,
+    `if [ -n "$tty" ]; then`,
+    `  cands=""`,
+    `  for p in $(ps -t "$tty" -o pid= 2>/dev/null); do`,
+    `    fs=$(ls -l "/proc/$p/fd" 2>/dev/null | sed -n 's|.* -> \\(/.*\\.codex/sessions/.*\\.jsonl\\)$|\\1|p')`,
+    `    [ -n "$fs" ] || fs=$(lsof -p "$p" -Fn 2>/dev/null | sed -n 's|^n\\(/.*\\.codex/sessions/.*\\.jsonl\\)$|\\1|p')`,
+    `    cands=$(printf '%s\\n%s' "$cands" "$fs")`,
+    `  done`,
+    `  f=$(printf '%s\\n' "$cands" | grep -v '^$' | sort -u | while read -r c; do`,
+    `        printf '%s\\t%s\\n' "$(m "$c")" "$c"; done | sort -rn | head -1 | cut -f2)`,
     `  [ -n "$f" ] && { echo "$f"; exit 0; }`,
-    `done; fi`,
+    `fi`,
     `if [ -n "$P" ]; then f=$(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*-"$P".jsonl 2>/dev/null | head -1)`,
     `  if [ -n "$f" ] && [ "$(m "$f")" -ge "$created" ]; then echo "$f"; exit 0; fi; fi`,
     `[ -n "$C" ] || exit 0`,
