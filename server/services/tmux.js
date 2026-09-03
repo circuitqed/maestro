@@ -246,13 +246,6 @@ export async function killSession(sessionName, host = null) {
 }
 
 /**
- * Send keys to a tmux session
- */
-export async function sendKeys(sessionName, keys, host = null) {
-  await execOnHost(host, `tmux send-keys -t ${paneTarget(sessionName)} "${keys}"`);
-}
-
-/**
  * Inject a literal block of text into a tmux session as if typed, then press Enter.
  *
  * Unlike sendKeys (which interpolates the argument as tmux KEY NAMES, so "Enter"
@@ -294,6 +287,35 @@ export async function sendAnswer(sessionName, choice, host = null) {
   const digit = String(parseInt(choice, 10));
   if (!/^[1-9]$/.test(digit)) throw new Error('choice must be 1-9');
   await execOnHost(host, `tmux send-keys -t ${paneTarget(sessionName)} ${shellQuote(digit)}`);
+}
+
+// Keys the chat is allowed to press. A digit answers a numbered select; the
+// arrows + Enter drive widgets that AREN'T lists — /effort is a slider
+// (low·medium·high·xhigh·max·ultracode) moved with ←/→, which no amount of
+// number-pressing can operate. Deliberately a whitelist: this sends keystrokes
+// into a live agent, so it must never become an arbitrary-input channel.
+const ALLOWED_KEYS = new Set([
+  'Left', 'Right', 'Up', 'Down', 'Enter', 'Escape', 'Space', 'Tab', 'BSpace',
+  ...'0123456789abcdefghijklmnopqrstuvwxyz'.split(''),
+]);
+
+/**
+ * Press a bounded sequence of keys in the agent's pane.
+ * Each key is validated against ALLOWED_KEYS and shell-quoted; the sequence is
+ * capped so a bad caller can't hold the pane hostage.
+ */
+export async function sendKeys(sessionName, keys, host = null) {
+  const list = (Array.isArray(keys) ? keys : [keys]).map(String);
+  if (!list.length) throw new Error('no keys given');
+  if (list.length > 40) throw new Error('too many keys (max 40)');
+  for (const k of list) {
+    if (!ALLOWED_KEYS.has(k)) throw new Error(`key not allowed: ${k}`);
+  }
+  const t = paneTarget(sessionName);
+  // One send-keys per key, chained: tmux treats multiple args as separate keys
+  // anyway, but sending them individually keeps the quoting trivial to reason about.
+  const cmd = list.map((k) => `tmux send-keys -t ${t} ${shellQuote(k)}`).join(' && ');
+  await execOnHost(host, cmd);
 }
 
 /**

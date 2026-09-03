@@ -632,7 +632,12 @@ function parseActivePrompt(text) {
     const m = lines[i].match(/^[\s│┃▎☐☑◉○❯›>*·-]*?(\d+)[.)]\s+(.*\S)\s*$/);
     if (m) {
       if (firstOptIdx === -1) firstOptIdx = i;
-      options.push({ n: parseInt(m[1], 10), label: m[2].trim() });
+      // A ✔ marks the value already in effect (the /model picker uses it). Pull it
+      // out of the label so the UI can show "current" as state rather than leaving
+      // a stray tick buried in the middle of the text.
+      const raw = m[2].trim();
+      const current = /[✔✓]/.test(raw);
+      options.push({ n: parseInt(m[1], 10), label: raw.replace(/[✔✓]/g, '').replace(/\s{2,}/g, '  ').trim(), current });
     }
   }
   if (options.length === 0) return null;
@@ -828,6 +833,105 @@ function LoginPromptCard({ prompt, onSubmitCode, onStartLogin }) {
   );
 }
 
+/**
+ * Detect the /effort slider, which is NOT a numbered list and so is invisible to
+ * parseActivePrompt:
+ *
+ *      Effort
+ *              Faster                              Smarter
+ *              ──────────────▲───────────┆──────────────
+ *              low   medium  high   xhigh   max    ultracode
+ *      ←/→ to adjust · Enter to confirm · Esc to cancel
+ *
+ * The levels sit on one line, the current position is a ▲ on the ruler above it,
+ * and it is driven with arrow keys — no number can select anything. Returns the
+ * level names plus the current index, worked out by which level the ▲ sits nearest
+ * horizontally.
+ */
+function parseEffortPrompt(text) {
+  if (!text) return null;
+  const lines = text.split('\n');
+  const footer = lines.findIndex((l) => /←\/→ to adjust/.test(l));
+  if (footer === -1) return null;
+  if (!lines.slice(Math.max(0, footer - 8), footer).some((l) => /\bEffort\b/.test(l))) return null;
+
+  // The ruler carries the ▲ marker; the level names are the line just below it.
+  let markerCol = -1;
+  let levels = null;
+  for (let i = Math.max(0, footer - 8); i < footer; i++) {
+    const col = lines[i].indexOf('▲');
+    if (col !== -1) {
+      markerCol = col;
+      for (let j = i + 1; j < footer; j++) {
+        const words = [...lines[j].matchAll(/\S+/g)];
+        // A level row is several bare words; 2+ keeps stray captions out.
+        if (words.length >= 2) {
+          levels = words.map((m) => ({ name: m[0], col: m.index + m[0].length / 2 }));
+          break;
+        }
+      }
+      break;
+    }
+  }
+  if (markerCol === -1 || !levels || levels.length < 2) return null;
+
+  let current = 0;
+  let best = Infinity;
+  levels.forEach((l, i) => {
+    const d = Math.abs(l.col - markerCol);
+    if (d < best) { best = d; current = i; }
+  });
+  return { levels: levels.map((l) => l.name), current };
+}
+
+// The /effort slider as buttons. Clicking a level presses ←/→ the right number of
+// times and confirms, which is the only way to move a slider from the chat.
+function EffortPromptCard({ prompt, onPressKeys }) {
+  const [busy, setBusy] = useState(false);
+  const choose = async (idx) => {
+    if (busy) return;
+    const delta = idx - prompt.current;
+    if (delta === 0) return;
+    setBusy(true);
+    try {
+      const arrow = delta > 0 ? 'Right' : 'Left';
+      await onPressKeys([...Array(Math.abs(delta)).fill(arrow), 'Enter']);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex justify-start">
+      <div className="min-w-0 max-w-[92%] w-full my-1 rounded-lg border border-blue-500/60 bg-blue-950/30 px-3 py-2">
+        <div className="text-xs text-blue-300 mb-2 font-medium">Set reasoning effort</div>
+        <div className="flex flex-wrap gap-1.5">
+          {prompt.levels.map((name, i) => (
+            <button
+              key={name}
+              type="button"
+              disabled={busy}
+              onClick={() => choose(i)}
+              className={`rounded px-2.5 py-1 text-sm border transition-colors disabled:opacity-50 ${
+                i === prompt.current
+                  ? 'border-blue-400 bg-blue-600/40 text-white'
+                  : 'border-gray-600 text-gray-200 hover:border-blue-400 hover:bg-blue-900/20'
+              }`}
+            >
+              {name}
+              {i === prompt.current && <span className="ml-1 text-blue-300">✓</span>}
+            </button>
+          ))}
+        </div>
+        <div className="mt-2 flex gap-3 text-xs">
+          <button type="button" onClick={() => onPressKeys(['Escape'])} className="text-gray-400 hover:text-gray-200">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ActivePromptCard({ prompt, onAnswer }) {
   return (
     <div className="flex justify-start">
@@ -851,6 +955,11 @@ function ActivePromptCard({ prompt, onAnswer }) {
               className="w-full text-left rounded border border-gray-600 hover:border-blue-400 hover:bg-blue-900/20 px-2.5 py-1.5 text-sm text-gray-100 transition-colors cursor-pointer"
             >
               <span className="text-gray-500">{opt.n}.</span> {opt.label}
+              {opt.current && (
+                <span className="ml-1.5 text-[10px] rounded bg-blue-600/40 text-blue-200 px-1.5 py-0.5 align-middle">
+                  current
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -1456,6 +1565,7 @@ function ChatView({ agentId, session }) {
   });
   const [activePrompt, setActivePrompt] = useState(null); // live select prompt, or null
   const [loginPrompt, setLoginPrompt] = useState(null);   // live /login widget, or null
+  const [effortPrompt, setEffortPrompt] = useState(null); // live /effort slider, or null
   // "Load earlier" paging: chat opens on the last CHAT_TAIL_CAP records; older
   // history is fetched on demand. atStart => the whole file is loaded (hide button).
   const [atStart, setAtStart] = useState(true);
@@ -1814,6 +1924,23 @@ function ChatView({ agentId, session }) {
     [sendAgentInput, agentId]
   );
 
+  // Press keys in the agent's pane (arrow-driven widgets like the /effort slider).
+  const onPressKeys = useCallback(
+    async (keys) => {
+      try {
+        const res = await fetch(`/api/agents/${agentId}/keys`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keys }),
+        });
+        if (!res.ok) throw new Error((await res.json()).error || 'Failed');
+      } catch (err) {
+        console.error('Failed to send keys:', err);
+      }
+    },
+    [agentId]
+  );
+
   // Kick off /login from chat, so being signed out never sends the user to tmux.
   const onStartLogin = useCallback(async () => {
     try {
@@ -1840,8 +1967,15 @@ function ChatView({ agentId, session }) {
           // "Login expired" line is still on screen, and treating that as "signed
           // out" hid the very menu the button had just opened.
           const login = parseLoginPrompt(text);
+          const effort = parseEffortPrompt(text);
           const select = parseActivePrompt(text);
-          if (login && login.stage === 'prompt') {
+          setEffortPrompt(effort);
+          if (effort) {
+            // The effort slider's footer ("Esc to cancel") also trips the select
+            // parser, but it has no numbered options — keep both cards off.
+            setLoginPrompt(null);
+            setActivePrompt(null);
+          } else if (login && login.stage === 'prompt') {
             setLoginPrompt(login);
             setActivePrompt(null);
           } else if (select) {
@@ -1950,7 +2084,7 @@ function ChatView({ agentId, session }) {
           </div>
         )}
         <div ref={contentRef} className={`px-3 py-3 space-y-2 min-h-full ${ready ? '' : 'invisible'}`}>
-          {renderedRecords.length === 0 && !isWorking && !activePrompt && !loginPrompt ? (
+          {renderedRecords.length === 0 && !isWorking && !activePrompt && !loginPrompt && !effortPrompt ? (
             <div className="h-full flex items-center justify-center text-center text-sm text-gray-500 px-4">
               {connected
                 ? 'No messages yet. Send something below to get started.'
@@ -1971,7 +2105,9 @@ function ChatView({ agentId, session }) {
                 </div>
               )}
               {renderedRecords}
-              {loginPrompt ? (
+              {effortPrompt ? (
+                <EffortPromptCard prompt={effortPrompt} onPressKeys={onPressKeys} />
+              ) : loginPrompt ? (
                 <LoginPromptCard
                   prompt={loginPrompt}
                   onSubmitCode={onSubmitLoginCode}

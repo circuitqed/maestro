@@ -21,7 +21,7 @@ import {
   getAgentsForUser,
   userHasProjectAccess,
 } from '../services/db.js';
-import { getTmuxSessions, startProviderSession, createSession, killSession, sessionExists, sendText, sendAnswer, capturePane } from '../services/tmux.js';
+import { getTmuxSessions, startProviderSession, createSession, killSession, sessionExists, sendText, sendAnswer, sendKeys, capturePane } from '../services/tmux.js';
 import { registerAgent, unregisterAgent } from '../services/agentMonitor.js';
 import { getProvider, getProviderList } from '../services/providers.js';
 import { isRemote, isValidSessionName, execOnHost, shellQuote, sshBaseArgs, remoteWrap, isHostUnreachable, describeHostError } from '../services/hosts.js';
@@ -746,6 +746,45 @@ router.get('/:id/pane', async (req, res) => {
     res.json({ text });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Press a short key sequence in the agent's pane. Needed for widgets that are not
+// numbered lists: /effort is a slider (low·medium·high·xhigh·max·ultracode) driven
+// by ←/→ then Enter, which /answer's single digit cannot operate at all. Keys are
+// whitelisted in tmux.js — this is a keystroke channel into a live agent, not a
+// general input path (that is /input, which pastes text inertly).
+router.post('/:id/keys', async (req, res) => {
+  let errHost = null;
+  try {
+    const agent = getAgent(req.params.id);
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
+    if (!checkAgentAccess(req, res, agent)) return;
+
+    const keys = req.body?.keys;
+    if (!Array.isArray(keys) || keys.length === 0) {
+      return res.status(400).json({ error: 'keys must be a non-empty array' });
+    }
+    if (!agent.screen_session || !isValidSessionName(agent.screen_session)) {
+      return res.status(400).json({ error: 'Agent has no valid session' });
+    }
+    const host = agent.host_id ? getHost(agent.host_id) : null;
+    if (agent.host_id && !host) return res.status(400).json({ error: 'Agent references an unknown host' });
+
+    errHost = host;
+    try {
+      await sendKeys(agent.screen_session, keys, host);
+    } catch (err) {
+      // A rejected key is the caller's fault, not the host's.
+      if (/key not allowed|too many keys|no keys given/.test(err.message)) {
+        return res.status(400).json({ error: err.message });
+      }
+      throw err;
+    }
+    updateAgentUserActivity(agent.id);
+    res.json({ success: true });
+  } catch (err) {
+    failHost(res, err, errHost);
   }
 });
 
