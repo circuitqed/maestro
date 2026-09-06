@@ -1294,6 +1294,19 @@ function claudeParts(rec, ctx) {
   return { message: null, tool: null, toolCount: 0 };
 }
 
+// Text of a `response_item`/`message` record: content is an array of
+// {type:input_text|output_text|text, text}. Returns '' when there is nothing.
+function codexMessageText(p) {
+  const c = p && p.content;
+  if (typeof c === 'string') return c;
+  if (!Array.isArray(c)) return '';
+  return c
+    .filter((b) => b && typeof b.text === 'string')
+    .map((b) => b.text)
+    .join('\n')
+    .trim();
+}
+
 // The same message/tool split for a single Codex record.
 function codexPart(rec, ctx) {
   const p = rec.payload || {};
@@ -1325,6 +1338,35 @@ function codexPart(rec, ctx) {
     const hasImage = Array.isArray(out) && out.some((b) => b && ((b.type === 'input_image' && b.image_url) || (b.type === 'image' && b.source)));
     if (!codexOutputText(out).trim() && !hasImage) return { message: null, tool: null, toolCount: 0 };
     return { message: null, tool: <ToolResultCard result={{ content: out }} onImage={ctx && ctx.onImage} />, toolCount: 0 };
+  }
+  // Codex 0.153.4 stopped emitting event_msg user_message/agent_message records:
+  // a session now carries ONLY `response_item`/`message` with a role. Those used to
+  // be skipped as duplicates of the event_msg text, which meant a 0.153.4 session
+  // rendered as a completely empty chat. Render them, but only when this transcript
+  // has no event_msg twin for the same text — a session resumed across the version
+  // change contains both formats and would otherwise show every message twice.
+  if (rec.type === 'response_item' && p.type === 'message') {
+    const role = p.role;
+    if (role !== 'user' && role !== 'assistant') return { message: null, tool: null, toolCount: 0 };
+    const text = codexMessageText(p);
+    if (!text) return { message: null, tool: null, toolCount: 0 };
+    if (ctx && ctx.codexEventTexts && ctx.codexEventTexts.has(text)) {
+      return { message: null, tool: null, toolCount: 0 };
+    }
+    if (role === 'user') {
+      return {
+        message: (
+          <div className="flex justify-end">
+            <div className="min-w-0 max-w-[85%] rounded-lg bg-blue-600/20 border border-blue-500/30 px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wide text-blue-300/70 mb-0.5">you</div>
+              <Markdown>{text}</Markdown>
+            </div>
+          </div>
+        ),
+        tool: null, toolCount: 0,
+      };
+    }
+    return { message: <div className="flex justify-start"><div className="min-w-0 max-w-[92%] space-y-1"><Markdown>{text}</Markdown></div></div>, tool: null, toolCount: 0 };
   }
   if (rec.type === 'event_msg' && p.type === 'patch_apply_end') {
     return { message: null, tool: <CodexPatchCard payload={p} />, toolCount: 1 };
@@ -2013,7 +2055,18 @@ function ChatView({ agentId, session }) {
         }
       });
     }
-    const ctx = { onImage: setLightbox, onAnswer: onAnswerQuestion, results };
+    // Texts already shown via event_msg, so the response_item fallback above can
+    // avoid double-rendering them in a transcript that spans both formats.
+    const codexEventTexts = new Set();
+    if (provider === 'codex') {
+      records.forEach((rec) => {
+        const p = rec && rec.payload;
+        if (rec && rec.type === 'event_msg' && p && (p.type === 'user_message' || p.type === 'agent_message') && p.message) {
+          codexEventTexts.add(String(p.message).trim());
+        }
+      });
+    }
+    const ctx = { onImage: setLightbox, onAnswer: onAnswerQuestion, results, codexEventTexts };
     const partsOf = provider === 'codex' ? codexPart : claudeParts;
 
     const out = [];
