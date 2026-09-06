@@ -53,7 +53,15 @@ const PROVIDERS = {
     id: 'codex',
     name: 'OpenAI Codex',
     icon: 'codex',
-    defaultFlags: '--dangerously-bypass-approvals-and-sandbox',
+    // NOT --dangerously-bypass-approvals-and-sandbox any more. From 0.153.4 the
+    // enterprise "regulated-workspace" baseline disallows approval_policy=never and
+    // sandbox_mode=danger-full-access, so that flag is silently downgraded — the
+    // agent prints two warnings at startup and then begins asking for approval on
+    // ordinary commands, which is fatal for agents meant to run unattended.
+    // workspace-write is the most permissive mode still permitted; the writable
+    // roots and network access that make it behave like the old flag are set in
+    // each host's ~/.codex/config.toml.
+    defaultFlags: '--sandbox workspace-write',
     envVars: ['OPENAI_API_KEY'],
     monitorable: true,
     buildCommand(config, agentName) {
