@@ -139,14 +139,24 @@ export async function resolveCodexRollout(host, sessionName, cwd, pinnedId, excl
     // agent went on replying. Collect every open rollout and take the most recently
     // WRITTEN one. printf | while-read, not `for f in $list`, because ssh runs the
     // host's login shell and zsh does not word-split unquoted expansions.
-    `tty=$(tmux list-panes -t "=$S:" -F '#{pane_tty}' 2>/dev/null | head -1 | sed 's|^/dev/||')`,
-    `if [ -n "$tty" ]; then`,
-    `  cands=""`,
-    `  for p in $(ps -t "$tty" -o pid= 2>/dev/null); do`,
-    `    fs=$(ls -l "/proc/$p/fd" 2>/dev/null | sed -n 's|.* -> \\(/.*\\.codex/sessions/.*\\.jsonl\\)$|\\1|p')`,
-    `    [ -n "$fs" ] || fs=$(lsof -p "$p" -Fn 2>/dev/null | sed -n 's|^n\\(/.*\\.codex/sessions/.*\\.jsonl\\)$|\\1|p')`,
-    `    cands=$(printf '%s\\n%s' "$cands" "$fs")`,
-    `  done`,
+    // Find the pane's processes by PANE_PID, not by tty. `ps -t <tty>` resolves the
+    // tty against the CALLER's /dev/pts, and Maestro runs in a container with its
+    // own devpts — so for a LOCAL agent the tty never matched and this whole step
+    // silently found nothing (it only ever worked over ssh, where the command runs
+    // on the real host). pane_pid plus two generations of children covers
+    // `bash -lc` -> codex -> helpers.
+    `pane=$(tmux list-panes -t "=$S:" -F '#{pane_pid}' 2>/dev/null | head -1)`,
+    `if [ -n "$pane" ]; then`,
+    `  kids=$(pgrep -P "$pane" 2>/dev/null)`,
+    `  gkids=$(printf '%s\\n' "$kids" | grep -v '^$' | while read -r k; do pgrep -P "$k" 2>/dev/null; done)`,
+    `  pids=$(printf '%s\\n%s\\n%s' "$pane" "$kids" "$gkids" | grep -v '^$' | sort -u)`,
+    `  cands=$(printf '%s\\n' "$pids" | while read -r p; do`,
+    `      ls -l "/proc/$p/fd" 2>/dev/null | sed -n 's|.* -> \\(/.*\\.codex/sessions/.*\\.jsonl\\)$|\\1|p'`,
+    `      lsof -p "$p" -Fn 2>/dev/null | sed -n 's|^n\\(/.*\\.codex/sessions/.*\\.jsonl\\)$|\\1|p'`,
+    `    done)`,
+    // A codex process can hold SEVERAL rollouts open at once (an aborted turn spawns
+    // a fresh one while the conversation keeps being written to the original), so
+    // take the most recently WRITTEN, never simply the first found.
     `  f=$(printf '%s\\n' "$cands" | grep -v '^$' | sort -u | while read -r c; do`,
     `        printf '%s\\t%s\\n' "$(m "$c")" "$c"; done | sort -rn | head -1 | cut -f2)`,
     `  [ -n "$f" ] && { echo "$f"; exit 0; }`,
