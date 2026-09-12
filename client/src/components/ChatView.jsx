@@ -1294,6 +1294,47 @@ function claudeParts(rec, ctx) {
   return { message: null, tool: null, toolCount: 0 };
 }
 
+// Codex injects its own turns as role:"user" — the goal/thread context it feeds
+// itself each turn arrives as <codex_internal_context source="goal">…</codex_internal_context>.
+// Rendered naively that is several KB of machinery wearing a "you" label, which is
+// both wrong and drowns the real conversation. Detect it and let the caller show a
+// marker instead. Same problem, and same treatment, as Claude's <task-notification>.
+function codexInternalContext(text) {
+  const m = /^\s*<codex_internal_context\b([^>]*)>/.exec(text || '');
+  if (!m) return null;
+  const src = (/source="([^"]+)"/.exec(m[1]) || [])[1] || 'internal';
+  const obj = (/<objective>([\s\S]*?)<\/objective>/.exec(text) || [])[1] || '';
+  return { source: src, objective: obj.trim() };
+}
+
+// A collapsed marker for one of those injected blocks: says what it is, and opens
+// to show the objective so the goal is still inspectable from chat.
+function CodexContextPill({ info }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="flex justify-center my-1">
+      <div className="min-w-0 max-w-[92%]">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="inline-flex items-center gap-1.5 text-[11px] text-gray-500 hover:text-gray-300 border border-gray-700 bg-gray-800/60 rounded-full px-3 py-0.5"
+          title="Injected by Codex, not sent by you"
+        >
+          <svg className={`w-3 h-3 flex-shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+          <span>Codex {info.source} context</span>
+        </button>
+        {open && info.objective && (
+          <div className="mt-1 text-[11px] text-gray-400 whitespace-pre-wrap break-words border border-gray-700/70 rounded p-2 bg-gray-900/60">
+            {info.objective}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Text of a `response_item`/`message` record: content is an array of
 // {type:input_text|output_text|text, text}. Returns '' when there is nothing.
 function codexMessageText(p) {
@@ -1311,6 +1352,8 @@ function codexMessageText(p) {
 function codexPart(rec, ctx) {
   const p = rec.payload || {};
   if (rec.type === 'event_msg' && p.type === 'user_message' && p.message) {
+    const internal = codexInternalContext(p.message);
+    if (internal) return { message: <CodexContextPill info={internal} />, tool: null, toolCount: 0 };
     return {
       message: (
         <div className="flex justify-end">
@@ -1354,6 +1397,8 @@ function codexPart(rec, ctx) {
       return { message: null, tool: null, toolCount: 0 };
     }
     if (role === 'user') {
+      const internal = codexInternalContext(text);
+      if (internal) return { message: <CodexContextPill info={internal} />, tool: null, toolCount: 0 };
       return {
         message: (
           <div className="flex justify-end">
