@@ -1092,7 +1092,10 @@ function renderUserPrompt(rec) {
 function renderToolResults(rec, ctx) {
   const blocks = rec.message?.content;
   if (!Array.isArray(blocks)) return null;
-  const results = blocks.filter((b) => b && b.type === 'tool_result');
+  const skip = (ctx && ctx.sentFileIds) || null;
+  const results = blocks.filter(
+    (b) => b && b.type === 'tool_result' && !(skip && b.tool_use_id && skip.has(b.tool_use_id)),
+  );
   if (results.length === 0) return null;
   // Edit/Write/MultiEdit results carry a ready-made diff in toolUseResult.structuredPatch.
   const diff = rec.toolUseResult && Array.isArray(rec.toolUseResult.structuredPatch)
@@ -1250,6 +1253,105 @@ function CodexPatchCard({ payload }) {
   );
 }
 
+function toFileList(v) {
+  if (Array.isArray(v)) return v.filter((f) => typeof f === 'string' && f);
+  if (typeof v === 'string' && v.trim()) {
+    const t = v.trim();
+    if (t.startsWith('[')) {
+      try { return toFileList(JSON.parse(t)); } catch { /* fall through to single path */ }
+    }
+    return [t];
+  }
+  return [];
+}
+
+/**
+ * A file the agent deliberately handed to the user via SendUserFile, rendered the
+ * way the desktop apps do: the caption as the message, and each file as a real
+ * attachment — images inline, anything else as an openable row — rather than a
+ * generic tool card showing a JSON blob of paths.
+ *
+ * `display: "render"` means show it inline; `"attach"` means present it as a
+ * download. Paths are absolute on the AGENT's host, so they go through the same
+ * per-agent file endpoint as every other file link (which is confined to the
+ * working dir plus MAESTRO_FILE_ROOTS, and /tmp is in there by default — which is
+ * where the scratchpad these usually come from lives).
+ */
+function SentFileCard({ block }) {
+  const { openFile, agentId } = useContext(ChatAgentContext) || {};
+  // Unlike the desktop apps — which upload a copy of the file — we serve it from the
+  // agent's own filesystem, so a file that has since been deleted (these usually live
+  // in an ephemeral scratchpad) would render as a broken image. Fall back to the
+  // attachment row, which states plainly that it is no longer there.
+  const [broken, setBroken] = useState(() => new Set());
+  const input = block.input || {};
+  // `files` is normally an array, but it has also been recorded as a JSON-encoded
+  // string (and could plausibly be one bare path), so coerce rather than drop it.
+  const files = toFileList(input.files);
+  const caption = typeof input.caption === 'string' ? input.caption : '';
+  const inline = input.display !== 'attach';
+  const failed = /error|fail/i.test(String(input.status || ''));
+  if (!files.length) return null;
+  const urlFor = (f) => `/api/agents/${encodeURIComponent(agentId)}/file?path=${encodeURIComponent(f)}`;
+
+  return (
+    <div className={`rounded-lg border px-3 py-2 ${failed ? 'border-red-700/50 bg-red-950/20' : 'border-gray-700 bg-gray-800/40'}`}>
+      <div className="flex items-center gap-1.5 text-[11px] text-gray-400 mb-1.5">
+        <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+        </svg>
+        <span>{files.length === 1 ? 'Sent you a file' : `Sent you ${files.length} files`}</span>
+      </div>
+      {caption && <div className="text-sm text-gray-200 mb-2"><Markdown>{caption}</Markdown></div>}
+      <div className="space-y-2">
+        {files.map((f) => {
+          const name = String(f).split('/').pop();
+          const isImg = IMAGE_EXTS.has(fileExt(f));
+          const gone = broken.has(f);
+          if (inline && isImg && !gone) {
+            return (
+              <img
+                key={f}
+                src={urlFor(f)}
+                alt={name}
+                loading="lazy"
+                title={openFile ? `Open ${name}` : name}
+                onClick={openFile ? () => openFile(f) : undefined}
+                onError={() => setBroken((prev) => new Set(prev).add(f))}
+                className={`max-w-full max-h-[26rem] object-contain object-left rounded border border-gray-700 ${openFile ? 'cursor-zoom-in' : ''}`}
+              />
+            );
+          }
+          return (
+            <div key={f} className="flex items-center gap-2 rounded border border-gray-700 bg-gray-900/50 px-2 py-1.5">
+              <svg className="w-4 h-4 flex-shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+              </svg>
+              <button
+                type="button"
+                onClick={openFile && !gone ? () => openFile(f) : undefined}
+                disabled={gone}
+                className={`flex-1 min-w-0 text-left text-sm truncate font-mono ${gone ? 'text-gray-500 line-through' : 'text-blue-300 hover:text-blue-200'}`}
+                title={f}
+              >
+                {name}
+              </button>
+              {gone ? (
+                <span className="text-[11px] text-gray-500 flex-shrink-0">no longer on disk</span>
+              ) : (
+                <a href={`${urlFor(f)}&download=1`} download={name}
+                   className="text-[11px] text-gray-400 hover:text-white flex-shrink-0">Download</a>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // Split a Claude record into a message part (user/assistant text) and a tool part
 // (thinking + tool_use cards, or tool_result cards); toolCount = number of tool_use
 // calls. Lets messages-only mode collapse a run of tool activity into one marker.
@@ -1269,7 +1371,9 @@ function claudeParts(rec, ctx) {
         tool.push(<ThinkingBlock key={key} text={block.thinking} />);
       } else if (block.type === 'tool_use') {
         toolCount += 1;
-        if (block.name === 'AskUserQuestion') {
+        if (block.name === 'SendUserFile') {
+          tool.push(<SentFileCard key={key} block={block} />);
+        } else if (block.name === 'AskUserQuestion') {
           const rt = ctx && ctx.results ? ctx.results[block.id] : undefined;
           const answered = rt !== undefined;
           tool.push(<QuestionCard key={key} block={block} answered={answered} chosen={answered ? parseAnswers(rt) : null} onAnswer={ctx && ctx.onAnswer} />);
@@ -1653,9 +1757,14 @@ function ChatView({ agentId, session }) {
   const [activePrompt, setActivePrompt] = useState(null); // live select prompt, or null
   const [loginPrompt, setLoginPrompt] = useState(null);   // live /login widget, or null
   const [effortPrompt, setEffortPrompt] = useState(null); // live /effort slider, or null
-  // "Load earlier" paging: chat opens on the last CHAT_TAIL_CAP records; older
-  // history is fetched on demand. atStart => the whole file is loaded (hide button).
-  const [atStart, setAtStart] = useState(true);
+  // "Load earlier" paging: chat opens on the last CHAT_TAIL_CAP lines; older history
+  // is fetched on demand. atStart => the whole file is loaded (hide the button).
+  // Starts false — only the server can say whether anything older exists, and it does
+  // so on the first loadEarlier. Guessing from the opening burst is what broke this
+  // before: the burst ends at a 180ms quiet gap, which a slow chunk trips mid-history,
+  // and dropped lines mean a record count undercounts lines anyway. Both errors hid
+  // the button on exactly the long transcripts that need it.
+  const [atStart, setAtStart] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
 
   const wsRef = useRef(null);
@@ -1672,7 +1781,6 @@ function ChatView({ agentId, session }) {
   const settleTimerRef = useRef(null);
   const textareaRef = useRef(null);
   const historyLimitRef = useRef(CHAT_TAIL_CAP);
-  const initialBurstRef = useRef(0); // raw lines received before ready (many are uuid-less, non-rendered)
   const loadingEarlierRef = useRef(false);
   const pendingPrependRef = useRef(null); // { prevH, prevTop } while a load-earlier prepend settles
 
@@ -1719,9 +1827,12 @@ function ChatView({ agentId, session }) {
       }
       if (msg.type === 'record' && msg.record && typeof msg.record === 'object') {
         const rec = msg.record;
-        // Count every line in the initial burst (before ready) — including uuid-less
-        // ones we won't render — so we can tell if the tail was capped (older exists).
-        if (!readyRef.current) initialBurstRef.current += 1;
+        // Every line in the burst pushes the reveal back, including uuid-less and
+        // duplicate ones that never reach setRecords — a run of those is not a lull.
+        if (!readyRef.current) {
+          clearTimeout(settleTimerRef.current);
+          settleTimerRef.current = setTimeout(markReady, 180);
+        }
         // Dedupe across reconnects (which replay history from the top). Claude
         // records carry a uuid; Codex records don't, so synthesize a stable key.
         const key = providerRef.current === 'codex' ? codexKey(rec) : rec.uuid;
@@ -1729,11 +1840,6 @@ function ChatView({ agentId, session }) {
         if (seenUuidsRef.current.has(key)) return;
         seenUuidsRef.current.add(key);
         setRecords((prev) => [...prev, rec]);
-        // Reveal once the burst of history stops arriving (short quiet period).
-        if (!readyRef.current) {
-          clearTimeout(settleTimerRef.current);
-          settleTimerRef.current = setTimeout(markReady, 180);
-        }
       } else if (msg.type === 'error') {
         markReady();
         setBanner({ type: 'error', message: msg.message || 'Transcript error' });
@@ -1787,13 +1893,6 @@ function ChatView({ agentId, session }) {
   // async markdown/KaTeX/image reflow is caught by the ResizeObserver below.
   useLayoutEffect(() => {
     if (ready && atBottomRef.current) scrollToBottom();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready]);
-
-  // Once the initial burst settles, decide whether earlier history exists: a full
-  // cap of records means the tail was truncated (older messages remain above).
-  useEffect(() => {
-    if (ready) setAtStart(initialBurstRef.current < CHAT_TAIL_CAP);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
@@ -2102,6 +2201,19 @@ function ChatView({ agentId, session }) {
     }
     // Texts already shown via event_msg, so the response_item fallback above can
     // avoid double-rendering them in a transcript that spans both formats.
+    // SendUserFile's result is bookkeeping ("1 file delivered to user … file_uuid: …")
+    // and says nothing the attachment card above it doesn't already show.
+    const sentFileIds = new Set();
+    if (provider !== 'codex') {
+      records.forEach((rec) => {
+        const c = rec.message?.content;
+        if (Array.isArray(c)) {
+          c.forEach((b) => {
+            if (b && b.type === 'tool_use' && b.name === 'SendUserFile' && b.id) sentFileIds.add(b.id);
+          });
+        }
+      });
+    }
     const codexEventTexts = new Set();
     if (provider === 'codex') {
       records.forEach((rec) => {
@@ -2111,7 +2223,7 @@ function ChatView({ agentId, session }) {
         }
       });
     }
-    const ctx = { onImage: setLightbox, onAnswer: onAnswerQuestion, results, codexEventTexts };
+    const ctx = { onImage: setLightbox, onAnswer: onAnswerQuestion, results, codexEventTexts, sentFileIds };
     const partsOf = provider === 'codex' ? codexPart : claudeParts;
 
     const out = [];
