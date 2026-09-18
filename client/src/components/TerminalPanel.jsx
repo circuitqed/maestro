@@ -1,6 +1,7 @@
-import React, { forwardRef, useRef, useImperativeHandle } from 'react';
+import React, { forwardRef, useRef, useImperativeHandle, useState, useCallback } from 'react';
 import Terminal from './Terminal';
 import ChatView from './ChatView';
+import ModelBadge from './ModelBadge';
 import { useApp } from '../context/AppContext';
 
 function ViewToggle({ mode, onChange }) {
@@ -31,6 +32,10 @@ const TerminalPanel = forwardRef(function TerminalPanel(
 ) {
   const terminalRef = useRef(null);
   const { setViewMode } = useApp();
+  // Reported by ChatView once it can tell which model the session is on. Identity is
+  // stable so the effect that reports it doesn't re-fire on every panel render.
+  const [modelInfo, setModelInfo] = useState(null);
+  const handleMeta = useCallback((info) => setModelInfo(info), []);
 
   // Expose terminal methods to parent (no-ops when the terminal isn't mounted)
   useImperativeHandle(ref, () => ({
@@ -53,7 +58,10 @@ const TerminalPanel = forwardRef(function TerminalPanel(
     <div className="flex-1 flex flex-col min-h-0 min-w-0 w-full bg-gray-900 border-l border-gray-700">
       {/* Header - session name as title */}
       <div className="flex-shrink-0 flex items-center justify-between gap-2 px-3 py-1.5 bg-gray-800 border-b border-gray-700">
-        <span className="text-white font-medium text-sm truncate min-w-0">{sessionName}</span>
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-white font-medium text-sm truncate min-w-0">{sessionName}</span>
+          {mode === 'chat' && <ModelBadge info={modelInfo} className="flex-shrink-0" />}
+        </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           {agentId != null && <ViewToggle mode={mode} onChange={setViewMode} />}
           {mode === 'terminal' && (
@@ -89,7 +97,7 @@ const TerminalPanel = forwardRef(function TerminalPanel(
       {/* Body - terminal or chat */}
       <div className="flex-1 min-h-0 min-w-0 w-full">
         {mode === 'chat' ? (
-          <ChatView key={agentId} agentId={agentId} session={sessionName} />
+          <ChatView key={agentId} agentId={agentId} session={sessionName} onMeta={handleMeta} />
         ) : (
           <Terminal ref={terminalRef} sessionName={sessionName} hostId={hostId} showStatusBar={false} />
         )}

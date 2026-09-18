@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import Terminal from './Terminal';
 import ChatView from './ChatView';
+import ModelBadge from './ModelBadge';
 import { useApp } from '../context/AppContext';
 
 function ViewToggle({ mode, onChange }) {
@@ -26,6 +27,9 @@ function ViewToggle({ mode, onChange }) {
 }
 
 function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClose }) {
+  // Which model the chat is on, reported up by ChatView (see TerminalPanel).
+  const [modelInfo, setModelInfo] = useState(null);
+  const handleMeta = useCallback((info) => setModelInfo(info), []);
   const { setViewMode } = useApp();
   const [viewport, setViewport] = useState(() => ({
     height: window.visualViewport?.height ?? window.innerHeight,
@@ -89,6 +93,7 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
               </svg>
             </button>
             <span className="text-gray-400 text-sm font-mono truncate">{sessionName}</span>
+            {mode === 'chat' && <ModelBadge info={modelInfo} className="flex-shrink-0" />}
           </div>
           {agentId != null && <ViewToggle mode={mode} onChange={setViewMode} />}
         </div>
@@ -96,7 +101,7 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
         {/* Body - terminal or chat */}
         <div className="flex-1 min-h-0 overflow-hidden">
           {mode === 'chat' ? (
-            <ChatView key={agentId} agentId={agentId} session={sessionName} />
+            <ChatView key={agentId} agentId={agentId} session={sessionName} onMeta={handleMeta} />
           ) : (
             <Terminal sessionName={sessionName} hostId={hostId} />
           )}

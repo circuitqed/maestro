@@ -932,6 +932,263 @@ function EffortPromptCard({ prompt, onPressKeys }) {
   );
 }
 
+/**
+ * Detect a model / reasoning-effort picker in the live pane and pull it apart into
+ * something worth rendering. Both CLIs put the choice in a numbered list, so the
+ * generic select parser *did* catch it — it just produced a bad card: label and
+ * description jammed into one run-on line, wrapped descriptions cut off mid-word,
+ * the heading swallowed into a paragraph of pane furniture, and no way to reach the
+ * per-option actions the widgets actually offer.
+ *
+ * Claude Code (v2.1.275):
+ *      Select model
+ *      Switch between Claude models. Your pick becomes the default for new sessions.
+ *        1. Default (recommended)  Opus 5 with 1M context · Best for everyday tasks
+ *      ❯ 3. Fable ✔                Fable 5.1 · Most capable for your hardest and
+ *                                  longest-running tasks
+ *      ● High effort (default) ←/→ to adjust
+ *      Enter to set as default · s to use this session only · Esc to cancel
+ *
+ * Codex (v0.153.4) asks the same thing over two pages — model, then effort:
+ *      Select Model and Effort                 Select Reasoning Level for gpt-5.6-terra
+ *      1. gpt-5.6-sol (default)  …             1. Low               …
+ *      › 4. gpt-6-astra (current)  …           › 2. Medium (default)  …
+ *      Press enter to confirm or esc to go back
+ *
+ * Verified against both live: a digit key selects AND submits, so one click per
+ * option works everywhere. The ❯/› marker is the cursor position, which is what
+ * makes Claude's "s = this session only" reachable — walk the cursor to the row
+ * with Up/Down, then press s.
+ */
+// Turn a model id into something worth putting in a title bar: "claude-opus-4-8" ->
+// "Opus 4.8", "claude-haiku-4-5-20251001" -> "Haiku 4.5", "claude-opus-5[1m]" ->
+// "Opus 5 (1M)". OpenAI ids ("gpt-6-astra") are already readable, so leave them be.
+function friendlyModel(id) {
+  if (!id || typeof id !== 'string' || id === '<synthetic>') return null;
+  let s = id.trim();
+  if (!/^claude-/.test(s)) return s;
+  let suffix = '';
+  const ctx = /\[(\d+m)\]$/i.exec(s);
+  if (ctx) { suffix = ` (${ctx[1].toUpperCase()})`; s = s.slice(0, ctx.index); }
+  s = s.replace(/^claude-/, '').replace(/-\d{8}$/, ''); // drop the release date
+  const parts = s.split('-').filter(Boolean);
+  if (!parts.length) return id;
+  const family = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+  const version = parts.slice(1).join('.');
+  return `${family}${version ? ` ${version}` : ''}${suffix}`;
+}
+
+/**
+ * The model in use, read from the live pane. Both CLIs print it, and for Codex the
+ * status line above the composer is the only source that updates the moment you
+ * switch — the transcript's turn_context doesn't move until the next turn.
+ *
+ *   Codex banner:  "model:     gpt-6-astra high   /model to change"
+ *   Codex status:  "gpt-5.6-luna low fast · /home/projects/…"
+ *   Claude banner: "Fable 5.1 with high effort · Claude Max"
+ */
+function parsePaneModel(text, provider) {
+  if (!text) return null;
+  const lines = text.split('\n');
+  if (provider === 'codex') {
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const st = /^\s*(gpt-[\w.]+(?:-[a-z]+)?)\s+(low|medium|high|xhigh|extra high|max|ultra)\b/i.exec(lines[i]);
+      if (st) return { model: st[1], effort: st[2].toLowerCase() };
+      const bn = /^[\s│|]*model:\s+(\S+)(?:\s+(\S+))?/i.exec(lines[i]);
+      if (bn && !/change/i.test(bn[1])) {
+        return { model: bn[1], effort: bn[2] && !/\//.test(bn[2]) ? bn[2].toLowerCase() : null };
+      }
+    }
+    return null;
+  }
+  // Claude's banner drops the effort clause for models that don't take one
+  // ("Haiku 4.5 · Claude Max" vs "Fable 5.1 with high effort · Claude Max"), so
+  // anchor on the plan suffix and treat the effort as optional.
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^\W*\s*([A-Z][A-Za-z]*(?:\s+[\d.]+)?)(?:\s+with\s+(\w+)\s+effort)?\s*·\s*Claude\b/.exec(lines[i]);
+    if (m) return { model: m[1], effort: m[2] ? m[2].toLowerCase() : null };
+  }
+  return null;
+}
+
+function parseModelPrompt(text) {
+  if (!text) return null;
+  const lines = text.split('\n');
+  const HEADINGS = [
+    { re: /^\s*Select model\s*$/i, kind: 'model', title: 'Select model' },
+    { re: /^\s*Select Model and Effort\s*$/i, kind: 'model', title: 'Select model' },
+    { re: /^\s*Select Reasoning Level(?:\s+for\s+(.+?))?\s*$/i, kind: 'effort', title: 'Select reasoning effort' },
+  ];
+  // Last match wins: a closed picker leaves its heading in the scrollback above.
+  let head = null;
+  for (let i = lines.length - 1; i >= 0 && !head; i--) {
+    for (const h of HEADINGS) {
+      const m = h.re.exec(lines[i]);
+      if (m) { head = { idx: i, kind: h.kind, title: h.title, subject: m[1] || null }; break; }
+    }
+  }
+  if (!head) return null;
+
+  const OPTION = /^([^\dA-Za-z]*)(\d+)[.)]\s+(.*\S)\s*$/;
+  const options = [];
+  let highlighted = null;
+  let effort = null;
+  let canSessionOnly = false;
+  let indent = 0;
+  for (let i = head.idx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (/Esc to cancel|esc to go back/i.test(line)) {
+      canSessionOnly = /to use this session only/i.test(line);
+      break;
+    }
+    // Claude shows the effort for whichever row the cursor is on — "● High effort
+    // (default) ←/→ to adjust", or "○ Effort not supported for Haiku". Keep either.
+    const em = /^[\s│┃▎]*[●◉○]\s*(.+?)\s*$/.exec(line);
+    if (em) { effort = em[1].replace(/\s*←\/→\s*to adjust\s*$/, '').trim(); continue; }
+    const m = OPTION.exec(line);
+    if (m) {
+      const n = parseInt(m[2], 10);
+      if (/[❯›>]/.test(m[1])) highlighted = n;
+      indent = line.indexOf(m[2]);
+      // Two or more spaces separate the option's name from its blurb; one space is
+      // just a space inside either of them.
+      const rest = m[3];
+      const split = /\s{2,}/.exec(rest);
+      let label = (split ? rest.slice(0, split.index) : rest).trim();
+      let description = split ? rest.slice(split.index).trim() : '';
+      const current = /[✔✓]/.test(label) || /\(current\)$/i.test(label);
+      label = label.replace(/[✔✓]/g, '').trim();
+      // A trailing "(default)" / "(recommended)" / "(current)" is a state marker, not
+      // part of the name — lift it out so it can be a badge instead of punctuation.
+      let tag = null;
+      const tm = /\s*\((default|recommended|current)\)$/i.exec(label);
+      if (tm) { tag = tm[1].toLowerCase(); label = label.slice(0, tm.index).trim(); }
+      options.push({ n, label, description, current, tag });
+      continue;
+    }
+    // A wrapped description continues under the blurb column; without this the tail
+    // of the longest option ("…longest-running tasks") was simply dropped.
+    if (options.length && line.trim() && line.search(/\S/) > indent) {
+      const last = options[options.length - 1];
+      last.description = `${last.description} ${line.trim()}`.trim();
+    }
+  }
+  if (!options.length) return null;
+  return { kind: head.kind, title: head.title, subject: head.subject, options, highlighted, effort, canSessionOnly };
+}
+
+// The model/effort picker as a real chooser: each option is a row with its name,
+// its blurb, and what it currently is. Clicking picks it (a digit key selects and
+// submits in both CLIs). Claude also offers "just this session", which needs the
+// cursor moved onto the row first — that's what `highlighted` is for.
+function ModelPromptCard({ prompt, onAnswer, onPressKeys, provider }) {
+  const [busy, setBusy] = useState(false);
+  const sessionOnly = prompt.canSessionOnly && prompt.highlighted != null;
+  const cursorLabel = (prompt.options.find((o) => o.n === prompt.highlighted) || {}).label || null;
+
+  const pickSessionOnly = async (n) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const delta = n - prompt.highlighted;
+      const arrow = delta > 0 ? 'Down' : 'Up';
+      await onPressKeys([...Array(Math.abs(delta)).fill(arrow), 's']);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const TAGS = {
+    current: 'bg-blue-600/40 text-blue-200',
+    default: 'bg-gray-600/50 text-gray-200',
+    recommended: 'bg-gray-600/50 text-gray-200',
+  };
+
+  return (
+    <div className="flex justify-start">
+      <div className="min-w-0 max-w-[92%] w-full my-1 rounded-lg border border-blue-500/60 bg-blue-950/30 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-xs text-blue-300 mb-2">
+          <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+          </svg>
+          <span className="font-medium">{prompt.title}</span>
+          {prompt.subject && <span className="text-gray-400">for {prompt.subject}</span>}
+          {prompt.effort && (
+            // The effort belongs to the row the cursor is on, not to the picker as a
+            // whole — name that row unless the text already does.
+            <span className="ml-auto text-[10px] rounded bg-gray-700/70 text-gray-300 px-1.5 py-0.5 truncate max-w-[55%]">
+              {cursorLabel && !prompt.effort.includes(cursorLabel) ? `${cursorLabel}: ${prompt.effort}` : prompt.effort}
+            </span>
+          )}
+        </div>
+        <div className="space-y-1">
+          {prompt.options.map((opt) => (
+            <div
+              key={opt.n}
+              className={`group flex items-start gap-2 rounded border px-2.5 py-1.5 transition-colors ${
+                opt.current
+                  ? 'border-blue-400/70 bg-blue-900/30'
+                  : 'border-gray-600 hover:border-blue-400 hover:bg-blue-900/20'
+              }`}
+            >
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onAnswer && onAnswer(opt.n)}
+                className="flex-1 min-w-0 text-left disabled:opacity-50"
+              >
+                <div className="text-sm text-gray-100">
+                  <span className="text-gray-500">{opt.n}.</span>{' '}
+                  <span className="font-medium">{opt.label}</span>
+                  {opt.current && (
+                    <span className="ml-1.5 text-[10px] rounded bg-blue-600/40 text-blue-200 px-1.5 py-0.5 align-middle">
+                      current
+                    </span>
+                  )}
+                  {opt.tag && !(opt.current && opt.tag === 'current') && (
+                    <span className={`ml-1.5 text-[10px] rounded px-1.5 py-0.5 align-middle ${TAGS[opt.tag] || TAGS.default}`}>
+                      {opt.tag}
+                    </span>
+                  )}
+                </div>
+                {opt.description && (
+                  <div className="text-xs text-gray-400 mt-0.5 break-words">{opt.description}</div>
+                )}
+              </button>
+              {sessionOnly && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => pickSessionOnly(opt.n)}
+                  title="Use for this session only — leaves your default untouched"
+                  className="flex-shrink-0 self-center text-[11px] rounded border border-gray-600 px-1.5 py-0.5 text-gray-400 hover:text-white hover:border-blue-400 disabled:opacity-50"
+                >
+                  This session
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="mt-2 flex items-center gap-3 text-[11px] text-gray-500">
+          <button type="button" onClick={() => onPressKeys(['Escape'])} className="text-gray-400 hover:text-gray-200">
+            Cancel
+          </button>
+          <span className="min-w-0">
+            {prompt.kind === 'effort'
+              ? 'Applies to this session.'
+              : sessionOnly
+                ? 'Clicking a model also makes it your default for new sessions.'
+                : provider === 'codex'
+                  ? 'Codex saves this to ~/.codex/config.toml, so it also becomes the default for new sessions.'
+                  : 'Applies to this session.'}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ActivePromptCard({ prompt, onAnswer }) {
   return (
     <div className="flex justify-start">
@@ -1682,7 +1939,7 @@ function FileViewer({ agentId, path, onClose, variant = 'modal' }) {
 // ChatView
 // ---------------------------------------------------------------------------
 
-function ChatView({ agentId, session }) {
+function ChatView({ agentId, session, onMeta }) {
   const { sendAgentInput, answerAgentQuestion, getAgentPane, agentStates, agents } = useApp();
   // Desktop docks the file viewer as a side panel; mobile uses a modal (no room to dock).
   const isDesktop = useMediaQuery('(min-width: 768px)');
@@ -1757,6 +2014,8 @@ function ChatView({ agentId, session }) {
   const [activePrompt, setActivePrompt] = useState(null); // live select prompt, or null
   const [loginPrompt, setLoginPrompt] = useState(null);   // live /login widget, or null
   const [effortPrompt, setEffortPrompt] = useState(null); // live /effort slider, or null
+  const [modelPrompt, setModelPrompt] = useState(null);   // live /model picker, or null
+  const [paneModel, setPaneModel] = useState(null);       // {model, effort} read off the pane
   // "Load earlier" paging: chat opens on the last CHAT_TAIL_CAP lines; older history
   // is fetched on demand. atStart => the whole file is loaded (hide the button).
   // Starts false — only the server can say whether anything older exists, and it does
@@ -2153,10 +2412,18 @@ function ChatView({ agentId, session }) {
           // "Login expired" line is still on screen, and treating that as "signed
           // out" hid the very menu the button had just opened.
           const login = parseLoginPrompt(text);
+          const model = parseModelPrompt(text);
           const effort = parseEffortPrompt(text);
           const select = parseActivePrompt(text);
-          setEffortPrompt(effort);
-          if (effort) {
+          setPaneModel(parsePaneModel(text, providerRef.current));
+          // The model picker is a numbered list, so the generic select parser matches
+          // it too — it has to be checked first or it never gets its own card.
+          setModelPrompt(model);
+          setEffortPrompt(model ? null : effort);
+          if (model) {
+            setLoginPrompt(null);
+            setActivePrompt(null);
+          } else if (effort) {
             // The effort slider's footer ("Esc to cancel") also trips the select
             // parser, but it has no numbered options — keep both cards off.
             setLoginPrompt(null);
@@ -2183,6 +2450,39 @@ function ChatView({ agentId, session }) {
       clearTimeout(timer);
     };
   }, [agentId, getAgentPane]);
+
+  /**
+   * What model this agent is actually on, for the title bar. Two sources, and which
+   * one leads differs by provider:
+   *  - Claude stamps `message.model` on every assistant record, so the transcript is
+   *    authoritative for what ran; its banner scrolls away in a long session.
+   *  - Codex only writes `turn_context` per TURN, so after a /model switch the
+   *    transcript is stale until the next turn — but its status line above the
+   *    composer updates immediately, so the pane leads and the transcript backs it up.
+   */
+  const modelInfo = useMemo(() => {
+    let fromRecords = null;
+    if (provider === 'codex') {
+      for (let i = records.length - 1; i >= 0 && !fromRecords; i--) {
+        const p = records[i] && records[i].payload;
+        if (p && p.model) fromRecords = { model: p.model, effort: p.effort || null };
+      }
+      const info = paneModel || fromRecords;
+      return info ? { ...info, provider } : null;
+    }
+    for (let i = records.length - 1; i >= 0 && !fromRecords; i--) {
+      const m = friendlyModel(records[i] && records[i].message && records[i].message.model);
+      if (m) fromRecords = { model: m, effort: null };
+    }
+    const info = fromRecords || paneModel;
+    return info ? { ...info, provider } : null;
+  }, [records, paneModel, provider]);
+
+  useEffect(() => {
+    if (!onMeta) return undefined;
+    onMeta(modelInfo);
+    return () => onMeta(null);
+  }, [onMeta, modelInfo]);
 
   const renderedRecords = useMemo(() => {
     // Map each answered tool_use_id -> its result text (Claude AskUserQuestion).
@@ -2294,7 +2594,7 @@ function ChatView({ agentId, session }) {
           </div>
         )}
         <div ref={contentRef} className={`px-3 py-3 space-y-2 min-h-full ${ready ? '' : 'invisible'}`}>
-          {renderedRecords.length === 0 && !isWorking && !activePrompt && !loginPrompt && !effortPrompt ? (
+          {renderedRecords.length === 0 && !isWorking && !activePrompt && !loginPrompt && !effortPrompt && !modelPrompt ? (
             <div className="h-full flex items-center justify-center text-center text-sm text-gray-500 px-4">
               {connected
                 ? 'No messages yet. Send something below to get started.'
@@ -2315,7 +2615,14 @@ function ChatView({ agentId, session }) {
                 </div>
               )}
               {renderedRecords}
-              {effortPrompt ? (
+              {modelPrompt ? (
+                <ModelPromptCard
+                  prompt={modelPrompt}
+                  onAnswer={onAnswerQuestion}
+                  onPressKeys={onPressKeys}
+                  provider={provider}
+                />
+              ) : effortPrompt ? (
                 <EffortPromptCard prompt={effortPrompt} onPressKeys={onPressKeys} />
               ) : loginPrompt ? (
                 <LoginPromptCard
