@@ -22,7 +22,7 @@ import {
   userHasProjectAccess,
 } from '../services/db.js';
 import { getTmuxSessions, startProviderSession, createSession, killSession, sessionExists, sendText, sendAnswer, sendKeys, capturePane } from '../services/tmux.js';
-import { registerAgent, unregisterAgent } from '../services/agentMonitor.js';
+import { resetHostBackoff, registerAgent, unregisterAgent } from '../services/agentMonitor.js';
 import { getProvider, getProviderList } from '../services/providers.js';
 import { isRemote, isValidSessionName, execOnHost, shellQuote, sshBaseArgs, remoteWrap, isHostUnreachable, describeHostError } from '../services/hosts.js';
 import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js';
@@ -434,6 +434,11 @@ router.post('/:id/start', async (req, res) => {
     if (agent.host_id && !host) {
       return res.status(400).json({ error: 'Agent references an unknown host' });
     }
+    // Pressing Start is a statement that the host should be up — clear any monitor
+    // backoff so its status refreshes on the next tick. Without this, a host that was
+    // down (a reboot, say) stays "offline" in the UI for up to the 5-minute backoff
+    // cap even after it is plainly answering, which reads as "the agent won't start".
+    if (host) resetHostBackoff(host.id);
 
     // Resolve the working directory for this agent's (project, host):
     // local host => project.path; remote host => the per-host configured path.

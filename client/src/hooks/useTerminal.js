@@ -13,6 +13,14 @@ const MIN_FONT_SIZE = 10;
 const MAX_FONT_SIZE = 28;
 const FONT_SIZE_KEY = 'terminal-font-size';
 
+// A bare "code: 1" told the user nothing when a rebooted host had no tmux server yet.
+// ssh exits 255 for any transport failure; tmux exits 1 when the session is missing.
+function exitHint(code) {
+  if (code === 255) return " \u2014 couldn't reach the host over SSH (is it awake and on the tailnet?)";
+  if (code === 1) return ' \u2014 no session on the host. Press Start to launch the agent.';
+  return '';
+}
+
 function getDefaultFontSize() {
   const stored = localStorage.getItem(FONT_SIZE_KEY);
   if (stored) return Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, parseInt(stored, 10)));
@@ -332,7 +340,7 @@ function useTerminal(sessionName, hostId) {
             xtermRef.current.write(`\r\n\x1b[31mError: ${data.message}\x1b[0m\r\n`);
             break;
           case 'exit':
-            xtermRef.current.write(`\r\n\x1b[33mSession ended (code: ${data.code})\x1b[0m\r\n`);
+            xtermRef.current.write(`\r\n\x1b[33mSession ended (code: ${data.code})${exitHint(data.code)}\x1b[0m\r\n`);
             break;
           case 'replaced':
             // Another tab took over this session - don't reconnect
@@ -753,7 +761,7 @@ function useTerminal(sessionName, hostId) {
               xtermRef.current.write(`\r\n\x1b[31mError: ${data.message}\x1b[0m\r\n`);
               break;
             case 'exit':
-              xtermRef.current.write(`\r\n\x1b[33mSession ended (code: ${data.code})\x1b[0m\r\n`);
+              xtermRef.current.write(`\r\n\x1b[33mSession ended (code: ${data.code})${exitHint(data.code)}\x1b[0m\r\n`);
               break;
             case 'replaced':
               xtermRef.current.write(`\r\n\x1b[33m${data.message}\x1b[0m\r\n`);
