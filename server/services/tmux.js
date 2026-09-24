@@ -261,51 +261,54 @@ export async function killSession(sessionName, host = null) {
  */
 export async function sendText(sessionName, text, host = null) {
   const s = paneTarget(sessionName);
-  // A short, distinctive slice of the first line. The input box renders the paste
-  // starting at its left edge, so the opening characters are never wrapped.
-  const firstLine = String(text).split('\n').find((l) => l.trim()) || '';
-  const fragment = firstLine.trim().slice(0, 24);
 
-  // How many times the fragment is already on screen. Comparing before/after (rather
-  // than merely "is it present") keeps a repeated message from matching its own
-  // earlier copy still visible in the scrollback.
-  const countFragment = async () => {
-    if (!fragment) return null;
+  // A fingerprint of the bottom of the pane — the composer plus the status line.
+  // Comparing this before/after the paste needs no knowledge of what the TUI chose to
+  // show (literal text for a short paste, "[Pasted text #1 +3 lines]" for a bracketed
+  // one) and survives wrapping, which defeated matching a single prompt line: once
+  // the content is wider than the pane, appending to it leaves that first line
+  // unchanged. Bias is deliberate — if the tail is moving for any reason (a spinner
+  // while the agent works) we conclude "landed" and submit, i.e. behave as before.
+  // Only a completely static tail means the paste truly went nowhere.
+  const readTail = async () => {
     try {
       const { stdout } = await execOnHost(
         host,
-        `tmux capture-pane -p -t ${s} | grep -cF ${shellQuote(fragment)} || true`
+        `tmux capture-pane -p -t ${s} | tail -12 | cksum`
       );
-      const n = parseInt(String(stdout).trim(), 10);
-      return Number.isInteger(n) ? n : null;
+      return String(stdout).trim() || null;
     } catch {
-      return null; // can't verify — fall back to blind send rather than refusing
+      return null; // can't read it — fall back to a blind send rather than refusing
     }
   };
 
-  const before = await countFragment();
-  // Two attempts. Nothing is submitted until the text is confirmed in the input box,
-  // so a retry cannot double-post: at worst the pane holds the text twice, which is
+  const before = await readTail();
+  let landed = before === null ? null : false;
+
+  // Two attempts. Nothing is submitted until the text is confirmed in the composer,
+  // so a retry cannot double-post: at worst the text sits there twice, which is
   // visible, whereas a silently dropped paste is not.
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 2 && landed !== true; attempt++) {
     const buf = `maestro-${randomUUID()}`;
     await execOnHost(
       host,
       `tmux set-buffer -b ${shellQuote(buf)} -- ${shellQuote(text)} && ` +
-        `tmux paste-buffer -d -b ${shellQuote(buf)} -t ${s}`
+        // -p is essential: it delivers a BRACKETED paste when the TUI has asked for
+        // one. Without it tmux replays the buffer as raw keys, so every newline in a
+        // multi-line message acts as Enter and submits a fragment — a message with an
+        // attachment list arrived as three separate turns with the last @path
+        // stranded in the box. Bracketed, the whole thing lands atomically.
+        `tmux paste-buffer -d -p -b ${shellQuote(buf)} -t ${s}`
     );
-    // The Claude Code / Codex TUIs ingest a bracketed paste asynchronously, so an
-    // Enter sent in the same instant can arrive before the paste is committed and be
-    // dropped — the message ends up typed but never sent. Let the paste settle.
+    // The TUIs ingest a bracketed paste asynchronously, so an Enter sent in the same
+    // instant can arrive before the paste is committed and be dropped.
     await new Promise((r) => setTimeout(r, 500));
-    if (before === null) break; // unverifiable; submit and hope, as before
-    const after = await countFragment();
-    if (after === null || after > before) break;
-    // Nothing landed. Seen for real when the TUI reinitialises (e.g. right after a
-    // /model switch re-renders the whole app) and swallows the paste.
+    if (before === null) break;
+    const after = await readTail();
+    if (after === null) { landed = null; break; }
+    if (after !== before) landed = true;
   }
 
-  const landed = before === null ? null : (await countFragment()) > before;
   if (landed === false) return { delivered: false };
   await execOnHost(host, `tmux send-keys -t ${s} Enter`);
   return { delivered: true };
