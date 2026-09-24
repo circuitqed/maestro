@@ -1283,8 +1283,17 @@ function WorkingIndicator({ label }) {
 // slash-command invocations and injected <system-reminder>/<local-command-stdout>
 // blocks. Turn a command into a chip, strip the injected wrappers, and only show a
 // real "you" bubble when genuine prose remains.
+// Claude Code wraps pasted input in a marker pair, and Maestro's composer ALWAYS
+// pastes (that is how injection avoids tmux interpreting your words as keys), so a
+// long message you typed in the chat comes back wrapped in these. The content between
+// them is your text verbatim — only the markers need to go. Note the closing marker
+// repeats the id (`</pasted_content id="5576">`), so it isn't a well-formed end tag
+// and a naive `</pasted_content>` match misses it.
+const PASTED_WRAPPER = /<\/?pasted_content(?:\s+id="[^"]*")?\s*>/g;
+
 function cleanUserText(text) {
   if (typeof text !== 'string') return { kind: 'text', text: '' };
+  if (text.includes('pasted_content')) text = text.replace(PASTED_WRAPPER, '').trim();
   const cmd = text.match(/<command-name>\s*\/?([^<]+?)\s*<\/command-name>/);
   if (cmd) {
     const args = (text.match(/<command-args>([\s\S]*?)<\/command-args>/) || [])[1];
