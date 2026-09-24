@@ -987,6 +987,17 @@ function friendlyModel(id) {
  *   Codex status:  "gpt-5.6-luna low fast · /home/projects/…"
  *   Claude banner: "Fable 5.1 with high effort · Claude Max"
  */
+// "⎿  Set model to `Fable 5.1` and saved as your default for new sessions" — Claude
+// records the outcome of /model as a local-command line in the transcript.
+const MODEL_SET_RE = /Set model to `?([^`\n]+?)`?\s+(?:and saved as your default|for this session)/;
+
+function recordPlainText(rec) {
+  const c = rec && rec.message && rec.message.content;
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) return c.filter((b) => b && b.type === 'text').map((b) => b.text || '').join(' ');
+  return '';
+}
+
 function parsePaneModel(text, provider) {
   if (!text) return null;
   const lines = text.split('\n');
@@ -2321,7 +2332,15 @@ function ChatView({ agentId, session, onMeta }) {
       composed = composed ? `${composed}\n\nAttached file(s):\n${list}` : `Attached file(s):\n${list}`;
     }
     try {
-      await sendAgentInput(agentId, composed);
+      // `delivered:false` means the paste never reached the agent's input box (the
+      // TUI can swallow one while it is reinitialising — seen right after a /model
+      // switch re-renders the app). Keep the text rather than clearing it: a long
+      // message silently vanishing is the worst outcome here.
+      const res = await sendAgentInput(agentId, composed);
+      if (res && res.delivered === false) {
+        setSendError('Not delivered — the agent\u2019s UI did not take the message. Your text is still here; try again.');
+        return;
+      }
       setInput('');
       setAttachments([]);
       setPendingSent(true);
@@ -2470,9 +2489,16 @@ function ChatView({ agentId, session, onMeta }) {
       const info = paneModel || fromRecords;
       return info ? { ...info, provider } : null;
     }
+    // Scan back for whichever came LAST: an assistant turn (which stamps the model it
+    // ran on) or a /model switch. Claude writes the switch into the transcript right
+    // away, but message.model only catches up on the NEXT turn — so without this the
+    // header kept showing the old model until the agent happened to reply again.
     for (let i = records.length - 1; i >= 0 && !fromRecords; i--) {
-      const m = friendlyModel(records[i] && records[i].message && records[i].message.model);
-      if (m) fromRecords = { model: m, effort: null };
+      const rec = records[i];
+      const switched = MODEL_SET_RE.exec(recordPlainText(rec));
+      if (switched) { fromRecords = { model: switched[1].trim(), effort: null }; break; }
+      const m = friendlyModel(rec && rec.message && rec.message.model);
+      if (m) { fromRecords = { model: m, effort: null }; break; }
     }
     const info = fromRecords || paneModel;
     return info ? { ...info, provider } : null;

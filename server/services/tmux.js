@@ -260,19 +260,55 @@ export async function killSession(sessionName, host = null) {
  * @param {object|null} host - Host row (null => local)
  */
 export async function sendText(sessionName, text, host = null) {
-  const buf = `maestro-${randomUUID()}`;
-  const s = paneTarget(sessionName); // paste-buffer/send-keys take a pane target
-  // Paste the text, then submit with Enter as a SEPARATE step after a short pause.
-  // The Claude Code / Codex TUIs ingest a bracketed paste asynchronously, so an
-  // Enter sent in the same instant can arrive before the paste is committed to the
-  // input and get dropped — the message ends up typed but never sent (intermittent,
-  // worse over a laggy remote). The delay lets the paste settle before we submit.
-  const cmd =
-    `tmux set-buffer -b ${shellQuote(buf)} -- ${shellQuote(text)} && ` +
-    `tmux paste-buffer -d -b ${shellQuote(buf)} -t ${s} && ` +
-    `sleep 0.5 && ` +
-    `tmux send-keys -t ${s} Enter`;
-  await execOnHost(host, cmd);
+  const s = paneTarget(sessionName);
+  // A short, distinctive slice of the first line. The input box renders the paste
+  // starting at its left edge, so the opening characters are never wrapped.
+  const firstLine = String(text).split('\n').find((l) => l.trim()) || '';
+  const fragment = firstLine.trim().slice(0, 24);
+
+  // How many times the fragment is already on screen. Comparing before/after (rather
+  // than merely "is it present") keeps a repeated message from matching its own
+  // earlier copy still visible in the scrollback.
+  const countFragment = async () => {
+    if (!fragment) return null;
+    try {
+      const { stdout } = await execOnHost(
+        host,
+        `tmux capture-pane -p -t ${s} | grep -cF ${shellQuote(fragment)} || true`
+      );
+      const n = parseInt(String(stdout).trim(), 10);
+      return Number.isInteger(n) ? n : null;
+    } catch {
+      return null; // can't verify — fall back to blind send rather than refusing
+    }
+  };
+
+  const before = await countFragment();
+  // Two attempts. Nothing is submitted until the text is confirmed in the input box,
+  // so a retry cannot double-post: at worst the pane holds the text twice, which is
+  // visible, whereas a silently dropped paste is not.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const buf = `maestro-${randomUUID()}`;
+    await execOnHost(
+      host,
+      `tmux set-buffer -b ${shellQuote(buf)} -- ${shellQuote(text)} && ` +
+        `tmux paste-buffer -d -b ${shellQuote(buf)} -t ${s}`
+    );
+    // The Claude Code / Codex TUIs ingest a bracketed paste asynchronously, so an
+    // Enter sent in the same instant can arrive before the paste is committed and be
+    // dropped — the message ends up typed but never sent. Let the paste settle.
+    await new Promise((r) => setTimeout(r, 500));
+    if (before === null) break; // unverifiable; submit and hope, as before
+    const after = await countFragment();
+    if (after === null || after > before) break;
+    // Nothing landed. Seen for real when the TUI reinitialises (e.g. right after a
+    // /model switch re-renders the whole app) and swallows the paste.
+  }
+
+  const landed = before === null ? null : (await countFragment()) > before;
+  if (landed === false) return { delivered: false };
+  await execOnHost(host, `tmux send-keys -t ${s} Enter`);
+  return { delivered: true };
 }
 
 /**

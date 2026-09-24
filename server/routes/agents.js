@@ -611,9 +611,9 @@ router.post('/:id/input', async (req, res) => {
     }
     errHost = host;
 
-    await sendText(agent.screen_session, text, host);
+    const sent = await sendText(agent.screen_session, text, host);
     updateAgentUserActivity(agent.id); // track most-recent user input for sorting
-    res.json({ success: true });
+    res.json({ success: true, delivered: sent?.delivered !== false });
   } catch (err) {
     failHost(res, err, errHost);
   }
