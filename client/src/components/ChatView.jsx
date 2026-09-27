@@ -1632,6 +1632,75 @@ function SentFileCard({ block }) {
 // Split a Claude record into a message part (user/assistant text) and a tool part
 // (thinking + tool_use cards, or tool_result cards); toolCount = number of tool_use
 // calls. Lets messages-only mode collapse a run of tool activity into one marker.
+/**
+ * What should stay visible when "Messages only" hides tool activity.
+ *
+ * Hiding tool calls is about hiding NOISE, and a picture is the opposite of noise:
+ * a screenshot the agent took, a plot it produced, a file it handed over. Those are
+ * the parts of a tool run you actually want to look at, so they are pulled out and
+ * shown inline while the surrounding command output stays collapsed.
+ *
+ * Covers both transcript shapes: Claude tool_result blocks
+ * ({type:'image',source:{base64}}) and Codex tool output ({type:'input_image'}).
+ */
+function imageSourcesIn(blocks) {
+  if (!Array.isArray(blocks)) return [];
+  const out = [];
+  blocks.forEach((b) => {
+    if (!b) return;
+    if (b.type === 'image' && b.source?.type === 'base64') {
+      out.push(`data:${b.source.media_type};base64,${b.source.data}`);
+    } else if (b.type === 'input_image' && typeof b.image_url === 'string' && b.image_url.startsWith('data:')) {
+      out.push(b.image_url);
+    } else if (b.type === 'tool_result') {
+      out.push(...imageSourcesIn(b.content));
+    }
+  });
+  return out;
+}
+
+function InlineImages({ srcs, onImage }) {
+  return (
+    <div className="flex justify-start">
+      <div className="min-w-0 max-w-[92%] w-full space-y-1">
+        {srcs.map((src, i) => (
+          <button
+            key={i}
+            type="button"
+            onClick={() => onImage && onImage(src)}
+            title="Click to view full size"
+            className="block w-full text-left"
+          >
+            <img src={src} alt="" className="max-w-full max-h-[26rem] object-contain object-left rounded border border-gray-700 cursor-zoom-in" />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// The parts of a record worth showing even with tool activity hidden: files the agent
+// handed over, and any image it produced. Returns null when there is nothing visual.
+function visualPartOf(rec, ctx) {
+  const content = rec && rec.message && rec.message.content;
+  if (Array.isArray(content)) {
+    const sent = content.filter((b) => b && b.type === 'tool_use' && b.name === 'SendUserFile');
+    if (sent.length) {
+      return (
+        <div className="flex justify-start">
+          <div className="min-w-0 max-w-[92%] w-full space-y-1">
+            {sent.map((b, i) => <SentFileCard key={b.id || i} block={b} />)}
+          </div>
+        </div>
+      );
+    }
+  }
+  const srcs = imageSourcesIn(Array.isArray(content) ? content : null)
+    .concat(rec && rec.payload ? imageSourcesIn(rec.payload.output) : []);
+  if (srcs.length) return <InlineImages srcs={srcs} onImage={ctx && ctx.onImage} />;
+  return null;
+}
+
 function claudeParts(rec, ctx) {
   if (rec.type === 'assistant') {
     const content = rec.message?.content;
@@ -2578,9 +2647,13 @@ function ChatView({ agentId, session, onMeta }) {
       const rkey = rec.uuid || (rec.payload ? codexKey(rec) : idx);
       const dim = rec.isSidechain ? 'opacity-70' : '';
       if (messagesOnly) {
-        // Collapse a run of tool activity into one clickable marker between messages.
+        // Collapse a run of tool activity into one clickable marker between messages —
+        // except anything visual, which is shown inline instead of being swept into the
+        // marker (and is not counted in it, so it isn't also hidden behind the click).
         if (pt.message) { flushTools(); out.push(<div key={`m-${rkey}`} className={dim}>{pt.message}</div>); }
-        if (pt.tool) { buf.push(<div key={`t-${rkey}`} className={dim}>{pt.tool}</div>); bufCount += pt.toolCount || 0; }
+        const visual = visualPartOf(rec, ctx);
+        if (visual) { flushTools(); out.push(<div key={`v-${rkey}`} className={dim}>{visual}</div>); }
+        else if (pt.tool) { buf.push(<div key={`t-${rkey}`} className={dim}>{pt.tool}</div>); bufCount += pt.toolCount || 0; }
       } else {
         if (pt.message) out.push(<div key={`m-${rkey}`} className={dim}>{pt.message}</div>);
         if (pt.tool) out.push(<div key={`t-${rkey}`} className={dim}>{pt.tool}</div>);
