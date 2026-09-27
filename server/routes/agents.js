@@ -28,7 +28,7 @@ import { isRemote, isValidSessionName, execOnHost, shellQuote, sshBaseArgs, remo
 import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js';
 import { appendAgentLane } from '../services/scaffold.js';
 import { resolveAgentWorkingDir, ensureDirOnHost } from '../services/projectPaths.js';
-import { pinnedTranscriptExists } from '../services/transcript.js';
+import { pinnedTranscriptExists, codexRolloutExists } from '../services/transcript.js';
 import { resolveTranscriptFile, readTranscriptTail } from '../services/transcript.js';
 
 const router = Router();
@@ -502,13 +502,28 @@ router.post('/:id/start', async (req, res) => {
       }
     }
 
+    // For codex, resume the pinned rollout when it is still on disk. The id is
+    // discovered from the RUNNING session (resolveCodexRollout writes it back), so it
+    // is present for any agent whose chat has been opened; without it, or if the file
+    // is gone, we start fresh exactly as before.
+    let codexResumeId = null;
+    if (provider.id === 'codex' && agent.claude_session_id) {
+      try {
+        if (await codexRolloutExists(host, agent.claude_session_id)) {
+          codexResumeId = agent.claude_session_id;
+        }
+      } catch {
+        codexResumeId = null;
+      }
+    }
+
     let result;
     try {
       if (provider.id === 'shell') {
         result = await createSession(agent.screen_session, workingDir, null, host);
       } else {
         const command = provider.buildCommand(
-          { ...(agent.config || {}), claudeSessionId, claudeResume },
+          { ...(agent.config || {}), claudeSessionId, claudeResume, codexResumeId },
           agent.name,
           host
         );

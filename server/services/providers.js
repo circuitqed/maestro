@@ -67,6 +67,15 @@ const PROVIDERS = {
     buildCommand(config, agentName) {
       const binary = config.binaryPath || 'codex';
       const flags = config.flags ?? this.defaultFlags;
+      // Resuming the pinned rollout, so a restart keeps the conversation instead of
+      // silently starting an empty one — the Codex equivalent of claude --resume.
+      // `codex resume <SESSION_ID>` takes the id as a positional BEFORE the options,
+      // and the id is a validated UUID (hex + dashes), so it needs no quoting.
+      const rid = config.codexResumeId;
+      const resume = rid && /^[0-9a-fA-F-]{36}$/.test(rid) ? `resume ${rid} ` : '';
+      // A resumed session keeps the model it was created with, which is how an agent
+      // silently stays on an old model across restarts. Pin it when configured.
+      const model = config.model ? `-m ${quoteForBashLc(config.model)} ` : '';
       // Codex has no `--name`, so without this a Codex agent has no idea which agent
       // it is. Asked "where were we" with a fresh session, it reconstructs context from
       // the repo — and since the project convention is one SHARED working dir, the
@@ -77,7 +86,7 @@ const PROVIDERS = {
       // key=value is one shell word so `-c` still gets its own argv.
       const identity = codexIdentity(agentName);
       const idFlag = identity ? `-c ${quoteForBashLc(`developer_instructions=${JSON.stringify(identity)}`)} ` : '';
-      return `bash -lc '${binary} ${idFlag}${flags}; exec bash'`;
+      return `bash -lc '${binary} ${resume}${model}${idFlag}${flags}; exec bash'`;
     },
   },
   gemini: {

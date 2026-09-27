@@ -184,6 +184,24 @@ export async function resolveCodexRollout(host, sessionName, cwd, pinnedId, excl
   }
 }
 
+/**
+ * Whether a pinned Codex rollout still exists on the host — the Codex counterpart of
+ * pinnedTranscriptExists. Codex names its rollouts rollout-<ts>-<uuid>.jsonl under a
+ * date hierarchy, so the id has to be globbed for rather than looked up by path.
+ */
+export async function codexRolloutExists(host, sessionId) {
+  if (!isUuid(sessionId)) return false;
+  try {
+    const { stdout } = await execOnHost(
+      host,
+      `ls -1 "$HOME"/.codex/sessions/*/*/*/rollout-*-${sessionId}.jsonl 2>/dev/null | head -1`
+    );
+    return !!String(stdout).trim();
+  } catch {
+    return false; // unreachable or no match — start fresh rather than fail
+  }
+}
+
 export async function resolveTranscriptFile(agent, host) {
   // Codex keeps its own transcript format/location — resolve by matching the
   // rollout's recorded cwd to this agent's (host-aware) working directory. A pinned
