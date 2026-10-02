@@ -4,6 +4,10 @@ import { recordActivity } from './agentMonitor.js';
 import { getHost } from './db.js';
 import { attachSpawnArgs, isRemote, isValidSessionName } from './hosts.js';
 
+// Below this a TUI cannot lay out its prompts; see the resize handler.
+const MIN_COLS = 80;
+const MIN_ROWS = 24;
+
 const terminals = new Map();
 
 // Track active connection per (host, session) pair (only one allowed)

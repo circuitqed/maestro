@@ -640,6 +640,54 @@ function parseActivePrompt(text) {
       options.push({ n: parseInt(m[1], 10), label: raw.replace(/[✔✓]/g, '').replace(/\s{2,}/g, '  ').trim(), current });
     }
   }
+  // Not every select is numbered. Claude's "Do you trust this folder?" is driven purely
+  // by the ❯ cursor and arrow keys, which left it unanswerable from chat — and on a
+  // phone there are no arrow keys at all, so the only way through was a desktop
+  // terminal. Collect those rows too: the cursor line plus its siblings, identified by
+  // sharing the text column the cursor line starts at.
+  let cursorIndex = -1;
+  if (options.length === 0) {
+    // Anchor on the ❯ row FIRST, then expand in both directions: walking upward alone
+    // meets the rows BELOW the cursor before the cursor itself, with no column to
+    // match them against, and drops them — which left "Yes, I trust this folder"
+    // invisible while "No, exit" showed.
+    let cursorAt = -1;
+    let textCol = -1;
+    for (let i = footerIdx - 1; i >= start; i--) {
+      const cm = /^([\s│┃▎]*)([❯›])\s*(.*\S)\s*$/.exec(lines[i]);
+      if (cm) { cursorAt = i; textCol = cm[1].length + 2; break; }
+      if (!lines[i].trim()) break; // past the widget
+    }
+    if (cursorAt !== -1) {
+      const sibling = (i) => {
+        const line = lines[i];
+        if (!line || !line.trim()) return null;
+        const indent = line.search(/\S/);
+        return Math.abs(indent - textCol) <= 1 ? line.trim() : null;
+      };
+      const rows = [{ label: /^[\s│┃▎]*[❯›]\s*(.*\S)\s*$/.exec(lines[cursorAt])[1].trim(), cursor: true }];
+      for (let i = cursorAt - 1; i >= start; i--) {
+        const lbl = sibling(i);
+        if (!lbl) break;
+        rows.unshift({ label: lbl, cursor: false });
+      }
+      for (let i = cursorAt + 1; i < footerIdx; i++) {
+        const lbl = sibling(i);
+        if (!lbl) break;
+        rows.push({ label: lbl, cursor: false });
+      }
+      const usable =
+        rows.length >= 2 && rows.length <= 8 &&
+        rows.every((r) => r.label.length <= 120);
+      if (usable) {
+        rows.forEach((r, i) => {
+          if (r.cursor) cursorIndex = i;
+          options.push({ n: null, label: r.label, current: false });
+        });
+        firstOptIdx = cursorAt - rows.filter((r, i) => i < cursorIndex).length;
+      }
+    }
+  }
   if (options.length === 0) return null;
   const qLines = [];
   for (let i = firstOptIdx - 1; i >= start && qLines.length < 4; i--) {
@@ -651,7 +699,7 @@ function parseActivePrompt(text) {
     if (/to select|to navigate/.test(t)) break;
     qLines.unshift(t);
   }
-  return { question: qLines.join(' ').slice(0, 400), options };
+  return { question: qLines.join(' ').slice(0, 400), options, cursorIndex };
 }
 
 // Characters that can legitimately appear in a URL — used to decide whether the
@@ -1200,7 +1248,23 @@ function ModelPromptCard({ prompt, onAnswer, onPressKeys, provider }) {
   );
 }
 
-function ActivePromptCard({ prompt, onAnswer }) {
+function ActivePromptCard({ prompt, onAnswer, onPressKeys }) {
+  const [busy, setBusy] = useState(false);
+  // Un-numbered widgets have no key that selects directly, so move the cursor the
+  // required number of rows and press Enter — the same trick the model picker uses for
+  // "this session only".
+  const choose = async (opt, idx) => {
+    if (opt.n) { onAnswer && onAnswer(opt.n); return; }
+    if (busy || !onPressKeys || prompt.cursorIndex == null || prompt.cursorIndex < 0) return;
+    setBusy(true);
+    try {
+      const delta = idx - prompt.cursorIndex;
+      const arrow = delta > 0 ? 'Down' : 'Up';
+      await onPressKeys([...Array(Math.abs(delta)).fill(arrow), 'Enter']);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <div className="flex justify-start">
       <div className="min-w-0 max-w-[92%] w-full my-1 rounded-lg border border-blue-500/60 bg-blue-950/30 px-3 py-2">
@@ -1215,14 +1279,19 @@ function ActivePromptCard({ prompt, onAnswer }) {
           <div className="text-sm text-gray-100 mb-1.5 whitespace-pre-wrap break-words">{prompt.question}</div>
         )}
         <div className="space-y-1">
-          {prompt.options.map((opt) => (
+          {prompt.options.map((opt, idx) => (
             <button
-              key={opt.n}
+              key={opt.n ?? `c${idx}`}
               type="button"
-              onClick={() => onAnswer && onAnswer(opt.n)}
-              className="w-full text-left rounded border border-gray-600 hover:border-blue-400 hover:bg-blue-900/20 px-2.5 py-1.5 text-sm text-gray-100 transition-colors cursor-pointer"
+              disabled={busy}
+              onClick={() => choose(opt, idx)}
+              className={`w-full text-left rounded border px-2.5 py-1.5 text-sm text-gray-100 transition-colors cursor-pointer disabled:opacity-50 ${
+                idx === prompt.cursorIndex && !opt.n
+                  ? 'border-blue-400/70 bg-blue-900/30'
+                  : 'border-gray-600 hover:border-blue-400 hover:bg-blue-900/20'
+              }`}
             >
-              <span className="text-gray-500">{opt.n}.</span> {opt.label}
+              {opt.n ? <span className="text-gray-500">{opt.n}.</span> : null} {opt.label}
               {opt.current && (
                 <span className="ml-1.5 text-[10px] rounded bg-blue-600/40 text-blue-200 px-1.5 py-0.5 align-middle">
                   current
@@ -2739,7 +2808,7 @@ function ChatView({ agentId, session, onMeta }) {
                   onStartLogin={onStartLogin}
                 />
               ) : activePrompt ? (
-                <ActivePromptCard prompt={activePrompt} onAnswer={onAnswerQuestion} />
+                <ActivePromptCard prompt={activePrompt} onAnswer={onAnswerQuestion} onPressKeys={onPressKeys} />
               ) : (
                 isWorking && <WorkingIndicator label={activityLabel} />
               )}

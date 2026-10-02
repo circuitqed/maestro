@@ -165,7 +165,12 @@ export async function createSession(sessionName, workingDir = null, command = nu
   }
 
   // Build the tmux command
-  let tmuxCmd = `tmux new-session -d -s ${shellQuote(sessionName)}`;
+  // Size the window explicitly. A detached session otherwise inherits tmux's
+  // default-size and then whatever client attaches — a phone once left a session at
+  // 40x6, which renders the agent's TUI unusable AND breaks pane parsing, because a
+  // widget's options and footer fall off-screen (only "No, exit" was reachable on a
+  // trust prompt). Start wide enough for widgets to draw in full.
+  let tmuxCmd = `tmux new-session -d -x ${TMUX_COLS} -y ${TMUX_ROWS} -s ${shellQuote(sessionName)}`;
 
   if (workingDir) {
     tmuxCmd += ` -c ${shellQuote(workingDir)}`;
@@ -210,7 +215,12 @@ export async function startProviderSession(sessionName, command, workingDir = nu
     return { name: sessionName, created: false, alreadyRunning: true };
   }
 
-  let tmuxCmd = `tmux new-session -d -s ${shellQuote(sessionName)}`;
+  // Size the window explicitly. A detached session otherwise inherits tmux's
+  // default-size and then whatever client attaches — a phone once left a session at
+  // 40x6, which renders the agent's TUI unusable AND breaks pane parsing, because a
+  // widget's options and footer fall off-screen (only "No, exit" was reachable on a
+  // trust prompt). Start wide enough for widgets to draw in full.
+  let tmuxCmd = `tmux new-session -d -x ${TMUX_COLS} -y ${TMUX_ROWS} -s ${shellQuote(sessionName)}`;
 
   if (workingDir) {
     tmuxCmd += ` -c ${shellQuote(workingDir)}`;
@@ -333,6 +343,12 @@ export async function sendAnswer(sessionName, choice, host = null) {
 // (low·medium·high·xhigh·max·ultracode) moved with ←/→, which no amount of
 // number-pressing can operate. Deliberately a whitelist: this sends keystrokes
 // into a live agent, so it must never become an arbitrary-input channel.
+// Geometry for new sessions. Wide enough that Claude/Codex widgets render in full —
+// the chat parses prompts out of the pane, so a cramped window silently removes
+// options (notably "Yes, I trust this folder", leaving only "No, exit" visible).
+const TMUX_COLS = 120;
+const TMUX_ROWS = 40;
+
 const ALLOWED_KEYS = new Set([
   'Left', 'Right', 'Up', 'Down', 'Enter', 'Escape', 'Space', 'Tab', 'BSpace',
   ...'0123456789abcdefghijklmnopqrstuvwxyz'.split(''),
