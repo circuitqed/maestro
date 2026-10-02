@@ -21,7 +21,7 @@ function GitHubIcon({ className }) {
   );
 }
 
-function ProjectCard({ project, agents }) {
+function ProjectCard({ project, agents, isNew = false }) {
   const [expanded, setExpanded] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showAddAgent, setShowAddAgent] = useState(false);
@@ -114,6 +114,12 @@ function ProjectCard({ project, agents }) {
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
                 <h3 className="font-semibold text-white truncate">{project.name}</h3>
+                {/* Explains why a project with nothing running is in Active. */}
+                {isNew && (
+                  <span className="flex-shrink-0 text-[10px] uppercase tracking-wide rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 px-1.5 py-0.5">
+                    new
+                  </span>
+                )}
                 {/* Git indicator (expanded) */}
                 {git && (
                   git.githubUrl ? (

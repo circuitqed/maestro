@@ -76,6 +76,23 @@ function Dashboard() {
   // response or user input) — i.e. still in an active conversation.
   const RECENT_ACTIVE_MS = 10 * 60 * 1000;
   const tsOf = (v) => (v ? new Date(v).getTime() : 0);
+  // A project whose agents have never been started is filed under "Stopped", which is
+  // collapsed by default — so a project vanishes the moment you create it, and looks
+  // like it was never made. Keep a new one on screen while you are still setting it up.
+  const NEW_PROJECT_MS = 10 * 60 * 1000;
+  const createdMs = (v) => {
+    if (!v) return 0;
+    // SQLite CURRENT_TIMESTAMP is "YYYY-MM-DD HH:MM:SS" in UTC with no zone. new Date()
+    // reads that as LOCAL time, which for anyone west of UTC puts it hours in the
+    // future — and "created in the future" would read as new for the rest of the day.
+    const s = typeof v === 'string' && !/[TZ]/.test(v) ? `${v.replace(' ', 'T')}Z` : v;
+    const t = new Date(s).getTime();
+    return Number.isNaN(t) ? 0 : t;
+  };
+  const isNewProject = (p) => {
+    const t = createdMs(p && p.created_at);
+    return t > 0 && Date.now() - t < NEW_PROJECT_MS;
+  };
   const liveStatus = (a) => {
     const live = agentStates[a.id];
     return live === 'busy' || live === 'idle' ? live : a.status;
@@ -101,6 +118,15 @@ function Dashboard() {
     }
   };
 
+  // Nothing else re-renders when the new-project window simply lapses, so tick while
+  // any project is still inside it — then stop, rather than polling forever.
+  const [, setNewTick] = useState(0);
+  useEffect(() => {
+    if (!projects.some(isNewProject)) return undefined;
+    const t = setInterval(() => setNewTick((n) => n + 1), 30000);
+    return () => clearInterval(t);
+  });
+
   // Group agents by project for projects view
   const projectAgents = {};
   agents.forEach((agent) => {
@@ -114,6 +140,7 @@ function Dashboard() {
 
   // Categorize projects by their agents' activity (same rules as agents)
   const getProjectActivity = (project) => {
+    if (isNewProject(project)) return 'active';
     const buckets = (projectAgents[project.id] || []).map(bucket);
     if (buckets.includes('active')) return 'active';
     if (buckets.includes('idle')) return 'idle';
