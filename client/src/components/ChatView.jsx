@@ -732,13 +732,19 @@ function parseLoginPrompt(text) {
     // ("⏺ Login expired · Please run /login") is not a status line and stays on
     // screen after the fact, so bulleted lines are excluded; and the status only
     // means anything near the input, so only the tail of the visible pane counts.
-    const tail = lines.slice(-12);
-    const needs = tail.some(
-      (l) =>
-        /\/login\b/.test(l) &&
-        /not logged in|login expired|session expired/i.test(l) &&
-        !/[⏺●○✻]/.test(l)
-    );
+    // Bulleted lines are the agent's OWN message text ("⏺ Login expired · Please run
+    // /login"), which lingers on screen long after the fact — never a live status.
+    const tail = lines.slice(-12).filter((l) => !/[⏺●○✻]/.test(l));
+    // Test a 3-line window, not single lines: a narrow pane wraps the notice, and
+    // razzle's "OAuth token unavailable — run /login to restore Remote Control" was
+    // split across three lines at 40 columns, so no single line carried both halves.
+    const needs = tail.some((_, i) => {
+      const win = tail.slice(i, i + 3).join(' ');
+      return (
+        /\/login\b/.test(win) &&
+        /not logged in|login expired|session expired|oauth token (unavailable|expired|invalid)|authentication (failed|required|expired)|run \/login/i.test(win)
+      );
+    });
     return needs ? { stage: 'needed' } : null;
   }
 
