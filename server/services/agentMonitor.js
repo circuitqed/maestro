@@ -1,4 +1,5 @@
 import { getAgents, updateAgentStatus, updateAgentLastSeen, getHost, updateHostStatus } from './db.js';
+import { startAgentSession } from './agentStart.js';
 import { getTmuxSessions } from './tmux.js';
 import { getProvider } from './providers.js';
 import { execOnHost, isRemote } from './hosts.js';
@@ -166,9 +167,15 @@ async function syncAgentStates() {
 // Publish a host's reachability from the monitor's own probe. Only remote hosts
 // have a meaningful up/down, and only a CHANGE is written so the 2s tick doesn't
 // hammer the DB with identical updates.
+// Hosts seen to be down. A host that comes back takes its agents' sessions with it
+// (tmux does not survive a reboot), and until now they stayed dead until someone
+// pressed Start — the Mac mini and whistler both sat idle for hours that way.
+const hostsSeenDown = new Set();
+
 function noteHostReachable(host, reachable) {
   if (!host || !host.id || !isRemote(host)) return;
   const next = reachable ? 'online' : 'offline';
+  if (!reachable) hostsSeenDown.add(host.id);
   try {
     const row = getHost(host.id);
     if (row && row.status !== next) {
@@ -177,6 +184,38 @@ function noteHostReachable(host, reachable) {
     }
   } catch {
     /* status publishing must never break the monitor tick */
+  }
+}
+
+/**
+ * Bring back the agents an outage killed — and only those.
+ *
+ * The trigger is deliberately narrow: a host we have SEEN go down is reachable
+ * again, and an agent that was alive before it vanished now has no session. An
+ * agent you stopped yourself is already 'stopped' and is skipped; a session you
+ * killed by hand on a host that never went offline is not touched either, because
+ * the host never entered hostsSeenDown.
+ *
+ * Starting goes through the same path as the Start button, so a Claude agent
+ * resumes its transcript and a Codex agent resumes its rollout: recovery continues
+ * the conversation rather than silently replacing it with an empty one.
+ */
+async function recoverHostAgents(host, sessions) {
+  if (!host || !hostsSeenDown.has(host.id)) return;
+  hostsSeenDown.delete(host.id); // one attempt per outage, whatever the outcome
+  const live = new Set(sessions || []);
+  for (const agent of getAgents()) {
+    if ((agent.host_id || null) !== host.id) continue;
+    if (agent.status === 'stopped') continue;        // intentionally not running
+    if (!agent.screen_session || live.has(agent.screen_session)) continue;
+    try {
+      const out = await startAgentSession(agent, host, { registerAgent });
+      console.log(`Recovered ${agent.name} on ${host.name} after outage: ${out.message}`);
+    } catch (err) {
+      // Never let a recovery failure break the tick; the agent simply stays stopped
+      // and the user can press Start as before.
+      console.log(`Could not recover ${agent.name} on ${host.name}: ${err.message}`);
+    }
   }
 }
 
@@ -235,6 +274,9 @@ async function syncHostGroup(host, hostAgents) {
     sessionNames = new Set(sessions.map((s) => s.name));
     noteHostProbe(host, true);
     noteHostReachable(host, true);
+    // Reachable again after an outage: restart what the outage killed, before the
+    // loop below would otherwise just mark those agents stopped.
+    await recoverHostAgents(host, sessionNames);
   } catch {
     // Host unreachable — leave its agents' state untouched (a sleeping Mac mini
     // must not flip its still-running agents to stopped), but DO record that the

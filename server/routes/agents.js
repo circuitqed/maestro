@@ -23,6 +23,7 @@ import {
 } from '../services/db.js';
 import { getTmuxSessions, startProviderSession, createSession, killSession, sessionExists, sendText, sendAnswer, sendKeys, capturePane } from '../services/tmux.js';
 import { resetHostBackoff, registerAgent, unregisterAgent } from '../services/agentMonitor.js';
+import { startAgentSession } from '../services/agentStart.js';
 import { getProvider, getProviderList } from '../services/providers.js';
 import { isRemote, isValidSessionName, execOnHost, shellQuote, sshBaseArgs, remoteWrap, isHostUnreachable, describeHostError } from '../services/hosts.js';
 import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js';
@@ -440,132 +441,19 @@ router.post('/:id/start', async (req, res) => {
     // cap even after it is plainly answering, which reads as "the agent won't start".
     if (host) resetHostBackoff(host.id);
 
-    // Resolve the working directory for this agent's (project, host):
-    // local host => project.path; remote host => the per-host configured path.
-    let workingDir = null;
-    if (agent.project_id) {
-      const project = getProject(agent.project_id);
-      if (project) {
-        workingDir = resolveAgentWorkingDir(agent, project, host);
-        if (workingDir === null && isRemote(host)) {
-          return res.status(400).json({
-            error: `No working directory is set for project "${project.name}" on host ${host.name}. Set a working directory for this host in the project settings before starting the agent.`,
-          });
-        }
-      }
-    }
-
-    // tmux silently falls back to $HOME when `-c <dir>` doesn't exist — catch it here instead
-    if (workingDir) {
-      if (isRemote(host)) {
-        try {
-          await execOnHost(host, `test -d ${shellQuote(workingDir)}`);
-        } catch (err) {
-          // `test -d` exits 1 when the dir is missing; anything else is an ssh failure
-          if (err.code === 1) {
-            return res.status(400).json({
-              error: `Project path does not exist: ${workingDir}. Update the project settings.`,
-            });
-          }
-          return res.status(503).json({ error: describeHostError(err, host) });
-        }
-      } else if (!fs.existsSync(workingDir)) {
-        return res.status(400).json({
-          error: `Project path does not exist: ${workingDir}. Update the project settings.`,
-        });
-      }
-    }
-
-    const provider = getProvider(agent.config?.provider);
-
-    // For the claude provider, pin a transcript session id so the chat view can
-    // locate the exact JSONL file (and so a restart resumes the same transcript).
-    // This must NEVER cause a start to fail — on any error we simply skip pinning
-    // and rely on the newest-mtime transcript locator fallback.
-    let claudeSessionId = null;
-    let claudeResume = false;
-    if (provider.id === 'claude') {
-      try {
-        if (agent.claude_session_id) {
-          claudeSessionId = agent.claude_session_id;
-          // Claude rejects --session-id when the transcript already exists and
-          // rejects --resume when it doesn't, so choose by the file's presence:
-          // resume a real prior conversation, otherwise (re)create the session.
-          claudeResume = await pinnedTranscriptExists(host, claudeSessionId);
-        } else {
-          claudeSessionId = randomUUID();
-          setAgentClaudeSessionId(agent.id, claudeSessionId);
-        }
-      } catch (err) {
-        claudeSessionId = null; // fall back to the locator
-        claudeResume = false;
-      }
-    }
-
-    // For codex, resume the pinned rollout when it is still on disk. The id is
-    // discovered from the RUNNING session (resolveCodexRollout writes it back), so it
-    // is present for any agent whose chat has been opened; without it, or if the file
-    // is gone, we start fresh exactly as before.
-    let codexResumeId = null;
-    if (provider.id === 'codex' && agent.claude_session_id) {
-      try {
-        if (await codexRolloutExists(host, agent.claude_session_id)) {
-          codexResumeId = agent.claude_session_id;
-        }
-      } catch {
-        codexResumeId = null;
-      }
-    }
-
-    let result;
     try {
-      if (provider.id === 'shell') {
-        result = await createSession(agent.screen_session, workingDir, null, host);
-      } else {
-        const command = provider.buildCommand(
-          { ...(agent.config || {}), claudeSessionId, claudeResume, codexResumeId },
-          agent.name,
-          host
-        );
-        result = await startProviderSession(agent.screen_session, command, workingDir, host);
-      }
+      const out = await startAgentSession(agent, host, { registerAgent });
+      return res.json({ success: true, message: out.message, agent: out.agent });
     } catch (err) {
-      if (isRemote(host)) {
-        return res.status(isHostUnreachable(err) ? 503 : 500).json({ error: describeHostError(err, host) });
+      // Same failures as before, mapped from the service's codes.
+      if (err.code === 'NO_WORKDIR' || err.code === 'BAD_WORKDIR') {
+        return res.status(400).json({ error: err.message });
       }
+      if (err.code === 'HOST_DOWN') return res.status(503).json({ error: err.message });
+      if (err.code === 'START_FAILED') return res.status(500).json({ error: err.message });
       throw err;
     }
 
-    // A non-monitorable provider (shell) has no pane parsing behind it, so nothing
-    // would ever move it off 'running' — it would sit in the dashboard's Active
-    // section forever. A bare shell is up-but-not-working, which is what 'idle'
-    // means; 'running' is reserved for providers we can actually observe working.
-    const startedStatus = provider.monitorable ? 'running' : 'idle';
-
-    if (result.alreadyRunning || !result.created) {
-      updateAgentStatus(req.params.id, startedStatus);
-      if (provider.monitorable) registerAgent(agent.id, agent.screen_session, host);
-      return res.json({ success: true, message: 'Session already running', agent: getAgent(req.params.id) });
-    }
-
-    if (result.adopted) {
-      updateAgentStatus(req.params.id, startedStatus);
-      if (provider.monitorable) registerAgent(agent.id, agent.screen_session, host);
-      return res.json({
-        success: true,
-        message: `${provider.name} started in the existing session`,
-        agent: getAgent(req.params.id),
-      });
-    }
-
-    updateAgentStatus(req.params.id, startedStatus);
-    if (provider.monitorable) registerAgent(agent.id, agent.screen_session, host);
-
-    // Codex is NOT pinned here: it creates its rollout file on the first user message,
-    // not at launch, so there is nothing to capture yet. resolveTranscriptFile reads it
-    // off the running process instead and refreshes the pin then.
-
-    res.json({ success: true, message: `${provider.name} started`, agent: getAgent(req.params.id) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
