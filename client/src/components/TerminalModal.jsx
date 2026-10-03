@@ -30,7 +30,20 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
   // Which model the chat is on, reported up by ChatView (see TerminalPanel).
   const [modelInfo, setModelInfo] = useState(null);
   const handleMeta = useCallback((info) => setModelInfo(info), []);
-  const { setViewMode } = useApp();
+  // Typing /model is just what a human would do; the picker that comes back is
+  // already rendered as a card, so this needs nothing else.
+  // Live status beats the DB row, which lags a tick behind.
+  const agentBusy = (() => {
+    const live = agentStates && agentStates[agentId];
+    if (live) return live === 'busy';
+    const row = (agents || []).find((a) => String(a.id) === String(agentId));
+    return row ? row.status === 'running' || row.status === 'busy' : false;
+  })();
+  const openModelPicker = useCallback(() => {
+    if (agentId == null) return;
+    sendAgentInput(agentId, '/model').catch(() => {});
+  }, [agentId, sendAgentInput]);
+  const { setViewMode, sendAgentInput, agentStates, agents } = useApp();
   const [viewport, setViewport] = useState(() => ({
     height: window.visualViewport?.height ?? window.innerHeight,
     offsetTop: window.visualViewport?.offsetTop ?? 0,
@@ -93,7 +106,12 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
               </svg>
             </button>
             <span className="text-gray-400 text-sm font-mono truncate">{sessionName}</span>
-            {mode === 'chat' && <ModelBadge info={modelInfo} className="flex-shrink-0" />}
+            {mode === 'chat' && <ModelBadge
+              info={modelInfo}
+              className="flex-shrink-0"
+              onClick={agentBusy ? undefined : openModelPicker}
+              busy={agentBusy}
+            />}
           </div>
           {agentId != null && <ViewToggle mode={mode} onChange={setViewMode} />}
         </div>

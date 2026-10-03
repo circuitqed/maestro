@@ -31,11 +31,24 @@ const TerminalPanel = forwardRef(function TerminalPanel(
   ref
 ) {
   const terminalRef = useRef(null);
-  const { setViewMode } = useApp();
+  const { setViewMode, sendAgentInput, agentStates, agents } = useApp();
   // Reported by ChatView once it can tell which model the session is on. Identity is
   // stable so the effect that reports it doesn't re-fire on every panel render.
   const [modelInfo, setModelInfo] = useState(null);
   const handleMeta = useCallback((info) => setModelInfo(info), []);
+  // Typing /model is just what a human would do; the picker that comes back is
+  // already rendered as a card, so this needs nothing else.
+  // Live status beats the DB row, which lags a tick behind.
+  const agentBusy = (() => {
+    const live = agentStates && agentStates[agentId];
+    if (live) return live === 'busy';
+    const row = (agents || []).find((a) => String(a.id) === String(agentId));
+    return row ? row.status === 'running' || row.status === 'busy' : false;
+  })();
+  const openModelPicker = useCallback(() => {
+    if (agentId == null) return;
+    sendAgentInput(agentId, '/model').catch(() => {});
+  }, [agentId, sendAgentInput]);
 
   // Expose terminal methods to parent (no-ops when the terminal isn't mounted)
   useImperativeHandle(ref, () => ({
@@ -60,7 +73,12 @@ const TerminalPanel = forwardRef(function TerminalPanel(
       <div className="flex-shrink-0 flex items-center justify-between gap-2 px-3 py-1.5 bg-gray-800 border-b border-gray-700">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-white font-medium text-sm truncate min-w-0">{sessionName}</span>
-          {mode === 'chat' && <ModelBadge info={modelInfo} className="flex-shrink-0" />}
+          {mode === 'chat' && <ModelBadge
+              info={modelInfo}
+              className="flex-shrink-0"
+              onClick={agentBusy ? undefined : openModelPicker}
+              busy={agentBusy}
+            />}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           {agentId != null && <ViewToggle mode={mode} onChange={setViewMode} />}
