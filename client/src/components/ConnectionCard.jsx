@@ -93,11 +93,21 @@ function ConnectionCard({ id, label, hint, onConnected }) {
     );
   }
 
-  const paneTail = pane.split('\n').filter((l) => l.trim()).slice(-6).join('\n');
+  const lines = pane.split('\n').filter((l) => l.trim());
+  const paneTail = lines.slice(-8).join('\n');
   const loginRunning = !!paneTail;
-  // What ssh is asking for right now, so the card shows the relevant control.
-  const wantsPassword = /password:/i.test(paneTail);
-  const wantsDuo = /duo|passcode|push|phone call|enter a passcode/i.test(paneTail);
+  // Sherlock asks several things in sequence — password, then a Duo method menu
+  // ("Passcode or option (1-3)"), and the wording varies. Rather than trying to
+  // recognise each prompt and risk showing no control at all for one we did not
+  // anticipate, always offer the input while a login is running, and mask it only
+  // when the prompt is clearly asking for a secret.
+  const lastLine = lines[lines.length - 1] || '';
+  const wantsPassword = /password|passphrase/i.test(lastLine);
+  // A numbered menu means option keys are useful; detect the options themselves
+  // rather than the word "Duo", so a differently-worded menu still works.
+  const menuOptions = Array.from(new Set(
+    lines.slice(-10).join('\n').match(/^\s*(\d)[.)]\s+\S/gm)?.map((m) => m.trim()[0]) || []
+  )).slice(0, 5);
 
   return (
     <div className="flex justify-start">
@@ -124,17 +134,20 @@ function ConnectionCard({ id, label, hint, onConnected }) {
             <pre className="text-[11px] font-mono text-gray-300 bg-gray-900/70 border border-gray-700 rounded p-2 overflow-x-auto whitespace-pre-wrap">
               {paneTail}
             </pre>
-            {wantsPassword && (
-              <form
+            <form
                 className="flex gap-2 mt-2"
                 onSubmit={(e) => { e.preventDefault(); if (secret) sendSecret(); }}
               >
                 <input
-                  type="password"
+                  type={wantsPassword ? 'password' : 'text'}
                   autoComplete="off"
                   value={secret}
                   onChange={(e) => setSecret(e.target.value)}
-                  placeholder="Password (not stored, not echoed)"
+                  placeholder={
+                    wantsPassword
+                      ? 'Password (not stored, not echoed)'
+                      : 'Type your answer (e.g. a passcode or option number)'
+                  }
                   className="flex-1 min-w-0 rounded bg-gray-900 border border-gray-700 px-2 py-1 text-sm text-gray-100"
                 />
                 <button
@@ -144,11 +157,10 @@ function ConnectionCard({ id, label, hint, onConnected }) {
                 >
                   Send
                 </button>
-              </form>
-            )}
-            {wantsDuo && !wantsPassword && (
+            </form>
+            {menuOptions.length > 0 && !wantsPassword && (
               <div className="flex flex-wrap gap-2 mt-2">
-                {['1', '2', '3'].map((n) => (
+                {menuOptions.map((n) => (
                   <button
                     key={n}
                     type="button"
