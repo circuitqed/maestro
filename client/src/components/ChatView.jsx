@@ -721,6 +721,14 @@ const URL_CHARS = /^[A-Za-z0-9%\-._~:/?#[\]@!$&'()*+,;=]+$/;
 function parseLoginPrompt(text) {
   if (!text) return null;
   const lines = text.split('\n');
+  // The flow ends on a modal that only wants Enter. Nothing can be typed while it is
+  // up — a message pasted into it goes nowhere — so surface it as a button rather than
+  // leaving the agent looking idle but unresponsive.
+  const done = lines.some((l) => /press enter to continue/i.test(l));
+  if (done) {
+    const who = (lines.map((l) => /logged in as\s+(\S+)/i.exec(l)).find(Boolean) || [])[1] || null;
+    return { stage: 'done', account: who };
+  }
   const widgetOpen = lines.some((l) => /Browser didn.t open|Paste code here/i.test(l));
   if (!widgetOpen) {
     // Not signed in, but the widget is not up: Claude parks on a status line like
@@ -767,7 +775,7 @@ function parseLoginPrompt(text) {
 // The `/login` flow rendered as a real form: open the page, then paste the code
 // back. Doing this in the terminal meant selecting a 400-character soft-wrapped
 // URL by hand, which is exactly what the terminal is worst at on a phone.
-function LoginPromptCard({ prompt, onSubmitCode, onStartLogin }) {
+function LoginPromptCard({ prompt, onSubmitCode, onStartLogin, onPressKeys }) {
   const [code, setCode] = useState('');
   const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -782,6 +790,26 @@ function LoginPromptCard({ prompt, onSubmitCode, onStartLogin }) {
       /* clipboard blocked (non-https origin); the link and the raw text are still there */
     }
   };
+
+  if (prompt.stage === 'done') {
+    return (
+      <div className="flex justify-start">
+        <div className="min-w-0 max-w-[92%] w-full my-1 rounded-lg border border-emerald-500/50 bg-emerald-950/20 px-3 py-2">
+          <div className="text-sm text-emerald-200 mb-2">
+            Signed in{prompt.account ? ` as ${prompt.account}` : ''}. The agent is holding on a
+            confirmation — it can't take a message until this is dismissed.
+          </div>
+          <button
+            type="button"
+            onClick={() => onPressKeys && onPressKeys(['Enter'])}
+            className="rounded bg-emerald-600/80 hover:bg-emerald-600 text-white text-sm px-3 py-1"
+          >
+            Continue
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const submit = async (e) => {
     e.preventDefault();
@@ -2156,6 +2184,7 @@ function ChatView({ agentId, session, onMeta }) {
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState(null);
+  const blockingPromptRef = useRef(null);
   const [pendingSent, setPendingSent] = useState(false);
   // Files attached to the next message: each { id, name, size, status, path?, error? }.
   // Uploaded into the agent's working dir; the sent message references them by path.
@@ -2491,7 +2520,11 @@ function ChatView({ agentId, session, onMeta }) {
       // message silently vanishing is the worst outcome here.
       const res = await sendAgentInput(agentId, composed);
       if (res && res.delivered === false) {
-        setSendError('Not delivered — the agent\u2019s UI did not take the message. Your text is still here; try again.');
+        setSendError(
+          blockingPromptRef.current
+            ? `Not delivered — the agent is showing ${blockingPromptRef.current} above. Answer that first; your text is still here.`
+            : 'Not delivered — the agent\u2019s UI did not take the message. Your text is still here; try again.'
+        );
         return;
       }
       setInput('');
@@ -2600,7 +2633,7 @@ function ChatView({ agentId, session, onMeta }) {
             // parser, but it has no numbered options — keep both cards off.
             setLoginPrompt(null);
             setActivePrompt(null);
-          } else if (login && login.stage === 'prompt') {
+          } else if (login && (login.stage === 'prompt' || login.stage === 'done')) {
             setLoginPrompt(login);
             setActivePrompt(null);
           } else if (select) {
@@ -2662,6 +2695,19 @@ function ChatView({ agentId, session, onMeta }) {
     onMeta(modelInfo);
     return () => onMeta(null);
   }, [onMeta, modelInfo]);
+
+  // While the agent's TUI holds a widget open, it is not reading its composer: a
+  // pasted message lands nowhere and comes back undelivered. That is correct but
+  // opaque — "it wouldn't take my message" — so name the reason in both places.
+  const blockingPrompt =
+    (modelPrompt && 'a model picker') ||
+    (effortPrompt && 'an effort slider') ||
+    (loginPrompt && loginPrompt.stage === 'done' && 'a confirmation') ||
+    (loginPrompt && loginPrompt.stage === 'prompt' && 'the sign-in form') ||
+    (activePrompt && 'a prompt') ||
+    null;
+
+  blockingPromptRef.current = blockingPrompt;
 
   const renderedRecords = useMemo(() => {
     // Map each answered tool_use_id -> its result text (Claude AskUserQuestion).
@@ -2812,6 +2858,7 @@ function ChatView({ agentId, session, onMeta }) {
                   prompt={loginPrompt}
                   onSubmitCode={onSubmitLoginCode}
                   onStartLogin={onStartLogin}
+                  onPressKeys={onPressKeys}
                 />
               ) : activePrompt ? (
                 <ActivePromptCard prompt={activePrompt} onAnswer={onAnswerQuestion} onPressKeys={onPressKeys} />
@@ -2844,6 +2891,11 @@ function ChatView({ agentId, session, onMeta }) {
         onDrop={(e) => { e.preventDefault(); setDragging(false); if (e.dataTransfer && e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files); }}
       >
         {sendError && <div className="text-xs text-red-400 mb-1">{sendError}</div>}
+        {!sendError && blockingPrompt && (
+          <div className="text-xs text-amber-400/80 mb-1">
+            The agent is showing {blockingPrompt} above — it won't read a message until that's answered.
+          </div>
+        )}
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mb-1.5">
             {attachments.map((a) => (
