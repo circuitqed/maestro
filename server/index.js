@@ -14,6 +14,7 @@ import { setupTranscriptWS } from './services/transcript.js';
 import { initDb, getUserCount } from './services/db.js';
 import SQLiteStore from './services/sessionStore.js';
 import { startMonitoring, onStateChange, getAllAgentStates, registerAgent } from './services/agentMonitor.js';
+import { startHarnessWatch } from './services/harnessWatch.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -151,6 +152,8 @@ initDb().then(() => {
     console.log(`Maestro server running on port ${PORT}`);
     // Start monitoring agents for idle/busy state
     startMonitoring(2000);
+    // Nightly: reload agents left running an older CLI than the one installed.
+    startHarnessWatch({ registerAgent });
   });
 }).catch((err) => {
   console.error('Failed to initialize database:', err);
