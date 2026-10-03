@@ -269,7 +269,7 @@ export async function killSession(sessionName, host = null) {
  * @param {string} text - Literal text to inject (no trailing newline needed)
  * @param {object|null} host - Host row (null => local)
  */
-export async function sendText(sessionName, text, host = null) {
+export async function sendText(sessionName, text, host = null, { verify = true } = {}) {
   const s = paneTarget(sessionName);
 
   // A fingerprint of the bottom of the pane — the composer plus the status line.
@@ -292,7 +292,12 @@ export async function sendText(sessionName, text, host = null) {
     }
   };
 
-  const before = await readTail();
+  // A non-echoing prompt (ssh asking for a password) cannot be verified this way:
+  // nothing it accepts ever shows on screen, so the tail is identical afterwards and
+  // the check would conclude the paste vanished and withhold the Enter — leaving the
+  // password typed but never submitted. Callers that know the prompt is silent pass
+  // verify:false and get the old blind paste-and-submit.
+  const before = verify ? await readTail() : null;
   let landed = before === null ? null : false;
 
   // Two attempts. Nothing is submitted until the text is confirmed in the composer,

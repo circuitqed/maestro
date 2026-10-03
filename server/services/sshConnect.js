@@ -75,7 +75,9 @@ export async function connectionPane(conn) {
 
 export async function connectionInput(conn, text) {
   if (!(await sessionExists(conn.session, null))) throw new Error('No login in progress');
-  return sendText(conn.session, text, null);
+  // verify:false — ssh never echoes a password, so there is nothing to confirm; with
+  // verification on, the Enter is withheld and the login just sits there.
+  return sendText(conn.session, text, null, { verify: false });
 }
 
 export async function connectionKeys(conn, keys) {
