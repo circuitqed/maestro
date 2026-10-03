@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { hasChatView } from '../lib/providerCaps';
 import { useApp } from '../context/AppContext';
 import ProviderIcon from './ProviderIcon';
 
@@ -265,7 +266,7 @@ function AgentCard({ agent }) {
           {loading ? '...' : isRunning ? 'Stop' : 'Start'}
         </button>
 
-        {agent.screen_session && (provider === 'claude' || provider === 'codex') && (
+        {agent.screen_session && hasChatView(provider) && (
           <button
             onClick={handleOpenChat}
             className="px-3 py-1.5 text-sm font-medium bg-gray-700 text-gray-300

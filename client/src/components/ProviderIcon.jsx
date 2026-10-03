@@ -43,6 +43,14 @@ function Glyph({ provider, className }) {
           <ellipse cx="12" cy="12" rx="4" ry="8.5" transform="rotate(120 12 12)" />
         </svg>
       );
+    case 'antigravity':
+      // Antigravity — an upward chevron breaking free of a baseline
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 3l7 8h-4v6h-6v-6H5l7-8z" />
+          <path d="M5 21h14" />
+        </svg>
+      );
     case 'gemini':
       // Google Gemini — four-point spark star with concave sides
       return (

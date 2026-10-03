@@ -89,6 +89,28 @@ const PROVIDERS = {
       return `bash -lc '${binary} ${resume}${model}${idFlag}${flags}; exec bash'`;
     },
   },
+  antigravity: {
+    id: 'antigravity',
+    name: 'Antigravity',
+    icon: 'antigravity',
+    // Google's terminal agent (binary name `agy`, installed to ~/.local/bin by
+    // https://antigravity.google/cli/install.sh). Same shape as the other two:
+    // unattended agents cannot answer permission prompts, so approvals are skipped.
+    defaultFlags: '--dangerously-skip-permissions',
+    envVars: [],
+    monitorable: true,
+    buildCommand(config, agentName, host) {
+      const binary = config.binaryPath || 'agy';
+      const flags = config.flags ?? this.defaultFlags;
+      // agy resumes with --continue (most recent) or --conversation <id>. The id is
+      // not known until a conversation exists, so a restart continues the latest —
+      // the closest equivalent to claude --resume without a pinned id to point at.
+      const resume = config.agyResume ? '--continue ' : '';
+      const model = config.model ? `--model ${quoteForBashLc(config.model)} ` : '';
+      const effort = config.effort ? `--effort ${quoteForBashLc(config.effort)} ` : '';
+      return `bash -lc '${binary} ${resume}${model}${effort}${flags}; exec bash'`;
+    },
+  },
   gemini: {
     id: 'gemini',
     name: 'Gemini CLI',
