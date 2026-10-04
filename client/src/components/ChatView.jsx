@@ -1804,6 +1804,49 @@ function visualPartOf(rec, ctx) {
   return null;
 }
 
+/**
+ * A time marker between messages, the way a messaging app does it: not on every
+ * message, only where there is a real gap. Agent sessions are bursty — minutes of
+ * tool work, then hours idle — so the useful question is "when did this part
+ * happen?", and a stamp on every line would be noise answering it.
+ */
+const TIME_GAP_MS = 5 * 60 * 1000;
+
+function recordTimeMs(rec) {
+  const t = rec && (rec.timestamp || (rec.payload && rec.payload.timestamp));
+  if (!t) return null;
+  const ms = new Date(t).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function formatSeparator(ms) {
+  const d = new Date(ms);
+  const now = new Date();
+  // Locale-aware so it follows the viewer's 12/24h preference rather than imposing one.
+  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const sameDay = (a, b) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  if (sameDay(d, now)) return time;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (sameDay(d, yesterday)) return `Yesterday ${time}`;
+  const days = (now - d) / 86400000;
+  if (days < 7) return `${d.toLocaleDateString(undefined, { weekday: 'short' })} ${time}`;
+  const opts = { month: 'short', day: 'numeric' };
+  if (d.getFullYear() !== now.getFullYear()) opts.year = 'numeric';
+  return `${d.toLocaleDateString(undefined, opts)}, ${time}`;
+}
+
+function TimeSeparator({ ms }) {
+  return (
+    <div className="flex items-center gap-2 my-2 select-none" title={new Date(ms).toLocaleString()}>
+      <div className="flex-1 h-px bg-gray-700/60" />
+      <span className="text-[10px] uppercase tracking-wide text-gray-500">{formatSeparator(ms)}</span>
+      <div className="flex-1 h-px bg-gray-700/60" />
+    </div>
+  );
+}
+
 function claudeParts(rec, ctx) {
   if (rec.type === 'assistant') {
     const content = rec.message?.content;
@@ -2754,6 +2797,7 @@ function ChatView({ agentId, session, onMeta }) {
     const out = [];
     let buf = [];
     let bufCount = 0;
+    let lastTs = null;
     const flushTools = () => {
       if (buf.length) {
         out.push(<CollapsedToolGroup key={`tg-${out.length}`} count={bufCount}>{buf}</CollapsedToolGroup>);
@@ -2767,6 +2811,17 @@ function ChatView({ agentId, session, onMeta }) {
       if (!pt.message && !pt.tool) return;
       const rkey = rec.uuid || (rec.payload ? codexKey(rec) : idx);
       const dim = rec.isSidechain ? 'opacity-70' : '';
+      // Mark the first message in view, and any real gap after it. flushTools first so
+      // the marker lands between groups rather than inside a collapsed one.
+      const ts = recordTimeMs(rec);
+      if (ts && (lastTs === null || ts - lastTs > TIME_GAP_MS)) {
+        flushTools();
+        out.push(<TimeSeparator key={`ts-${rkey}`} ms={ts} />);
+      }
+      // Only advance on forward movement: transcripts are not strictly ordered
+      // (sidechains, tool results written late), and going backwards would make every
+      // later record look like a fresh gap.
+      if (ts && (lastTs === null || ts > lastTs)) lastTs = ts;
       if (messagesOnly) {
         // Collapse a run of tool activity into one clickable marker between messages —
         // except anything visual, which is shown inline instead of being swept into the
