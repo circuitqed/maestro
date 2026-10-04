@@ -2853,6 +2853,7 @@ function ChatView({ agentId, session, onMeta }) {
               {needsConnection && (
                 <ConnectionCard
                   id={needsConnection}
+                  hostId={(agents || []).find((a) => String(a.id) === String(agentId))?.host_id || null}
                   label="Sherlock"
                   hint="Stanford password, then approve the Duo push on your phone."
                 />

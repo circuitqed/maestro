@@ -13,7 +13,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
  * The password field is write-only — it is sent and cleared, never kept in state
  * beyond the keystroke, and ssh does not echo it, so it appears nowhere in the pane.
  */
-function ConnectionCard({ id, label, hint, onConnected }) {
+function ConnectionCard({ id, label, hint, onConnected, hostId = null }) {
   const [status, setStatus] = useState(null); // { connected }
   const [pane, setPane] = useState('');
   const [secret, setSecret] = useState('');
@@ -23,11 +23,14 @@ function ConnectionCard({ id, label, hint, onConnected }) {
 
   useEffect(() => () => { mounted.current = false; }, []);
 
+  // The master socket is per-host, so every call carries the host the agent runs on.
   const api = useCallback(async (path, options) => {
-    const res = await fetch(`/api/connections/${id}${path}`, options);
+    const sep = path.includes('?') ? '&' : '?';
+    const q = hostId ? `${sep}host=${encodeURIComponent(hostId)}` : '';
+    const res = await fetch(`/api/connections/${id}${path}${q}`, options);
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
     return res.json();
-  }, [id]);
+  }, [id, hostId]);
 
   // Poll status, and the login pane while one is in progress. Stops as soon as the
   // master is up — there is nothing left to watch after that.

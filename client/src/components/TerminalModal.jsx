@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import Terminal from './Terminal';
 import ChatView from './ChatView';
 import ModelBadge from './ModelBadge';
+import ConnectionBadge from './ConnectionBadge';
 import { useApp } from '../context/AppContext';
 
 function ViewToggle({ mode, onChange }) {
@@ -112,6 +113,7 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
               onClick={agentBusy ? undefined : openModelPicker}
               busy={agentBusy}
             />}
+          {mode === 'chat' && agentId != null && <ConnectionBadge hostId={hostId} />}
           </div>
           {agentId != null && <ViewToggle mode={mode} onChange={setViewMode} />}
         </div>

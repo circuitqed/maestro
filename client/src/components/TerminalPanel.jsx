@@ -2,6 +2,7 @@ import React, { forwardRef, useRef, useImperativeHandle, useState, useCallback }
 import Terminal from './Terminal';
 import ChatView from './ChatView';
 import ModelBadge from './ModelBadge';
+import ConnectionBadge from './ConnectionBadge';
 import { useApp } from '../context/AppContext';
 
 function ViewToggle({ mode, onChange }) {
@@ -79,6 +80,7 @@ const TerminalPanel = forwardRef(function TerminalPanel(
               onClick={agentBusy ? undefined : openModelPicker}
               busy={agentBusy}
             />}
+          {mode === 'chat' && agentId != null && <ConnectionBadge hostId={hostId} />}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           {agentId != null && <ViewToggle mode={mode} onChange={setViewMode} />}
