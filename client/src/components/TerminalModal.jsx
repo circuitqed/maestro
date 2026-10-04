@@ -28,11 +28,12 @@ function ViewToggle({ mode, onChange }) {
 }
 
 function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClose }) {
+  // Must come first: agentBusy below reads these during render, and a const read
+  // before its declaration is a TDZ crash — which is what white-screened mobile.
+  const { setViewMode, sendAgentInput, agentStates, agents } = useApp();
   // Which model the chat is on, reported up by ChatView (see TerminalPanel).
   const [modelInfo, setModelInfo] = useState(null);
   const handleMeta = useCallback((info) => setModelInfo(info), []);
-  // Typing /model is just what a human would do; the picker that comes back is
-  // already rendered as a card, so this needs nothing else.
   // Live status beats the DB row, which lags a tick behind.
   const agentBusy = (() => {
     const live = agentStates && agentStates[agentId];
@@ -44,7 +45,6 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
     if (agentId == null) return;
     sendAgentInput(agentId, '/model').catch(() => {});
   }, [agentId, sendAgentInput]);
-  const { setViewMode, sendAgentInput, agentStates, agents } = useApp();
   const [viewport, setViewport] = useState(() => ({
     height: window.visualViewport?.height ?? window.innerHeight,
     offsetTop: window.visualViewport?.offsetTop ?? 0,
