@@ -6,7 +6,6 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { useApp } from '../context/AppContext';
 import useMediaQuery from '../hooks/useMediaQuery';
-import ConnectionCard from './ConnectionCard';
 
 // Claude also emits LaTeX with \(...\) and \[...\] delimiters; remark-math only
 // understands $...$ / $$...$$. Rewrite those to dollar delimiters, but protect
@@ -2210,7 +2209,6 @@ function ChatView({ agentId, session, onMeta }) {
   const [effortPrompt, setEffortPrompt] = useState(null); // live /effort slider, or null
   const [modelPrompt, setModelPrompt] = useState(null);   // live /model picker, or null
   const [paneModel, setPaneModel] = useState(null);       // {model, effort} read off the pane
-  const [needsConnection, setNeedsConnection] = useState(null); // e.g. 'sherlock'
   // "Load earlier" paging: chat opens on the last CHAT_TAIL_CAP lines; older history
   // is fetched on demand. atStart => the whole file is loaded (hide the button).
   // Starts false — only the server can say whether anything older exists, and it does
@@ -2623,10 +2621,6 @@ function ChatView({ agentId, session, onMeta }) {
           const effort = parseEffortPrompt(text);
           const select = parseActivePrompt(text);
           setPaneModel(parsePaneModel(text, providerRef.current));
-          // An agent cannot log into Sherlock itself — no interactive tty for the
-          // password or Duo — so when its pane shows it reaching for Sherlock, offer
-          // the one human login that every later ssh then multiplexes over.
-          setNeedsConnection(/sherlock/i.test(text) ? 'sherlock' : null);
           // The model picker is a numbered list, so the generic select parser matches
           // it too — it has to be checked first or it never gets its own card.
           setModelPrompt(model);
@@ -2850,14 +2844,6 @@ function ChatView({ agentId, session, onMeta }) {
                 </div>
               )}
               {renderedRecords}
-              {needsConnection && (
-                <ConnectionCard
-                  id={needsConnection}
-                  hostId={(agents || []).find((a) => String(a.id) === String(agentId))?.host_id || null}
-                  label="Sherlock"
-                  hint="Stanford password, then approve the Duo push on your phone."
-                />
-              )}
               {modelPrompt ? (
                 <ModelPromptCard
                   prompt={modelPrompt}

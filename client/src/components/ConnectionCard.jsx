@@ -13,7 +13,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
  * The password field is write-only — it is sent and cleared, never kept in state
  * beyond the keystroke, and ssh does not echo it, so it appears nowhere in the pane.
  */
-function ConnectionCard({ id, label, hint, onConnected, hostId = null }) {
+function ConnectionCard({ id, label, hint, onConnected, hostId = null, hideWhenConnected = false }) {
   const [status, setStatus] = useState(null); // { connected }
   const [pane, setPane] = useState('');
   const [secret, setSecret] = useState('');
@@ -85,6 +85,9 @@ function ConnectionCard({ id, label, hint, onConnected, hostId = null }) {
   if (!status) return null;
 
   if (status.connected) {
+    // In the conversation this is noise once it works; in the title-bar popover it is
+    // the answer to the question that was just asked.
+    if (hideWhenConnected) return null;
     return (
       <div className="flex justify-start">
         <div className="min-w-0 max-w-[92%] w-full my-1 rounded-lg border border-emerald-500/50 bg-emerald-950/20 px-3 py-2">

@@ -49,26 +49,30 @@ export function getConnection(id) {
  * true exactly when an agent's ssh would succeed without auth.
  */
 export async function connectionStatus(conn, host = null) {
-  // The master socket is per-host: one opened on oracle does nothing for an agent on
-  // garage-wsl, so every check runs where the agent actually is.
+  // "Can an agent actually run something there?" — not "does a ControlMaster socket
+  // exist". Those are different questions, and the difference matters: garage-wsl was
+  // reaching Sherlock perfectly while `ssh -O check` reported no socket, so the UI
+  // told the user to sign in to a host that was already working. A BatchMode command
+  // covers every route in (master, key, Kerberos ticket) and answers the only thing
+  // the agent cares about. BatchMode guarantees it can never sit on a password prompt.
   try {
-    await execOnHost(host, `ssh -O check ${conn.host} 2>&1`);
+    await execOnHost(
+      host,
+      `ssh -o BatchMode=yes -o ConnectTimeout=8 ${conn.host} true 2>&1`,
+      { timeout: 20000 }
+    );
     return { connected: true, available: true };
   } catch (err) {
     const out = `${err.stdout || ''}${err.stderr || ''}${err.message || ''}`;
-    // "Master running (pid=…)" exits 0; anything else means no usable socket.
-    if (/Master running/i.test(out)) return { connected: true, available: true };
-    // Classify on the MESSAGE before the exit code: `ssh -O check` exits 255 both when
-    // there is no master socket and when the host itself is unreachable, and
-    // isHostUnreachable only sees the code — which made a correctly configured
-    // garage-wsl look like it had no Sherlock at all.
-    if (/control socket connect|no such file or directory|control socket.*not found/i.test(out)) {
-      return { connected: false, available: true };
-    }
-    // A host with no `Host sherlock` in its ssh config: nothing to offer, hide the UI.
+    // No `Host <alias>` in this host's ssh config: nothing to offer, hide the UI.
     if (/could not resolve hostname|no such host|hostname contains invalid/i.test(out)) {
       return { connected: false, available: false };
     }
+    // Reachable but needs a human: this is the case the login card exists for.
+    if (/permission denied|authentication failed|too many authentication/i.test(out)) {
+      return { connected: false, available: true };
+    }
+    // The HOST itself is down (not Sherlock) — not a Sherlock problem to report.
     if (isHostUnreachable(err)) return { connected: false, available: false, hostDown: true };
     return { connected: false, available: true };
   }
