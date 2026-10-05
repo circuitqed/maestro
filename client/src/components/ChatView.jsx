@@ -1890,17 +1890,39 @@ function claudeParts(rec, ctx) {
   return { message: null, tool: null, toolCount: 0 };
 }
 
-// Codex injects its own turns as role:"user" — the goal/thread context it feeds
-// itself each turn arrives as <codex_internal_context source="goal">…</codex_internal_context>.
-// Rendered naively that is several KB of machinery wearing a "you" label, which is
-// both wrong and drowns the real conversation. Detect it and let the caller show a
-// marker instead. Same problem, and same treatment, as Claude's <task-notification>.
-function codexInternalContext(text) {
-  const m = /^\s*<codex_internal_context\b([^>]*)>/.exec(text || '');
-  if (!m) return null;
-  const src = (/source="([^"]+)"/.exec(m[1]) || [])[1] || 'internal';
-  const obj = (/<objective>([\s\S]*?)<\/objective>/.exec(text) || [])[1] || '';
-  return { source: src, objective: obj.trim() };
+// Codex injects turns of its own as role:"user" — the goal context it feeds itself,
+// a per-turn <environment_context> (date, cwd, sandbox and network policy), a plugin
+// advert, and an interruption marker. Rendered naively each is machinery wearing a
+// "you" label, which is both wrong and drowns the real conversation. Same problem,
+// and same treatment, as Claude's <task-notification>.
+//
+// An allowlist deliberately, rather than "any message that opens with a tag": real
+// messages do open with tags — one session has 134 blocks beginning with a literal
+// "<no retained transcript delta entries>" — and a general rule would eat them.
+const INJECTED_BLOCKS = {
+  // Carries the turn's objective, so it is worth a marker you can open.
+  codex_internal_context: { show: true },
+  // Brief, and it explains an abrupt stop in the conversation.
+  turn_aborted: { show: true, label: 'Turn interrupted' },
+  // Boilerplate, re-sent verbatim every single turn (93 times in one em-sim
+  // session). Nothing a reader needs mid-scroll, and one pill per turn would be its
+  // own kind of noise — so these drop out entirely, the way isMeta records do.
+  environment_context: { show: false },
+  recommended_plugins: { show: false },
+};
+
+function codexInjectedBlock(text) {
+  const m = /^\s*<([a-z_][a-z0-9_]*)\b([^>]*)>/.exec(text || '');
+  const spec = m && INJECTED_BLOCKS[m[1]];
+  if (!spec) return null;
+  if (!spec.show) return { hidden: true };
+  const src = (/source="([^"]+)"/.exec(m[2]) || [])[1];
+  // The objective when the block has one, else the block's own body, so opening the
+  // pill always shows what was actually injected.
+  const body = (/<objective>([\s\S]*?)<\/objective>/.exec(text)
+    || new RegExp(`^\\s*<${m[1]}\\b[^>]*>([\\s\\S]*?)</${m[1]}>`).exec(text)
+    || [])[1] || '';
+  return { title: spec.label || `Codex ${src || 'internal'} context`, objective: body.trim() };
 }
 
 // A collapsed marker for one of those injected blocks: says what it is, and opens
@@ -1919,7 +1941,7 @@ function CodexContextPill({ info }) {
           <svg className={`w-3 h-3 flex-shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
           </svg>
-          <span>Codex {info.source} context</span>
+          <span>{info.title}</span>
         </button>
         {open && info.objective && (
           <div className="mt-1 text-[11px] text-gray-400 whitespace-pre-wrap break-words border border-gray-700/70 rounded p-2 bg-gray-900/60">
@@ -1948,8 +1970,10 @@ function codexMessageText(p) {
 function codexPart(rec, ctx) {
   const p = rec.payload || {};
   if (rec.type === 'event_msg' && p.type === 'user_message' && p.message) {
-    const internal = codexInternalContext(p.message);
-    if (internal) return { message: <CodexContextPill info={internal} />, tool: null, toolCount: 0 };
+    const internal = codexInjectedBlock(p.message);
+    if (internal) {
+      return { message: internal.hidden ? null : <CodexContextPill info={internal} />, tool: null, toolCount: 0 };
+    }
     return {
       message: (
         <div className="flex justify-end">
@@ -1993,8 +2017,10 @@ function codexPart(rec, ctx) {
       return { message: null, tool: null, toolCount: 0 };
     }
     if (role === 'user') {
-      const internal = codexInternalContext(text);
-      if (internal) return { message: <CodexContextPill info={internal} />, tool: null, toolCount: 0 };
+      const internal = codexInjectedBlock(text);
+      if (internal) {
+        return { message: internal.hidden ? null : <CodexContextPill info={internal} />, tool: null, toolCount: 0 };
+      }
       return {
         message: (
           <div className="flex justify-end">
