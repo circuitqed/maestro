@@ -3,6 +3,7 @@ import Terminal from './Terminal';
 import ChatView from './ChatView';
 import ModelBadge from './ModelBadge';
 import ConnectionBadge from './ConnectionBadge';
+import AccountBadge from './AccountBadge';
 import { useApp } from '../context/AppContext';
 
 function ViewToggle({ mode, onChange }) {
@@ -40,6 +41,9 @@ const TerminalPanel = forwardRef(function TerminalPanel(
   // Typing /model is just what a human would do; the picker that comes back is
   // already rendered as a card, so this needs nothing else.
   // Live status beats the DB row, which lags a tick behind.
+  const agentRow = (agents || []).find((a) => String(a.id) === String(agentId));
+  const agentProvider = (agentRow && agentRow.config && agentRow.config.provider) || 'claude';
+  const agentRunning = ['running', 'idle', 'busy'].includes(agentRow && agentRow.status);
   const agentBusy = (() => {
     const live = agentStates && agentStates[agentId];
     if (live) return live === 'busy';
@@ -81,6 +85,9 @@ const TerminalPanel = forwardRef(function TerminalPanel(
               busy={agentBusy}
             />}
           {mode === 'chat' && agentId != null && <ConnectionBadge hostId={hostId} />}
+          {mode === 'chat' && agentId != null && (
+            <AccountBadge agentId={agentId} hostId={hostId} provider={agentProvider} running={agentRunning} />
+          )}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           {agentId != null && <ViewToggle mode={mode} onChange={setViewMode} />}

@@ -25,6 +25,7 @@ import { getTmuxSessions, startProviderSession, createSession, killSession, sess
 import { resetHostBackoff, registerAgent, unregisterAgent } from '../services/agentMonitor.js';
 import { startAgentSession } from '../services/agentStart.js';
 import { getProvider, getProviderList } from '../services/providers.js';
+import { listAccounts } from '../services/accounts.js';
 import { isRemote, isValidSessionName, execOnHost, shellQuote, sshBaseArgs, remoteWrap, isHostUnreachable, describeHostError } from '../services/hosts.js';
 import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js';
 import { appendAgentLane } from '../services/scaffold.js';
@@ -232,6 +233,22 @@ router.get('/providers', (req, res) => {
     monitorable: p.monitorable,
   }));
   res.json(providers);
+});
+
+// Which Anthropic accounts are signed in on a host, for the account picker.
+// Discovered from the filesystem each call rather than stored, so it cannot drift
+// from reality when someone logs in or out at a terminal.
+router.get('/accounts', async (req, res) => {
+  try {
+    let host = null;
+    if (req.query.hostId !== undefined && req.query.hostId !== '') {
+      host = getHost(req.query.hostId);
+      if (!host) return res.status(400).json({ error: 'Unknown host' });
+    }
+    res.json(await listAccounts(host));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // List available tmux sessions (optionally on a specific host)

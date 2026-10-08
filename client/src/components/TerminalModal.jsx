@@ -3,6 +3,7 @@ import Terminal from './Terminal';
 import ChatView from './ChatView';
 import ModelBadge from './ModelBadge';
 import ConnectionBadge from './ConnectionBadge';
+import AccountBadge from './AccountBadge';
 import { useApp } from '../context/AppContext';
 
 function ViewToggle({ mode, onChange }) {
@@ -35,6 +36,9 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
   const [modelInfo, setModelInfo] = useState(null);
   const handleMeta = useCallback((info) => setModelInfo(info), []);
   // Live status beats the DB row, which lags a tick behind.
+  const agentRow = (agents || []).find((a) => String(a.id) === String(agentId));
+  const agentProvider = (agentRow && agentRow.config && agentRow.config.provider) || 'claude';
+  const agentRunning = ['running', 'idle', 'busy'].includes(agentRow && agentRow.status);
   const agentBusy = (() => {
     const live = agentStates && agentStates[agentId];
     if (live) return live === 'busy';
@@ -114,6 +118,9 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
               busy={agentBusy}
             />}
           {mode === 'chat' && agentId != null && <ConnectionBadge hostId={hostId} />}
+          {mode === 'chat' && agentId != null && (
+            <AccountBadge agentId={agentId} hostId={hostId} provider={agentProvider} running={agentRunning} />
+          )}
           </div>
           {agentId != null && <ViewToggle mode={mode} onChange={setViewMode} />}
         </div>
