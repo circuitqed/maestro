@@ -363,7 +363,18 @@ router.patch('/:id', async (req, res) => {
     }
     if (!checkAgentAccess(req, res, agent)) return;
 
-    const { name, workingDir } = req.body;
+    const { name, workingDir, claudeConfigDir } = req.body;
+    // Which Anthropic account this agent runs as. A PATH, never a credential: a
+    // failed start echoes the whole command back in the error response, and the
+    // command line is visible to `ps` on the host.
+    if (claudeConfigDir !== undefined) {
+      if (typeof claudeConfigDir !== 'string') {
+        return res.status(400).json({ error: 'claudeConfigDir must be a string' });
+      }
+      if (claudeConfigDir.trim() && !isValidProjectPath(claudeConfigDir)) {
+        return res.status(400).json({ error: 'claudeConfigDir must be an absolute path' });
+      }
+    }
     if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
       return res.status(400).json({ error: 'Valid name required' });
     }
@@ -389,7 +400,7 @@ router.patch('/:id', async (req, res) => {
       }
     }
 
-    const updated = updateAgent(req.params.id, { name, workingDir });
+    const updated = updateAgent(req.params.id, { name, workingDir, claudeConfigDir });
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });

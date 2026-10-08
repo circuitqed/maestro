@@ -80,7 +80,15 @@ export async function startAgentSession(agent, host, { registerAgent } = {}) {
         claudeSessionId = agent.claude_session_id;
         // Claude rejects --session-id when the transcript already exists and rejects
         // --resume when it doesn't, so choose by the file's presence.
-        claudeResume = await pinnedTranscriptExists(host, claudeSessionId);
+        // Look for the transcript under the account this agent runs as: a second
+        // Anthropic account keeps its transcripts in its own config dir, and
+        // answering from ~/.claude would always say "absent", restarting the agent
+        // with --session-id for a uuid that already exists, which Claude rejects.
+        claudeResume = await pinnedTranscriptExists(
+          host,
+          claudeSessionId,
+          (agent.config && agent.config.claudeConfigDir) || null
+        );
       } else {
         claudeSessionId = randomUUID();
         setAgentClaudeSessionId(agent.id, claudeSessionId);

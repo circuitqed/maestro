@@ -58,13 +58,39 @@ export function encodeCwd(cwd) {
  * @param {object} agent - Agent row (needs claude_session_id, project_id)
  * @param {object|null} host - Host row (null => local)
  */
-export async function findPinnedTranscript(host, sessionId) {
+/**
+ * The agent's Claude config home as a shell expression.
+ *
+ * Transcripts live INSIDE the config dir, so an agent running under a second
+ * Anthropic account (CLAUDE_CONFIG_DIR set, see providers.claudeConfigDir) writes
+ * them somewhere other than ~/.claude -- and the locator has to look where that
+ * agent actually writes.
+ *
+ * Getting this wrong is not cosmetic. pinnedTranscriptExists decides --session-id
+ * vs --resume; if it always answers "no file" the agent is restarted with
+ * --session-id for a uuid that already exists, Claude refuses it, and the agent
+ * becomes unstartable.
+ */
+function claudeHomeExpr(configDir) {
+  // Default stays double-quoted so $HOME expands on the remote shell; an explicit
+  // dir is single-quoted like every other value crossing a shell boundary.
+  return configDir ? shellQuote(configDir) : '"$HOME/.claude"';
+}
+
+// The config dir recorded on an agent row, if any. Tolerates a missing/!object
+// config and never throws -- the locator must degrade to the default, not fail.
+export function agentClaudeHome(agent) {
+  const dir = agent && agent.config && agent.config.claudeConfigDir;
+  return typeof dir === 'string' && dir.startsWith('/') ? dir : null;
+}
+
+export async function findPinnedTranscript(host, sessionId, configDir = null) {
   if (!isUuid(sessionId)) return null;
   try {
     // "$HOME" is double-quoted so it expands; the -name arg is shell-quoted.
     const { stdout } = await execOnHost(
       host,
-      `find "$HOME/.claude/projects" -maxdepth 2 -name ${shellQuote(
+      `find ${claudeHomeExpr(configDir)}/projects -maxdepth 2 -name ${shellQuote(
         `${sessionId}.jsonl`
       )} 2>/dev/null | head -1`
     );
@@ -80,8 +106,8 @@ export async function findPinnedTranscript(host, sessionId) {
  * Claude rejects --session-id when the file exists AND rejects --resume when it
  * doesn't, so the decision must be driven by the file's actual presence.
  */
-export async function pinnedTranscriptExists(host, sessionId) {
-  return !!(await findPinnedTranscript(host, sessionId));
+export async function pinnedTranscriptExists(host, sessionId, configDir = null) {
+  return !!(await findPinnedTranscript(host, sessionId, configDir));
 }
 
 // The trailing UUID of a Codex rollout filename
@@ -235,7 +261,7 @@ export async function resolveTranscriptFile(agent, host) {
 
   // 1. Pinned session id: the transcript filename equals the session id.
   if (agent && agent.claude_session_id && isUuid(agent.claude_session_id)) {
-    const pinned = await findPinnedTranscript(host, agent.claude_session_id);
+    const pinned = await findPinnedTranscript(host, agent.claude_session_id, agentClaudeHome(agent));
     if (pinned) return pinned;
   }
 
@@ -255,7 +281,7 @@ export async function resolveTranscriptFile(agent, host) {
         try {
           const { stdout } = await execOnHost(
             host,
-            `ls -t "$HOME/.claude/projects/${enc}"/*.jsonl 2>/dev/null | head -1`
+            `ls -t ${claudeHomeExpr(agentClaudeHome(agent))}/projects/${enc}/*.jsonl 2>/dev/null | head -1`
           );
           const line = firstLine(stdout);
           if (line) return line;

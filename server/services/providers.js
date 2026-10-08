@@ -10,6 +10,36 @@ function quoteForBashLc(s) {
   return sqQuoted.replace(/'/g, `'\\''`);
 }
 
+/**
+ * The Claude config directory an agent should run under, or null for the default.
+ *
+ * Claude Code keeps BOTH the OAuth credentials and the account identity inside its
+ * config home, so pointing CLAUDE_CONFIG_DIR somewhere else is what lets a second
+ * Anthropic account run on a host that is already signed in to another one. Set it
+ * per agent via `config.claudeConfigDir`.
+ *
+ * Store a PATH here, never a token: a failing start surfaces the whole command in
+ * the error message (agentStart re-throws it and the route returns err.message), and
+ * the command line is visible to `ps` on the host. A directory path is inert there.
+ *
+ * Throws rather than falling back on a bad value. Silently reverting to the default
+ * would run the agent as the WRONG ACCOUNT, which is both wrong and invisible --
+ * much worse than refusing to start.
+ */
+export function claudeConfigDir(config) {
+  const raw = config && config.claudeConfigDir;
+  if (raw === undefined || raw === null || raw === '') return null;
+  const dir = String(raw).trim();
+  if (!dir.startsWith('/')) {
+    throw new Error(
+      `claudeConfigDir must be an absolute path (got ${JSON.stringify(raw)}). ` +
+        'Claude Code rejects a relative config dir.'
+    );
+  }
+  if (/[\r\n]/.test(dir)) throw new Error('claudeConfigDir must not contain newlines');
+  return dir;
+}
+
 // Who this Codex agent is, and the warning that matters most for it: siblings share
 // its working directory, so repo state is not evidence about its own past work.
 function codexIdentity(agentName) {
@@ -46,7 +76,13 @@ const PROVIDERS = {
       const sessionFlag = validSid
         ? (config.claudeResume ? `--resume ${sid} ` : `--session-id ${sid} `)
         : '';
-      return `bash -lc '${binary} ${nameFlag}${sessionFlag}${flags}; exec bash'`;
+      // `export`, not a bare VAR=val prefix: the trailing `exec bash` keeps the pane
+      // alive after claude exits, and that shell (where a human may well type
+      // `claude` again by hand) must inherit the same account rather than silently
+      // falling back to the default one.
+      const cfgDir = claudeConfigDir(config);
+      const envPrefix = cfgDir ? `export CLAUDE_CONFIG_DIR=${quoteForBashLc(cfgDir)}; ` : '';
+      return `bash -lc '${envPrefix}${binary} ${nameFlag}${sessionFlag}${flags}; exec bash'`;
     },
   },
   codex: {

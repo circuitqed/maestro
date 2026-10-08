@@ -375,7 +375,7 @@ export function updateAgentStatus(id, status) {
   return getAgent(id);
 }
 
-export function updateAgent(id, { name, workingDir } = {}) {
+export function updateAgent(id, { name, workingDir, claudeConfigDir } = {}) {
   if (typeof name === 'string' && name.trim()) {
     db.prepare('UPDATE agents SET name = ? WHERE id = ?').run(name.trim(), id);
   }
@@ -383,6 +383,17 @@ export function updateAgent(id, { name, workingDir } = {}) {
   if (workingDir !== undefined) {
     const v = typeof workingDir === 'string' && workingDir.trim() ? workingDir.trim() : null;
     db.prepare('UPDATE agents SET working_dir = ? WHERE id = ?').run(v, id);
+  }
+  // Which Anthropic account this agent runs as, by Claude config dir. Merged into
+  // the existing config rather than replacing it, so setting the account cannot
+  // discard the provider/flags stored alongside it. '' clears it (back to default).
+  if (claudeConfigDir !== undefined) {
+    const row = getAgent(id);
+    const config = { ...((row && row.config) || {}) };
+    const v = typeof claudeConfigDir === 'string' && claudeConfigDir.trim() ? claudeConfigDir.trim() : null;
+    if (v) config.claudeConfigDir = v;
+    else delete config.claudeConfigDir;
+    db.prepare('UPDATE agents SET config = ? WHERE id = ?').run(JSON.stringify(config), id);
   }
   return getAgent(id);
 }
