@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import ConnectionCard from './ConnectionCard';
 
 /**
@@ -16,7 +17,26 @@ import ConnectionCard from './ConnectionCard';
 function ConnectionBadge({ hostId, id = 'sherlock', label = 'Sherlock' }) {
   const [status, setStatus] = useState(null);
   const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState(null);
   const wrapRef = useRef(null);
+  const btnRef = useRef(null);
+  const popRef = useRef(null);
+
+  // The card is rendered into document.body rather than next to the badge. It has
+  // to be: the chat sits in a resizable Panel with overflow:hidden, so an absolutely
+  // positioned child is CLIPPED at the panel's left edge, and a 26rem card hanging
+  // off a badge near that edge loses most of itself behind the agent list. No
+  // z-index fixes that -- clipping by an ancestor ignores stacking order entirely.
+  const place = useCallback(() => {
+    const el = btnRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const width = Math.min(416, window.innerWidth - 16); // 26rem, or the viewport
+    // Right-aligned to the badge like the old popover, then clamped so neither edge
+    // leaves the window on a narrow screen or a dragged-narrow panel.
+    const left = Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8));
+    setPos({ top: r.bottom + 4, left, width });
+  }, []);
 
   const qs = hostId ? `?host=${encodeURIComponent(hostId)}` : '';
 
@@ -42,11 +62,29 @@ function ConnectionBadge({ hostId, id = 'sherlock', label = 'Sherlock' }) {
     return () => { cancelled = true; clearTimeout(timer); };
   }, [poll]);
 
-  // Close when clicking elsewhere, so it behaves like the menus around it.
+  // Keep it under the badge while the layout moves: dragging the panel divider,
+  // resizing the window, or scrolling an ancestor all shift the anchor, and a fixed
+  // element does not follow on its own. Capture phase so nested scrollers count.
+  useEffect(() => {
+    if (!open) return undefined;
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [open, place]);
+
+  // Close when clicking elsewhere, so it behaves like the menus around it. The card
+  // is portalled out of this subtree, so it needs its own containment check --
+  // otherwise clicking the password field counts as "outside" and closes it.
   useEffect(() => {
     if (!open) return undefined;
     const onDown = (e) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+      const inBadge = wrapRef.current && wrapRef.current.contains(e.target);
+      const inCard = popRef.current && popRef.current.contains(e.target);
+      if (!inBadge && !inCard) setOpen(false);
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
@@ -59,6 +97,7 @@ function ConnectionBadge({ hostId, id = 'sherlock', label = 'Sherlock' }) {
   return (
     <div className="relative flex-shrink-0" ref={wrapRef}>
       <button
+        ref={btnRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         title={
@@ -82,8 +121,11 @@ function ConnectionBadge({ hostId, id = 'sherlock', label = 'Sherlock' }) {
         <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-emerald-400' : 'bg-amber-400'}`} />
       </button>
 
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-30 w-[26rem] max-w-[85vw]">
+      {open && pos && createPortal(
+        <div
+          ref={popRef}
+          style={{ position: 'fixed', top: pos.top, left: pos.left, width: pos.width, zIndex: 60 }}
+        >
           <div className="rounded-lg border border-gray-700 bg-gray-900 shadow-xl p-2">
             <ConnectionCard
               id={id}
@@ -93,7 +135,8 @@ function ConnectionBadge({ hostId, id = 'sherlock', label = 'Sherlock' }) {
               onConnected={poll}
             />
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
