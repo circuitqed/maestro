@@ -51,6 +51,12 @@ SWAP_CRIT_MB=${SWAP_CRIT_MB:-6000}
 # A shell this big is broken by definition; the panic ones were 11-24 GB. High
 # enough that no legitimate login shell or launchd job script is ever a candidate.
 REAP_SHELL_MB=${REAP_SHELL_MB:-2048}
+# Early tripwires, independent of memory. Waiting for the compressor to fill means
+# only learning the cause once a week; shells pile up long before that, so capture
+# the moment the pile starts. Both are far below anything healthy: this box ran 13
+# orphaned shells into a panic, and a working shell is single-digit MB.
+ORPHAN_SHELL_WARN=${ORPHAN_SHELL_WARN:-3}
+BIG_SHELL_MB=${BIG_SHELL_MB:-512}
 
 mkdir -p "$LOGDIR" "$SNAPDIR"
 
@@ -118,8 +124,20 @@ EOF
   echo "$killed"
 }
 
+# Shells with no parent left (ppid 1) and the biggest shell on the box. These are
+# the two numbers that actually predicted both panics.
+count_shells() {
+  ORPHAN_SHELLS=$(ps -Ao pid,ppid,rss,comm 2>/dev/null \
+    | awk '$2==1 && $4 ~ /(^|\/)(zsh|bash|sh)$/' | wc -l | tr -d ' ')
+  BIGGEST_SHELL_MB=$(ps -Ao rss,comm 2>/dev/null \
+    | awk '$2 ~ /(^|\/)(zsh|bash|sh)$/ {if ($1>m) m=$1} END {printf "%d", m/1024}')
+  ORPHAN_SHELLS=${ORPHAN_SHELLS:-0}
+  BIGGEST_SHELL_MB=${BIGGEST_SHELL_MB:-0}
+}
+
 run_once() {
   read_mem
+  count_shells
   local status="ok"
   [ "$COMP_PCT" -ge "$COMP_WARN_PCT" ] && status="warn"
   if [ "$COMP_PCT" -ge "$COMP_CRIT_PCT" ] || [ "$SWAP_MB" -ge "$SWAP_CRIT_MB" ] \
@@ -127,14 +145,26 @@ run_once() {
     status="CRIT"
   fi
 
-  printf '%s free=%sMB comp=%sMB(%s%%) swap=%sMB wired=%sMB active=%sMB load=%s %s\n' \
-    "$(now)" "$FREE_MB" "$COMP_MB" "$COMP_PCT" "$SWAP_MB" "$WIRED_MB" "$ACTIVE_MB" "$LOAD" "$status" >> "$LOG"
+  printf '%s free=%sMB comp=%sMB(%s%%) swap=%sMB wired=%sMB active=%sMB load=%s orphansh=%s bigsh=%sMB %s\n' \
+    "$(now)" "$FREE_MB" "$COMP_MB" "$COMP_PCT" "$SWAP_MB" "$WIRED_MB" "$ACTIVE_MB" "$LOAD" \
+    "$ORPHAN_SHELLS" "$BIGGEST_SHELL_MB" "$status" >> "$LOG"
 
   if [ "$status" = "CRIT" ]; then
     local f n
     f=$(snapshot crit)
     n=$(reap)
     echo "$(now) CRIT snapshot=$f reaped=$n" >> "$LOG"
+  elif [ "$ORPHAN_SHELLS" -ge "$ORPHAN_SHELL_WARN" ] || [ "$BIGGEST_SHELL_MB" -ge "$BIG_SHELL_MB" ]; then
+    # Capture only -- do not kill. At this size the shells are still evidence, and
+    # the question worth answering is what spawned them, not how to hide them. Once
+    # per hour so a persistent condition cannot fill the disk.
+    local stamp="$SNAPDIR/.last-shell-snap"
+    local last=0
+    [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
+    if [ $(( $(date +%s) - last )) -ge 3600 ]; then
+      date +%s > "$stamp"
+      echo "$(now) SHELLS orphans=$ORPHAN_SHELLS biggest=${BIGGEST_SHELL_MB}MB snapshot=$(snapshot shells)" >> "$LOG"
+    fi
   fi
 
   # Keep the log bounded; snapshots are small and worth keeping longer.
