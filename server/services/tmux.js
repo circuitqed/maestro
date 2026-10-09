@@ -171,6 +171,11 @@ export async function createSession(sessionName, workingDir = null, command = nu
   // widget's options and footer fall off-screen (only "No, exit" was reachable on a
   // trust prompt). Start wide enough for widgets to draw in full.
   let tmuxCmd = `tmux new-session -d -x ${TMUX_COLS} -y ${TMUX_ROWS} -s ${shellQuote(sessionName)}`;
+  // Stamp the session's own name into its environment. Every process in the pane
+  // inherits it, including agent shell tools that do not pass $TMUX through (Codex's
+  // strips it), which is how `maestro-task` knows which agent is calling without
+  // trusting a flag the agent could set.
+  tmuxCmd += ` -e MAESTRO_SESSION=${shellQuote(sessionName)}`;
 
   if (workingDir) {
     tmuxCmd += ` -c ${shellQuote(workingDir)}`;
@@ -221,6 +226,11 @@ export async function startProviderSession(sessionName, command, workingDir = nu
   // widget's options and footer fall off-screen (only "No, exit" was reachable on a
   // trust prompt). Start wide enough for widgets to draw in full.
   let tmuxCmd = `tmux new-session -d -x ${TMUX_COLS} -y ${TMUX_ROWS} -s ${shellQuote(sessionName)}`;
+  // Stamp the session's own name into its environment. Every process in the pane
+  // inherits it, including agent shell tools that do not pass $TMUX through (Codex's
+  // strips it), which is how `maestro-task` knows which agent is calling without
+  // trusting a flag the agent could set.
+  tmuxCmd += ` -e MAESTRO_SESSION=${shellQuote(sessionName)}`;
 
   if (workingDir) {
     tmuxCmd += ` -c ${shellQuote(workingDir)}`;

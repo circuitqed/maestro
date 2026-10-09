@@ -21,17 +21,29 @@ TOKEN_FILE="${MAESTRO_AGENT_TOKEN_FILE:-$HOME/.maestro/agent-token}"
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# Before any credential or identity work: `--help` is the first thing an agent runs
+# to find out what this is, and failing it behind a token check teaches the agent
+# the tool is broken. (em-sim hit exactly this.)
+case "${1:-}" in
+  ''|-h|--help|help) usage; exit 0 ;;
+esac
+
 [ -r "$TOKEN_FILE" ] || die "no agent token at $TOKEN_FILE — ask Dave to run scripts/install-agent-cli.sh on this host"
 TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
 
 # $TMUX is set inside a session; display-message gives the session name. Outside
 # tmux there is no agent identity to claim, so refuse rather than guess.
+# Maestro sets MAESTRO_SESSION on the tmux session itself, so every process in the
+# pane inherits it — including agent shell tools that do not pass $TMUX through,
+# which is why $TMUX alone was not enough (Codex's shell strips it).
 SESSION="${MAESTRO_SESSION:-}"
-if [ -z "$SESSION" ]; then
-  [ -n "${TMUX:-}" ] || die "not inside a tmux session — maestro-task identifies an agent by its session"
+if [ -z "$SESSION" ] && [ -n "${TMUX:-}" ]; then
   SESSION="$(tmux display-message -p '#S' 2>/dev/null)"
 fi
-[ -n "$SESSION" ] || die "could not determine tmux session name"
+[ -n "$SESSION" ] || die "cannot tell which agent this is: no MAESTRO_SESSION in the environment and not inside tmux.
+If this agent was started before the task feature existed, restart it from Maestro and it will pick the variable up."
 
 api() { # method path [json]
   local method="$1" path="$2" body="${3:-}"
@@ -115,7 +127,5 @@ case "$cmd" in
       case "$1" in --reason) reason="$2"; shift 2;; *) die "unknown flag $1";; esac
     done
     api POST "/tasks/$id/block" "$(json reason "$reason")" | pretty ;;
-  ''|-h|--help|help)
-    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $cmd (try --help)" ;;
 esac
