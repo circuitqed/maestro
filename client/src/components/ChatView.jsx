@@ -421,7 +421,12 @@ function DiffView({ hunks, text }) {
 // A block of tool output, collapsed to a preview when large.
 function CollapsibleText({ text, isError }) {
   const lines = String(text).split('\n');
+  // Big by LINES or by CHARACTERS. A single 2000-char line is big while having
+  // one line in it, which drove the hidden-line arithmetic negative -- the chat
+  // showed "show -11 more lines". Agents produce exactly that shape: one long
+  // JSON blob with escaped newlines inside it.
   const big = lines.length > 16 || text.length > 2000;
+  const hiddenLines = Math.max(0, lines.length - 12);
   const [open, setOpen] = useState(!big);
   return (
     <div>
@@ -430,7 +435,7 @@ function CollapsibleText({ text, isError }) {
       </pre>
       {big && (
         <button type="button" onClick={() => setOpen((o) => !o)} className="mt-1 text-[11px] text-gray-500 hover:text-gray-300">
-          {open ? 'show less' : `show ${lines.length - 12} more lines`}
+          {open ? 'show less' : hiddenLines ? `show ${hiddenLines} more lines` : 'show full output'}
         </button>
       )}
     </div>
