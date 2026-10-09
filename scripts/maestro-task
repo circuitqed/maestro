@@ -16,6 +16,11 @@
 #   maestro-task cancel ID
 set -uo pipefail
 
+# Per-host settings written by install-agent-cli.sh. A remote host cannot reach
+# Maestro on localhost, and em-sim found this the hard way: the installer wrote
+# MAESTRO_URL into this file and nothing ever read it.
+[ -r "$HOME/.maestro/env" ] && . "$HOME/.maestro/env"
+
 BASE="${MAESTRO_URL:-http://localhost:7007}"
 TOKEN_FILE="${MAESTRO_AGENT_TOKEN_FILE:-$HOME/.maestro/agent-token}"
 
