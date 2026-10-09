@@ -1784,6 +1784,63 @@ function InlineImages({ srcs, onImage }) {
 
 // The parts of a record worth showing even with tool activity hidden: files the agent
 // handed over, and any image it produced. Returns null when there is nothing visual.
+// A published artifact is a link the reader is meant to click, but it arrives
+// buried in a tool_result: collapsed behind a disclosure in the full view, and
+// swept into the activity marker entirely in messages-only. So the one actionable
+// thing the tool produced is the one thing you cannot see. Lift it out.
+const ARTIFACT_URL_RE = /https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]+/g;
+
+function artifactUrlsIn(blocks) {
+  if (!Array.isArray(blocks)) return [];
+  const out = [];
+  for (const b of blocks) {
+    if (!b || typeof b !== 'object' || b.type !== 'tool_result') continue;
+    const c = b.content;
+    const text = typeof c === 'string'
+      ? c
+      : Array.isArray(c)
+        ? c.filter((x) => x && typeof x.text === 'string').map((x) => x.text).join('\n')
+        : '';
+    for (const m of text.matchAll(ARTIFACT_URL_RE)) out.push(m[0]);
+  }
+  // Republishing the same page returns the same URL every time (52 such results for
+  // one artifact in tms-claude), so dedupe or the chat fills with the same link.
+  return Array.from(new Set(out));
+}
+
+function ArtifactCard({ urls }) {
+  return (
+    <div className="flex justify-start">
+      <div className="min-w-0 max-w-[92%] w-full my-1 space-y-1">
+        {urls.map((u) => (
+          <a
+            key={u}
+            href={u}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 rounded-lg border border-violet-500/50 bg-violet-950/20 px-3 py-2 hover:bg-violet-900/30 transition-colors"
+          >
+            <svg className="w-4 h-4 flex-shrink-0 text-violet-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+            </svg>
+            <span className="min-w-0">
+              <span className="block text-sm text-violet-200">Published artifact</span>
+              <span className="block text-[11px] text-violet-300/70 truncate">{u}</span>
+            </span>
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function artifactPartOf(rec) {
+  const content = rec && rec.message && rec.message.content;
+  const urls = artifactUrlsIn(Array.isArray(content) ? content : null);
+  return urls.length ? <ArtifactCard urls={urls} /> : null;
+}
+
 function visualPartOf(rec, ctx) {
   const content = rec && rec.message && rec.message.content;
   if (Array.isArray(content)) {
@@ -2863,6 +2920,9 @@ function ChatView({ agentId, session, onMeta }) {
       // (sidechains, tool results written late), and going backwards would make every
       // later record look like a fresh gap.
       if (ts && (lastTs === null || ts > lastTs)) lastTs = ts;
+      // Before either branch, so a published link shows in both views.
+      const art = artifactPartOf(rec);
+      if (art) { flushTools(); out.push(<div key={`a-${rkey}`} className={dim}>{art}</div>); }
       if (messagesOnly) {
         // Collapse a run of tool activity into one clickable marker between messages —
         // except anything visual, which is shown inline instead of being swept into the
