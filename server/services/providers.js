@@ -40,6 +40,28 @@ export function claudeConfigDir(config) {
   return dir;
 }
 
+/**
+ * The Codex config home an agent should run under, or null for the default.
+ *
+ * CODEX_HOME is Codex's equivalent of CLAUDE_CONFIG_DIR: it relocates config.toml,
+ * which is where a custom model_provider (e.g. the Stanford AI API Gateway) lives.
+ * Set per agent via `config.codexHome`.
+ *
+ * Throws rather than falling back, as claudeConfigDir does. Quietly reverting to
+ * the default home would run the agent against the wrong provider -- and here the
+ * wrong BILLING -- which is worse than refusing to start.
+ */
+export function codexHome(config) {
+  const raw = config && config.codexHome;
+  if (raw === undefined || raw === null || raw === '') return null;
+  const dir = String(raw).trim();
+  if (!dir.startsWith('/')) {
+    throw new Error(`codexHome must be an absolute path (got ${JSON.stringify(raw)})`);
+  }
+  if (/[\r\n]/.test(dir)) throw new Error('codexHome must not contain newlines');
+  return dir;
+}
+
 // Who this Codex agent is, and the warning that matters most for it: siblings share
 // its working directory, so repo state is not evidence about its own past work.
 function codexIdentity(agentName) {
@@ -122,7 +144,19 @@ const PROVIDERS = {
       // key=value is one shell word so `-c` still gets its own argv.
       const identity = codexIdentity(agentName);
       const idFlag = identity ? `-c ${quoteForBashLc(`developer_instructions=${JSON.stringify(identity)}`)} ` : '';
-      return `bash -lc '${binary} ${resume}${model}${idFlag}${flags}; exec bash'`;
+      // A custom provider needs two things in the environment: CODEX_HOME so codex
+      // reads the right config.toml, and that provider's env_key. The key is read
+      // from a 0600 file by the shell at launch rather than spliced into the command,
+      // so the secret never appears in argv or in `ps`.
+      const home = codexHome(config);
+      let envPrefix = '';
+      if (home) {
+        const q = quoteForBashLc(home);
+        const keyVar = quoteForBashLc(config.codexKeyEnv || 'STANFORD_API_KEY');
+        envPrefix = `export CODEX_HOME=${q}; `
+          + `if [ -r ${q}/key ]; then export ${keyVar}="$(cat ${q}/key)"; fi; `;
+      }
+      return `bash -lc '${envPrefix}${binary} ${resume}${model}${idFlag}${flags}; exec bash'`;
     },
   },
   antigravity: {

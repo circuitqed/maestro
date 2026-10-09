@@ -16,6 +16,8 @@ set -uo pipefail
 
 NAME="${1:-stanford-api}"
 BASE_URL="https://aiapi-prod.stanford.edu"
+# Must be one the key is actually allowed; the model list printed below is the truth.
+CODEX_MODEL="${CODEX_MODEL:-gpt-6-astra}"
 DIR="$HOME/.claude-accts/$NAME"
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
@@ -73,8 +75,38 @@ PY
 chmod 600 "$DIR/settings.json"
 unset KEY
 
+# --- Codex ------------------------------------------------------------------
+# The same key also works for the gateway's OpenAI-shaped routes, so set up a
+# Codex config home alongside. CODEX_HOME is Codex's CLAUDE_CONFIG_DIR: it
+# relocates config.toml, which is where a custom model_provider lives. The key
+# goes in its own 0600 file because Codex reads it from an env var (env_key),
+# and Maestro's launch command loads that file at start rather than splicing the
+# secret into the command line.
+CDIR="$HOME/.codex-accts/$NAME"
+mkdir -p "$CDIR" && chmod 700 "$HOME/.codex-accts" "$CDIR"
+( umask 077; printf '%s' "$KEY" > "$CDIR/key" )
+chmod 600 "$CDIR/key"
+( umask 077; cat > "$CDIR/config.toml" <<TOML
+# Codex pointed at the Stanford AI API Gateway (LiteLLM).
+# Selected per agent via CODEX_HOME, so no other Codex agent is affected.
+model = "$CODEX_MODEL"
+model_provider = "stanford"
+model_reasoning_effort = "high"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+[model_providers.stanford]
+name = "Stanford AI API Gateway"
+base_url = "$BASE_URL/v1"
+env_key = "STANFORD_API_KEY"
+wire_api = "responses"
+TOML
+)
+chmod 600 "$CDIR/config.toml"
+
 echo "== stored =="
-echo "  config dir : $DIR  ($(stat -c '%a' "$DIR"))"
+echo "  claude dir : $DIR  ($(stat -c '%a' "$DIR"))"
+echo "  codex home : $CDIR  ($(stat -c '%a' "$CDIR"))  model=$CODEX_MODEL"
 echo "  settings   : $DIR/settings.json  ($(stat -c '%a' "$DIR/settings.json"))"
 echo "  base url   : $BASE_URL"
 echo
