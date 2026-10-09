@@ -1911,7 +1911,22 @@ const INJECTED_BLOCKS = {
   recommended_plugins: { show: false },
 };
 
+// Codex also feeds itself the project's AGENTS.md as a user turn, and this one is
+// not tag-shaped: it opens with a markdown heading -- "# AGENTS.md instructions for
+// <path>" -- then an <INSTRUCTIONS> block, usually with an <environment_context>
+// appended. The allowlist below cannot see it, because the text does not START with
+// a tag, which is how it kept arriving in chat wearing Dave's name.
+//
+// Dropped rather than pilled: it is re-sent constantly (85 times in one em-sim
+// session), byte-identical every time, and the content is just the repo's own
+// AGENTS.md -- readable in the repo, and 85 pills would be their own noise.
+// Both conditions required so a human pasting a line about AGENTS.md is untouched.
+const AGENTS_MD_INJECTION = /^\s*#\s*AGENTS\.md instructions for\s+\S/;
+
 function codexInjectedBlock(text) {
+  if (AGENTS_MD_INJECTION.test(text || '') && /<INSTRUCTIONS>/.test(text || '')) {
+    return { hidden: true };
+  }
   const m = /^\s*<([a-z_][a-z0-9_]*)\b([^>]*)>/.exec(text || '');
   const spec = m && INJECTED_BLOCKS[m[1]];
   if (!spec) return null;
