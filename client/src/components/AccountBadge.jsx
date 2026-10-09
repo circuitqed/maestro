@@ -126,7 +126,7 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
         type="button"
         onClick={() => setOpen((v) => !v)}
         title={
-          `Anthropic account: ${label}${mine && mine.email ? ` (${mine.email})` : ''}` +
+          `Anthropic account: ${label}${mine && mine.detail ? ` (${mine.detail})` : ''}` +
           (pending ? ' — restart to apply' : '') + '\nClick to switch'
         }
         className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors ${
@@ -165,7 +165,7 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
                   <span className="min-w-0">
                     <span className="block truncate">{a.label}</span>
                     <span className="block text-[11px] text-gray-500 truncate">
-                      {a.email || (a.loggedIn ? a.dir : 'not signed in — run the login first')}
+                      {a.detail || (a.loggedIn ? a.dir : 'not signed in — run the login first')}
                     </span>
                   </span>
                 </button>

@@ -33,12 +33,22 @@ const EMAIL_OF = (f) =>
   `grep -o '"emailAddress"[[:space:]]*:[[:space:]]*"[^"]*"' ${f} 2>/dev/null ` +
   `| head -1 | sed 's/.*"\\([^"]*\\)"$/\\1/'`;
 
+// A Bedrock-backed config dir has no OAuth login at all -- credentials come from
+// AWS, and settings.json carries CLAUDE_CODE_USE_BEDROCK. Judged signed-in by that
+// flag, because the .credentials.json test that works for a subscription would call
+// a perfectly good Bedrock setup "not signed in" and refuse to let you select it.
+const BEDROCK_OF = (dir) =>
+  `if grep -q '"CLAUDE_CODE_USE_BEDROCK"' ${dir}/settings.json 2>/dev/null; then ` +
+  `r=$(grep -o '"AWS_REGION"[[:space:]]*:[[:space:]]*"[^"]*"' ${dir}/settings.json 2>/dev/null ` +
+  `| head -1 | sed 's/.*"\\([^"]*\\)"$/\\1/'); b="bedrock:$r"; else b=""; fi`;
+
 const DISCOVER_SH =
   // The default account, if a config home exists at all.
   'if [ -d "$HOME/.claude" ]; then ' +
   `e=$(${EMAIL_OF('"$HOME/.claude.json"')}); ` +
   '[ -f "$HOME/.claude/.credentials.json" ] && c=yes || c=no; ' +
-  'printf \'%s\\t%s\\t%s\\n\' "$HOME/.claude" "$e" "$c"; ' +
+  `${BEDROCK_OF('"$HOME/.claude"')}; ` +
+  'printf \'%s\\t%s\\t%s\\t%s\\n\' "$HOME/.claude" "$e" "$c" "$b"; ' +
   'fi; ' +
   // Alternates, via `find` rather than a glob. A glob that matches nothing is not
   // harmless here: the mac's login shell is zsh, where `nomatch` makes an unmatched
@@ -49,7 +59,8 @@ const DISCOVER_SH =
   'find "$HOME/.claude-accts" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while read -r d; do ' +
   `e=$(${EMAIL_OF('"$d/.claude.json"')}); ` +
   '[ -f "$d/.credentials.json" ] && c=yes || c=no; ' +
-  'printf \'%s\\t%s\\t%s\\n\' "$d" "$e" "$c"; ' +
+  `${BEDROCK_OF('"$d"')}; ` +
+  'printf \'%s\\t%s\\t%s\\t%s\\n\' "$d" "$e" "$c" "$b"; ' +
   'done; ' +
   // Always succeed: a missing dir or an unreadable file is a normal answer ("no
   // alternates"), not a failure, and a non-zero exit would throw away the rows
@@ -79,8 +90,17 @@ export async function listAccounts(host) {
       .map((l) => l.trim())
       .filter(Boolean)
       .map((l) => {
-        const [dir, email, creds] = l.split('\t');
-        return { dir, email: email || null, loggedIn: creds === 'yes' };
+        const [dir, email, creds, bedrock] = l.split('\t');
+        const region = bedrock && bedrock.startsWith('bedrock:') ? bedrock.slice(8) : null;
+        const isBedrock = !!(bedrock && bedrock.startsWith('bedrock:'));
+        return {
+          dir,
+          email: email || null,
+          kind: isBedrock ? 'bedrock' : 'oauth',
+          region: region || null,
+          // Bedrock needs no Claude login; AWS supplies the credentials.
+          loggedIn: isBedrock || creds === 'yes',
+        };
       })
       .filter((r) => r.dir && r.dir.startsWith('/'));
   } catch {
@@ -99,6 +119,12 @@ export async function listAccounts(host) {
       // The folder name is what a person picked ("work"); the email is what proves
       // which account it actually is. Show the name, keep the email for the tooltip.
       label: isDefault ? 'Default' : r.dir.split('/').filter(Boolean).pop(),
+      // One line saying what this actually is, so the picker reads the same whether
+      // the identity is a subscription email or an AWS region.
+      detail:
+        r.kind === 'bedrock'
+          ? `AWS Bedrock${r.region ? ` · ${r.region}` : ''}`
+          : r.email || (r.loggedIn ? r.dir : null),
     });
   }
   // Default first, then alphabetical: the common case is at the top of the menu.
