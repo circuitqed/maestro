@@ -37,6 +37,16 @@ const EMAIL_OF = (f) =>
 // AWS, and settings.json carries CLAUDE_CODE_USE_BEDROCK. Judged signed-in by that
 // flag, because the .credentials.json test that works for a subscription would call
 // a perfectly good Bedrock setup "not signed in" and refuse to let you select it.
+// A gateway-backed dir authenticates with a base URL + token in settings.json
+// (Stanford's AI API Gateway, or any Anthropic-compatible proxy). Like Bedrock it
+// has no OAuth login, so the .credentials.json test calls a perfectly good setup
+// "not signed in" and refuses to let you select it. Only ever reads whether a token
+// is PRESENT and what the base URL is -- never the token itself.
+const GATEWAY_OF = (dir) =>
+  `if grep -qE '\"ANTHROPIC_(AUTH_TOKEN|API_KEY)\"' ${dir}/settings.json 2>/dev/null; then ` +
+  `u=$(grep -o '\"ANTHROPIC_BASE_URL\"[[:space:]]*:[[:space:]]*\"[^\"]*\"' ${dir}/settings.json 2>/dev/null ` +
+  `| head -1 | sed 's/.*\"\\([^\"]*\\)\"$/\\1/'); g="api:$u"; else g=""; fi`;
+
 const BEDROCK_OF = (dir) =>
   `if grep -q '"CLAUDE_CODE_USE_BEDROCK"' ${dir}/settings.json 2>/dev/null; then ` +
   `r=$(grep -o '"AWS_REGION"[[:space:]]*:[[:space:]]*"[^"]*"' ${dir}/settings.json 2>/dev/null ` +
@@ -48,7 +58,8 @@ const DISCOVER_SH =
   `e=$(${EMAIL_OF('"$HOME/.claude.json"')}); ` +
   '[ -f "$HOME/.claude/.credentials.json" ] && c=yes || c=no; ' +
   `${BEDROCK_OF('"$HOME/.claude"')}; ` +
-  'printf \'%s\\t%s\\t%s\\t%s\\n\' "$HOME/.claude" "$e" "$c" "$b"; ' +
+  `${GATEWAY_OF('"$HOME/.claude"')}; ` +
+  'printf \'%s\\t%s\\t%s\\t%s\\t%s\\n\' "$HOME/.claude" "$e" "$c" "$b" "$g"; ' +
   'fi; ' +
   // Alternates, via `find` rather than a glob. A glob that matches nothing is not
   // harmless here: the mac's login shell is zsh, where `nomatch` makes an unmatched
@@ -60,7 +71,8 @@ const DISCOVER_SH =
   `e=$(${EMAIL_OF('"$d/.claude.json"')}); ` +
   '[ -f "$d/.credentials.json" ] && c=yes || c=no; ' +
   `${BEDROCK_OF('"$d"')}; ` +
-  'printf \'%s\\t%s\\t%s\\t%s\\n\' "$d" "$e" "$c" "$b"; ' +
+  `${GATEWAY_OF('"$d"')}; ` +
+  'printf \'%s\\t%s\\t%s\\t%s\\t%s\\n\' "$d" "$e" "$c" "$b" "$g"; ' +
   'done; ' +
   // Always succeed: a missing dir or an unreadable file is a normal answer ("no
   // alternates"), not a failure, and a non-zero exit would throw away the rows
@@ -72,6 +84,12 @@ const DISCOVER_SH =
  * Always includes the default account, even when it cannot be read, so the UI can
  * still offer "use the default" rather than showing an empty list.
  */
+// Host part of a URL, for display. Never shows a token.
+function hostOf(u) {
+  const m = /^https?:\/\/([^/]+)/.exec(String(u || ''));
+  return m ? m[1] : null;
+}
+
 export async function listAccounts(host) {
   let rows = [];
   try {
@@ -90,16 +108,20 @@ export async function listAccounts(host) {
       .map((l) => l.trim())
       .filter(Boolean)
       .map((l) => {
-        const [dir, email, creds, bedrock] = l.split('\t');
+        const [dir, email, creds, bedrock, gateway] = l.split('\t');
         const region = bedrock && bedrock.startsWith('bedrock:') ? bedrock.slice(8) : null;
         const isBedrock = !!(bedrock && bedrock.startsWith('bedrock:'));
+        const isGateway = !!(gateway && gateway.startsWith('api:'));
+        const baseUrl = isGateway ? gateway.slice(4) : null;
         return {
           dir,
           email: email || null,
-          kind: isBedrock ? 'bedrock' : 'oauth',
+          kind: isBedrock ? 'bedrock' : isGateway ? 'api' : 'oauth',
           region: region || null,
-          // Bedrock needs no Claude login; AWS supplies the credentials.
-          loggedIn: isBedrock || creds === 'yes',
+          baseUrl: baseUrl || null,
+          // Neither Bedrock nor a gateway has a Claude login: AWS or the token
+          // supplies the credentials, so .credentials.json is the wrong test.
+          loggedIn: isBedrock || isGateway || creds === 'yes',
         };
       })
       .filter((r) => r.dir && r.dir.startsWith('/'));
@@ -124,7 +146,9 @@ export async function listAccounts(host) {
       detail:
         r.kind === 'bedrock'
           ? `AWS Bedrock${r.region ? ` · ${r.region}` : ''}`
-          : r.email || (r.loggedIn ? r.dir : null),
+          : r.kind === 'api'
+            ? `API · ${hostOf(r.baseUrl) || 'custom endpoint'}`
+            : r.email || (r.loggedIn ? r.dir : null),
     });
   }
   // Default first, then alphabetical: the common case is at the top of the menu.
