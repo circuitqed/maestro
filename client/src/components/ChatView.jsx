@@ -1431,6 +1431,60 @@ function cleanUserText(text) {
   return { kind: 'text', text: t };
 }
 
+/**
+ * A Maestro task message -- an assignment delivered to a worker, or a result
+ * returned to the requester.
+ *
+ * These are injected into the agent's session as text, which is indistinguishable
+ * from the human typing, so the transcript records them as role:"user" and the chat
+ * rendered them as Dave's own messages. Exactly the complaint that started all the
+ * other injected-block work, except this time Maestro itself was the author.
+ *
+ * Shown, not hidden: a handoff between agents is real conversation and worth
+ * seeing. It just needs to be attributed to the machinery rather than to a person.
+ */
+const MAESTRO_TASK_RE = /^\s*\[maestro-task ([0-9a-f-]{36})\]\s*(.*)$/;
+
+function maestroTaskMessage(text) {
+  const first = String(text || '').split('\n', 1)[0];
+  const m = MAESTRO_TASK_RE.exec(first);
+  if (!m) return null;
+  const rest = String(text).split('\n').slice(1).join('\n').trim();
+  return { id: m[1], headline: (m[2] || '').trim(), body: rest };
+}
+
+function TaskMessageCard({ info }) {
+  const [open, setOpen] = useState(false);
+  const done = /completed/i.test(info.headline);
+  const bad = /blocked|failed/i.test(info.headline);
+  const tone = bad ? 'amber' : done ? 'emerald' : 'sky';
+  return (
+    <div className="flex justify-start">
+      <div className={`min-w-0 max-w-[92%] w-full my-1 rounded-lg border px-3 py-2 border-${tone}-500/40 bg-${tone}-950/20`}>
+        <div className="flex items-center gap-2">
+          <span className={`text-[11px] uppercase tracking-wide text-${tone}-300`}>
+            {info.headline ? `Agent task — ${info.headline}` : 'Agent task'}
+          </span>
+          <span className="ml-auto text-[10px] text-gray-500 font-mono">{info.id.slice(0, 8)}</span>
+        </div>
+        {info.body && (
+          <>
+            <div className={`mt-1 text-sm text-gray-200 whitespace-pre-wrap break-words ${open ? '' : 'line-clamp-3'}`}>
+              {info.body}
+            </div>
+            {info.body.length > 180 && (
+              <button type="button" onClick={() => setOpen((v) => !v)} className="mt-1 text-[11px] text-gray-500 hover:text-gray-300">
+                {open ? 'show less' : 'show all'}
+              </button>
+            )}
+          </>
+        )}
+        <div className="mt-1 text-[10px] text-gray-500">Sent by Maestro on another agent's behalf — not by you.</div>
+      </div>
+    </div>
+  );
+}
+
 function renderUserPrompt(rec) {
   const content = rec.message?.content;
   const raw =
@@ -1440,6 +1494,11 @@ function renderUserPrompt(rec) {
         ? content.filter((b) => b && b.type === 'text').map((b) => b.text).join('\n')
         : '';
   const c = cleanUserText(raw);
+  // After cleaning, not before: delivery uses bracketed paste, so Claude records the
+  // text wrapped in <pasted_content id="...">. Checking the raw first line never saw
+  // the marker and the card silently never rendered on the Claude side.
+  const task = c.kind === 'text' ? maestroTaskMessage(c.text) : null;
+  if (task) return <TaskMessageCard info={task} />;
   if (c.kind === 'command') {
     return (
       <div className="flex justify-end">
@@ -2051,6 +2110,8 @@ function codexPart(rec, ctx) {
     if (internal) {
       return { message: internal.hidden ? null : <CodexContextPill info={internal} />, tool: null, toolCount: 0 };
     }
+    const task = maestroTaskMessage(p.message);
+    if (task) return { message: <TaskMessageCard info={task} />, tool: null, toolCount: 0 };
     return {
       message: (
         <div className="flex justify-end">
@@ -2098,6 +2159,8 @@ function codexPart(rec, ctx) {
       if (internal) {
         return { message: internal.hidden ? null : <CodexContextPill info={internal} />, tool: null, toolCount: 0 };
       }
+      const task = maestroTaskMessage(text);
+      if (task) return { message: <TaskMessageCard info={task} />, tool: null, toolCount: 0 };
       return {
         message: (
           <div className="flex justify-end">
