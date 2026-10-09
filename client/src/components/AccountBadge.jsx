@@ -111,9 +111,13 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
     }
   };
 
-  if (provider !== 'claude' || !accounts) return null;
-  // Nothing to choose between, and nothing surprising to report.
-  if (accounts.length < 2 && !current) return null;
+  if (provider !== 'claude' || !accounts || accounts.length === 0) return null;
+  // Deliberately NOT hidden when the host has only one account. Hiding it seemed
+  // tidy -- a picker with one option is noise -- but it makes the feature vanish
+  // exactly when someone goes looking for it: accounts are per host, so an agent on
+  // a machine where the second account has not been signed in yet showed no control
+  // at all, and the only available reading was "this is broken". Showing which
+  // account it is, plus why there is nothing to switch to, is the useful answer.
 
   const mine = accounts.find((a) => a.dir === current);
   const label = current ? (mine ? mine.label : 'custom') : 'Default';
@@ -171,6 +175,12 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
                 </button>
               );
             })}
+            {accounts.length < 2 && !pending && (
+              <div className="mt-1 border-t border-gray-700 pt-1.5 px-2 pb-1 text-[11px] text-gray-500">
+                Only this account is signed in on this host. Accounts are per machine —
+                sign another in here to be able to switch.
+              </div>
+            )}
             {pending && (
               <div className="mt-1 border-t border-gray-700 pt-1.5 px-2 pb-1">
                 <div className="text-[11px] text-amber-300 mb-1.5">
