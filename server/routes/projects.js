@@ -30,6 +30,7 @@ import { isRemote, execOnHost, shellQuote } from '../services/hosts.js';
 import { ensureDirOnHost } from '../services/projectPaths.js';
 import { scaffoldProject, appendAgentLane } from '../services/scaffold.js';
 import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js';
+import { killSession, sessionExists } from '../services/tmux.js';
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -265,14 +266,32 @@ router.patch('/:id', (req, res) => {
 });
 
 // Delete project (owner or admin only)
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
     const projectId = parseInt(req.params.id);
     if (req.user && req.user.role !== 'admin' && !isProjectOwner(req.user.id, projectId)) {
       return res.status(403).json({ error: 'Only the project owner or an admin can delete this project' });
     }
+    // The agents table cascades, but a tmux session is not a database row: deleting
+    // a project removed its agents and left their sessions running forever --
+    // burning tokens, and reappearing in the session picker with no agent behind
+    // them. DELETE /api/agents/:id already kills the session; do the same here.
+    let killed = 0;
+    for (const a of getAgentsByProject(projectId)) {
+      if (!a.screen_session) continue;
+      try {
+        const host = a.host_id ? getHost(a.host_id) : null;
+        if (await sessionExists(a.screen_session, host)) {
+          await killSession(a.screen_session, host);
+          killed += 1;
+        }
+      } catch (err) {
+        // An unreachable host must not block deleting the project.
+        console.error(`[projects] could not kill ${a.screen_session}:`, err.message);
+      }
+    }
     deleteProject(projectId);
-    res.json({ success: true });
+    res.json({ success: true, sessionsKilled: killed });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

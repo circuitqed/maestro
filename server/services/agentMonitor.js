@@ -1,6 +1,6 @@
 import { getAgents, updateAgentStatus, updateAgentLastSeen, getHost, updateHostStatus } from './db.js';
 import { startAgentSession } from './agentStart.js';
-import { getTmuxSessions } from './tmux.js';
+import { getTmuxSessions, paneTarget } from './tmux.js';
 import { getProvider } from './providers.js';
 import { execOnHost, isRemote } from './hosts.js';
 
@@ -86,7 +86,7 @@ async function capturePaneContent(sessionName, host = null) {
   try {
     const { stdout } = await execOnHost(
       host,
-      `tmux capture-pane -t "${sessionName}" -p -S -20 2>/dev/null`
+      `tmux capture-pane -t ${paneTarget(sessionName)} -p -S -20 2>/dev/null`
     );
     return stdout;
   } catch {

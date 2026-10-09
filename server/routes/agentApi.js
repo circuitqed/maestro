@@ -38,8 +38,18 @@ router.use((req, res, next) => {
   if (!tokenOk(req)) return res.status(401).json({ error: 'bad or missing agent token' });
   const session = req.get('X-Maestro-Session');
   if (!session) return res.status(400).json({ error: 'missing X-Maestro-Session' });
-  const row = getDb().prepare('SELECT * FROM agents WHERE screen_session = ?').get(session);
-  if (!row) return res.status(404).json({ error: `no agent registered for session ${session}` });
+  // Session names are unique per HOST, not globally -- `aws-awr` exists on both
+  // oracle and garage-wsl today. A .get() silently picked whichever row SQLite
+  // returned first, so one agent could be answered as another. Refuse instead.
+  const rows = getDb().prepare('SELECT * FROM agents WHERE screen_session = ?').all(session);
+  if (rows.length === 0) return res.status(404).json({ error: `no agent registered for session ${session}` });
+  if (rows.length > 1) {
+    return res.status(409).json({
+      error: `session name ${session} exists on ${rows.length} hosts (${rows.map((r) => r.host_id ?? 'local').join(', ')}) — cannot tell which agent is calling`,
+      code: 'AMBIGUOUS_SESSION',
+    });
+  }
+  const row = rows[0];
   req.agent = row;
   next();
 });

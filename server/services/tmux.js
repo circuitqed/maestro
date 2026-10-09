@@ -22,7 +22,7 @@ function target(sessionName) {
  * be qualified with a trailing `:` so tmux resolves it to that session's active
  * window/pane — `=name:` — while still matching the session name exactly.
  */
-function paneTarget(sessionName) {
+export function paneTarget(sessionName) {
   return shellQuote(`=${sessionName}:`);
 }
 
