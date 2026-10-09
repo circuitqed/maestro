@@ -10,6 +10,10 @@ import projectsRoutes from './routes/projects.js';
 import agentsRoutes from './routes/agents.js';
 import connectionRoutes from './routes/connections.js';
 import hostsRoutes from './routes/hosts.js';
+import agentApiRoutes from './routes/agentApi.js';
+import { initTaskTables } from './services/tasks.js';
+import { startTaskRunner } from './services/taskRunner.js';
+import { ensureAgentApiToken } from './services/agentToken.js';
 import { setupTerminalWS } from './services/terminal.js';
 import { setupTranscriptWS } from './services/transcript.js';
 import { initDb, getUserCount } from './services/db.js';
@@ -42,6 +46,7 @@ app.use(express.json());
 app.use(sessionParser);
 
 // API Routes
+app.use('/api/agent', agentApiRoutes);  // called by agents themselves, token-authed
 app.use('/api/auth', authRoutes);
 app.use('/api/projects', projectsRoutes);
 app.use('/api/agents', agentsRoutes);
@@ -156,6 +161,10 @@ initDb().then(() => {
     startMonitoring(2000);
     // Nightly: reload agents left running an older CLI than the one installed.
     startHarnessWatch({ registerAgent });
+      // Agent-to-agent assignments: deliver queued work, report results back.
+      initTaskTables();
+      ensureAgentApiToken();
+      startTaskRunner(5000);
   });
 }).catch((err) => {
   console.error('Failed to initialize database:', err);

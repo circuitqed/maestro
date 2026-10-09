@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# Assign work to another Maestro agent, and report back on work assigned to you.
+#
+# Identity is not a flag. The CLI reads its own tmux session name and Maestro maps
+# that to an agent, so an agent cannot claim to be another one -- which is what the
+# delegation allowlist is checked against.
+#
+#   maestro-task whoami
+#   maestro-task agents
+#   maestro-task submit --to NAME --instructions "..." [--key IDEM] [--dir PATH] [--deliverables "..."]
+#   maestro-task inbox | outbox
+#   maestro-task get ID
+#   maestro-task ack ID
+#   maestro-task complete ID --result "..." [--artifact PATH]...
+#   maestro-task block ID --reason "..."
+#   maestro-task cancel ID
+set -uo pipefail
+
+BASE="${MAESTRO_URL:-http://localhost:7007}"
+TOKEN_FILE="${MAESTRO_AGENT_TOKEN_FILE:-$HOME/.maestro/agent-token}"
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+
+[ -r "$TOKEN_FILE" ] || die "no agent token at $TOKEN_FILE — ask Dave to run scripts/install-agent-cli.sh on this host"
+TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
+
+# $TMUX is set inside a session; display-message gives the session name. Outside
+# tmux there is no agent identity to claim, so refuse rather than guess.
+SESSION="${MAESTRO_SESSION:-}"
+if [ -z "$SESSION" ]; then
+  [ -n "${TMUX:-}" ] || die "not inside a tmux session — maestro-task identifies an agent by its session"
+  SESSION="$(tmux display-message -p '#S' 2>/dev/null)"
+fi
+[ -n "$SESSION" ] || die "could not determine tmux session name"
+
+api() { # method path [json]
+  local method="$1" path="$2" body="${3:-}"
+  if [ -n "$body" ]; then
+    curl -sS -X "$method" "$BASE/api/agent$path" \
+      -H "X-Maestro-Agent-Token: $TOKEN" -H "X-Maestro-Session: $SESSION" \
+      -H 'Content-Type: application/json' -d "$body"
+  else
+    curl -sS -X "$method" "$BASE/api/agent$path" \
+      -H "X-Maestro-Agent-Token: $TOKEN" -H "X-Maestro-Session: $SESSION"
+  fi
+}
+
+# Build JSON safely: shell string interpolation would break on any quote or newline
+# in an instruction, which is most of them.
+json() { python3 -c '
+import json,sys
+d={}
+a=sys.argv[1:]
+for i in range(0,len(a),2):
+    k,v=a[i],a[i+1]
+    if k.endswith("[]"):
+        d.setdefault(k[:-2],[]).append(v)
+    else:
+        d[k]=v
+print(json.dumps(d))' "$@"; }
+
+pretty() { python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if isinstance(d,list):
+    if not d: print("(none)"); raise SystemExit
+    for x in d:
+        print(" ".join(f"{k}={x[k]}" for k in ("id","name","status","state","to","instructions") if k in x and x[k] is not None)[:200])
+else:
+    for k,v in d.items():
+        if k=="history": continue
+        if v not in (None,"",[]): print(f"{k}: {v}")'; }
+
+cmd="${1:-}"; shift 2>/dev/null || true
+case "$cmd" in
+  whoami) api GET /whoami | pretty ;;
+  agents) api GET /agents | pretty ;;
+  inbox)  api GET /inbox  | pretty ;;
+  outbox) api GET /outbox | pretty ;;
+  get)    [ $# -ge 1 ] || die "usage: maestro-task get ID"; api GET "/tasks/$1" | pretty ;;
+  ack)    [ $# -ge 1 ] || die "usage: maestro-task ack ID";  api POST "/tasks/$1/ack" '{}' | pretty ;;
+  cancel) [ $# -ge 1 ] || die "usage: maestro-task cancel ID"; api POST "/tasks/$1/cancel" '{}' | pretty ;;
+  submit)
+    to=""; inst=""; key=""; dir=""; deliv=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --to) to="$2"; shift 2;; --instructions) inst="$2"; shift 2;;
+        --key) key="$2"; shift 2;; --dir) dir="$2"; shift 2;;
+        --deliverables) deliv="$2"; shift 2;; *) die "unknown flag $1";;
+      esac
+    done
+    [ -n "$to" ] && [ -n "$inst" ] || die 'usage: maestro-task submit --to NAME --instructions "..."'
+    args=(to "$to" instructions "$inst")
+    [ -n "$key" ]   && args+=(idempotencyKey "$key")
+    [ -n "$dir" ]   && args+=(workingDir "$dir")
+    [ -n "$deliv" ] && args+=(deliverables "$deliv")
+    api POST /tasks "$(json "${args[@]}")" | pretty ;;
+  complete)
+    [ $# -ge 1 ] || die "usage: maestro-task complete ID --result ..."
+    id="$1"; shift; result=""; arts=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result) result="$2"; shift 2;; --artifact) arts+=("$2"); shift 2;; *) die "unknown flag $1";;
+      esac
+    done
+    args=(result "$result")
+    for a in ${arts+"${arts[@]}"}; do args+=("artifacts[]" "$a"); done
+    api POST "/tasks/$id/complete" "$(json "${args[@]}")" | pretty ;;
+  block)
+    [ $# -ge 1 ] || die "usage: maestro-task block ID --reason ..."
+    id="$1"; shift; reason=""
+    while [ $# -gt 0 ]; do
+      case "$1" in --reason) reason="$2"; shift 2;; *) die "unknown flag $1";; esac
+    done
+    api POST "/tasks/$id/block" "$(json reason "$reason")" | pretty ;;
+  ''|-h|--help|help)
+    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command: $cmd (try --help)" ;;
+esac

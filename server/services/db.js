@@ -23,6 +23,13 @@ export const PROJECT_COLORS = [
   '#4f46e5', // Indigo
 ];
 
+// The raw handle, for modules that own their own tables (see tasks.js). Returns the
+// live connection rather than a copy so it is never used before initDb() has run.
+export function getDb() {
+  if (!db) throw new Error('database not initialised');
+  return db;
+}
+
 export async function initDb() {
   db = new Database(dbPath);
   db.pragma('foreign_keys = ON');
