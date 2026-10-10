@@ -158,8 +158,11 @@ if mode == "spawn":
           % (d.get("items"), d["maxWorkers"], d["itemsPerWorker"], d["perWorkerSeconds"]))
     print("  COST     floor %s   ceiling %s   swarm cap %s"
           % (usd(e.get("floorUsd")), usd(e.get("ceilingUsd")), usd(d["maxSpendUsd"])))
-    print("           %s for the first worker then %s each, before any work is done"
-          % (usd(e.get("coldStartUsd")), usd(e.get("spawnFloorEach"))))
+    print("           %s per worker before any work is done -- workers start concurrently"
+          % usd(e.get("coldStartUsd")))
+    print("           so they all pay the cold cache; %s is the best case if they ran"
+          % usd(e.get("warmFloorUsd")))
+    print("           back to back inside the ~5min cache TTL, which a swarm does not")
     for c in d.get("clamped") or []:
         print("  CLAMPED  %s" % c)
     for w in d.get("warnings") or []:

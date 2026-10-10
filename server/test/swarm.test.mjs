@@ -133,10 +133,17 @@ ok(code(() => S.admitWorker(sw2.id, { idx: 9 })) === 'DISABLED', 'nothing admits
 // ---- the estimate a human approves ----------------------------------------
 // Measured: $0.15 cold + 6 x $0.05 warm = $0.45, ceiling 7 x $0.40 = $2.80.
 const est = S.estimateSwarm({ workers: 7, perWorkerUsd: 0.4 });
-ok(est.floorUsd === 0.45 && est.ceilingUsd === 2.8,
+ok(est.floorUsd === 1.05 && est.ceilingUsd === 2.8,
    `7 workers: floor $${est.floorUsd} / ceiling $${est.ceilingUsd} shown separately`);
+ok(est.warmFloorUsd === 0.45,
+   'the warm best case is still reported, separately, rather than averaged in');
 ok(S.estimateSwarm({ workers: 1, perWorkerUsd: 0.4 }).floorUsd === 0.15,
-   'a single worker pays only the cold start');
+   'a single worker pays one cold start');
+// Observed, not modelled: 7 real workers cost $0.1396-$0.1708 each, so a 4-worker
+// swarm floor must land near $0.56. The old model said $0.30 and a $1 grant looked
+// like it bought three times the swarm it actually does.
+ok(S.estimateSwarm({ workers: 4, perWorkerUsd: 0.4 }).floorUsd === 0.6,
+   'a 4-worker swarm floor matches what 4 workers really cost, not the warm model');
 
 // ---- what the dashboard is allowed to show --------------------------------
 // Untested, this shipped broken: the filter worked and the client never passed it,

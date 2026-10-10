@@ -77,7 +77,7 @@ ok(r.body.global && r.body.global.enabled === true, 'GET / carries the global le
 const view = r.body.swarms[0];
 ok(view.ledger.spent === 0 && view.ledger.reserved === 0 && view.ledger.cap === 3,
    'spent, reserved and cap are three separate numbers');
-ok(view.estimate.floorUsd === 0.3 && view.estimate.ceilingUsd === 1.6,
+ok(view.estimate.floorUsd === 0.6 && view.estimate.ceilingUsd === 1.6,
    'the estimate carries floor and ceiling separately', JSON.stringify(view.estimate));
 ok(view.grant && view.grant.maxWorkers === 6, 'the grant rides along for the approval card');
 ok(view.spawner.name === 'lead', 'the spawner is named, not just its id');

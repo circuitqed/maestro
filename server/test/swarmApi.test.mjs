@@ -75,8 +75,8 @@ const A = r.body;
 ok(r.status === 200 && A.state === 'pending_approval', 'create lands in pending_approval', JSON.stringify(r.body));
 ok(A.maxWorkers === 4 && A.maxSpendUsd === 2.0, 'clamped to the grant', `${A.maxWorkers}/${A.maxSpendUsd}`);
 ok(A.clamped.length === 2, 'the clamps are reported back, not silent', JSON.stringify(A.clamped));
-ok(A.estimate.floorUsd === 0.30 && A.estimate.ceilingUsd === 1.60,
-   'estimate: 4 workers = $0.30 floor / $1.60 ceiling', JSON.stringify(A.estimate));
+ok(A.estimate.floorUsd === 0.60 && A.estimate.ceilingUsd === 1.60,
+   'estimate: 4 workers = $0.60 floor / $1.60 ceiling', JSON.stringify(A.estimate));
 ok(A.approvalRequired === true, 'the response says a human must approve');
 // 4 workers x 2 items cannot touch 40 items, and a lead that is not told so will
 // collate 8 answers as if they were the whole batch.

@@ -30,15 +30,21 @@ import { getDb, getSetting, setSetting } from './db.js';
 
 // Startup cost of a worker, MEASURED on this gateway, not estimated.
 //
-// It is not one number. Claude Code's system prompt is ~31k tokens, and this
-// gateway bills cache WRITES at the output rate ($5/M) but cache READS at
-// $0.21/M. So the first worker into a cold cache pays ~$0.15, and every worker
-// after it pays ~$0.05 (measured: three consecutive workers at exactly $0.0512
-// each, 9,376 written / 21,311 read).
+// Claude Code's system prompt is ~31k tokens, and this gateway bills cache WRITES
+// at the output rate ($5/M) but cache READS at $0.21/M. A worker that can read a
+// warm cache therefore costs ~$0.05 (measured: three CONSECUTIVE workers at
+// exactly $0.0512 each, 9,376 written / 21,311 read).
 //
-// The distinction matters because the spec was written against the cold number
-// and concluded 20 workers cost $3.80. The real figure is ~$1.12, which is the
-// difference between swarms being an extravagance and being ordinary.
+// That regime is not the one a swarm runs in. Workers launch concurrently, so they
+// race the same cold prefix and every one of them pays the write; and the cache
+// TTL is ~5 minutes, so even sequential swarms spaced further apart start cold.
+// Measured across every worker this system has actually run -- 7 of them, solo and
+// in parallel pairs, 19:25 through 20:57 -- the cost was $0.1396 to $0.1708 each.
+// Not one came in warm.
+//
+// So SPAWN_FLOOR_USD is the best case and COLD_START_USD is the planning number.
+// Budget estimates use the latter per worker: an estimate that a human approves
+// money against must not be able to come in low.
 export const COLD_START_USD = 0.15;
 export const SPAWN_FLOOR_USD = 0.05;
 
@@ -641,12 +647,18 @@ export function listWorkers(swarmId) {
 /** What the approval card shows. Floor is separate from ceiling on purpose: it is
  *  what makes one-worker-per-item visibly uneconomic before anyone approves it. */
 export function estimateSwarm({ workers, perWorkerUsd }) {
-  // One cold start, then warm ones: workers in a swarm run back to back against
-  // the same cached system prompt.
-  const floor = workers > 0 ? COLD_START_USD + (workers - 1) * SPAWN_FLOOR_USD : 0;
+  // Every worker pays a cold start. Workers launch concurrently, so they race the
+  // same cold prefix rather than queueing behind one warm one -- see COLD_START_USD.
+  // The old model here (one cold start, the rest warm) understated a 4-worker swarm
+  // by 2x, and it was the number printed to the agent sizing the swarm.
+  const floor = workers > 0 ? workers * COLD_START_USD : 0;
+  // What it would cost if the workers did run back to back inside the cache TTL.
+  // Reported separately so the gap stays visible instead of being averaged away.
+  const warmFloor = workers > 0 ? COLD_START_USD + (workers - 1) * SPAWN_FLOOR_USD : 0;
   return {
     workers,
     floorUsd: +floor.toFixed(2),
+    warmFloorUsd: +warmFloor.toFixed(2),
     ceilingUsd: +(workers * perWorkerUsd).toFixed(2),
     coldStartUsd: COLD_START_USD,
     spawnFloorEach: SPAWN_FLOOR_USD,
