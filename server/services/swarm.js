@@ -28,9 +28,19 @@
 import { randomUUID } from 'crypto';
 import { getDb, getSetting, setSetting } from './db.js';
 
-// Unavoidable startup cost of one worker, measured on this gateway. Used for
-// estimates shown to a human before approval, never for the ledger.
-export const SPAWN_FLOOR_USD = 0.19;
+// Startup cost of a worker, MEASURED on this gateway, not estimated.
+//
+// It is not one number. Claude Code's system prompt is ~31k tokens, and this
+// gateway bills cache WRITES at the output rate ($5/M) but cache READS at
+// $0.21/M. So the first worker into a cold cache pays ~$0.15, and every worker
+// after it pays ~$0.05 (measured: three consecutive workers at exactly $0.0512
+// each, 9,376 written / 21,311 read).
+//
+// The distinction matters because the spec was written against the cold number
+// and concluded 20 workers cost $3.80. The real figure is ~$1.12, which is the
+// difference between swarms being an extravagance and being ordinary.
+export const COLD_START_USD = 0.15;
+export const SPAWN_FLOOR_USD = 0.05;
 
 // Defaults. Every one is overridable per swarm (within the grant) or in settings.
 export const DEFAULTS = {
@@ -419,10 +429,14 @@ export function listWorkers(swarmId) {
 /** What the approval card shows. Floor is separate from ceiling on purpose: it is
  *  what makes one-worker-per-item visibly uneconomic before anyone approves it. */
 export function estimateSwarm({ workers, perWorkerUsd }) {
+  // One cold start, then warm ones: workers in a swarm run back to back against
+  // the same cached system prompt.
+  const floor = workers > 0 ? COLD_START_USD + (workers - 1) * SPAWN_FLOOR_USD : 0;
   return {
     workers,
-    floorUsd: +(workers * SPAWN_FLOOR_USD).toFixed(2),
+    floorUsd: +floor.toFixed(2),
     ceilingUsd: +(workers * perWorkerUsd).toFixed(2),
+    coldStartUsd: COLD_START_USD,
     spawnFloorEach: SPAWN_FLOOR_USD,
   };
 }

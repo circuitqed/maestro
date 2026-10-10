@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# One swarm worker: a headless, budget-capped, read-only `claude -p` run that
+# reports its result back to Maestro and then exits.
+#
+# Runs standalone -- no server required -- so the economics can be measured and
+# the brakes exercised before any spawning code exists:
+#
+#   maestro-worker --id test1 --budget 0.40 --timeout 480 \
+#     --account /home/dave/.claude-accts/stanford-api --model claude-opus-5-5 \
+#     --out /tmp/w1.json <<< 'What is 2+2? Reply with just the number.'
+#
+# Brakes, in the order they can save you:
+#   1. account assertion   -- refuses to run against a SUBSCRIPTION account (exit 4).
+#                             Nothing else here knows the difference between
+#                             spending metered dollars and spending Dave's Max plan.
+#   2. --max-budget-usd    -- the only brake verified to actually fire against this
+#                             gateway. Requires --print; `claude --help` says so
+#                             outright, which is why workers are headless.
+#   3. timeout --signal=INT -- budget bounds spend, not time. A worker wedged on a
+#                             stalled socket burns no tokens, so brake 2 never fires
+#                             while it holds a concurrency slot forever.
+#   4. depth env           -- a worker may not spawn workers.
+set -uo pipefail
+
+ID=""; BUDGET="0.40"; TIMEOUT="480"; ACCOUNT=""; MODEL=""; OUT=""
+REPORT_URL="${MAESTRO_URL:-}"; TOKEN=""; PROFILE="read-only"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --id) ID="$2"; shift 2;;
+    --budget) BUDGET="$2"; shift 2;;
+    --timeout) TIMEOUT="$2"; shift 2;;
+    --account) ACCOUNT="$2"; shift 2;;
+    --model) MODEL="$2"; shift 2;;
+    --out) OUT="$2"; shift 2;;
+    --report-url) REPORT_URL="$2"; shift 2;;
+    --report-token) TOKEN="$2"; shift 2;;
+    --profile) PROFILE="$2"; shift 2;;
+    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+    *) echo "unknown flag $1" >&2; exit 2;;
+  esac
+done
+[ -n "$ID" ] || { echo "--id is required" >&2; exit 2; }
+[ -n "$ACCOUNT" ] || { echo "--account is required" >&2; exit 2; }
+
+# ---- brake 1: never bill a subscription ------------------------------------
+# A swarm exists to spend metered dollars deliberately. Pointed at ~/.claude it
+# would silently consume Dave's Max plan instead, which no downstream brake can
+# detect, so this is checked before anything else and is fatal.
+case "$ACCOUNT" in
+  */.claude|"$HOME/.claude") echo "refusing: $ACCOUNT is the default subscription account" >&2; exit 4;;
+esac
+[ -d "$ACCOUNT" ] || { echo "refusing: no such account dir $ACCOUNT" >&2; exit 4; }
+if ! grep -q 'ANTHROPIC_AUTH_TOKEN\|CLAUDE_CODE_USE_BEDROCK' "$ACCOUNT/settings.json" 2>/dev/null; then
+  echo "refusing: $ACCOUNT has no metered credential (expected an API token or Bedrock)" >&2
+  exit 4
+fi
+
+PROMPT="$(cat)"
+[ -n "$PROMPT" ] || { echo "empty prompt on stdin" >&2; exit 2; }
+
+# ---- tool profile ----------------------------------------------------------
+# v1 is analysis only. Deny the write surface explicitly rather than allow-listing
+# reads: an allow-list silently loses capability each time a tool is renamed,
+# whereas a deny-list fails visibly if something slips through.
+case "$PROFILE" in
+  read-only) TOOLFLAGS=(--disallowed-tools "Write" "Edit" "NotebookEdit");;
+  unrestricted) TOOLFLAGS=();;
+  *) echo "unknown profile $PROFILE" >&2; exit 2;;
+esac
+
+CLAUDE="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
+[ -x "$CLAUDE" ] || CLAUDE="$(command -v claude)" || { echo "no claude binary" >&2; exit 2; }
+
+RAW="$(mktemp)"; ERRF="$(mktemp)"
+trap 'rm -f "$RAW" "$ERRF"' EXIT
+
+started=$(date +%s)
+# SIGINT, not SIGKILL: claude flushes its JSON result on interrupt, so a timed-out
+# worker still reports partial work and its cost instead of vanishing.
+timeout --signal=INT "$TIMEOUT" \
+  env CLAUDE_CONFIG_DIR="$ACCOUNT" \
+      CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1 \
+      CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=2 \
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS="${WORKER_MAX_OUTPUT_TOKENS:-16000}" \
+      ${DISABLE_PROMPT_CACHING_OPUS:+DISABLE_PROMPT_CACHING_OPUS="$DISABLE_PROMPT_CACHING_OPUS"} \
+  "$CLAUDE" --print --output-format json \
+      --max-budget-usd "$BUDGET" \
+      ${MODEL:+--model "$MODEL"} \
+      "${TOOLFLAGS[@]}" \
+      --dangerously-skip-permissions \
+      <<<"$PROMPT" >"$RAW" 2>"$ERRF"
+rc=$?
+elapsed=$(( $(date +%s) - started ))
+
+# ---- classify --------------------------------------------------------------
+# The gateway refusing on budget is NOT transient: LiteLLM tags it
+# rate_limit_type=BUDGET at HTTP 429, so retrying hammers a dead key forever.
+# Exit 3 is the signal for the caller to trip the global kill switch.
+if grep -qi 'Budget has been exceeded' "$ERRF" "$RAW" 2>/dev/null; then
+  echo "gateway budget exhausted" >&2
+  state=failed; reason=gateway_budget_exceeded; gateway_dead=1
+elif [ "$rc" -eq 124 ] || [ "$rc" -eq 130 ]; then
+  state=timeout; reason=wall_clock; gateway_dead=0
+elif [ "$rc" -ne 0 ]; then
+  state=failed; reason="exit_$rc"; gateway_dead=0
+else
+  state=done; reason=completed; gateway_dead=0
+fi
+
+REPORT="$(ID="$ID" STATE="$state" REASON="$reason" ELAPSED="$elapsed" RC="$rc" \
+  python3 - "$RAW" "$ERRF" <<'PY'
+import json, os, sys, re
+raw, errf = sys.argv[1], sys.argv[2]
+out = {
+    "worker_id": os.environ["ID"], "state": os.environ["STATE"],
+    "terminal_reason": os.environ["REASON"], "elapsed_s": int(os.environ["ELAPSED"]),
+    "exit_code": int(os.environ["RC"]),
+}
+try:
+    d = json.load(open(raw))
+except Exception:
+    d = {}
+if isinstance(d, dict):
+    out["result"] = d.get("result") or d.get("text")
+    out["cost_usd"] = d.get("total_cost_usd")
+    out["claude_session_id"] = d.get("session_id")
+    # claude reports its own stop reason; prefer it over our exit-code guess
+    # Measured against claude 2.1.x: the budget stop surfaces as
+    # subtype="error_max_budget_usd" with is_error=true. Guessed names like
+    # "budget_exhausted" never match, and the run then reports as a generic
+    # failure -- which in the UI reads as a bug rather than a brake working.
+    if str(d.get("subtype", "")).startswith("error_max_budget"):
+        out["state"] = "over_budget"; out["terminal_reason"] = "budget_exhausted"
+    u = d.get("usage") or {}
+    out["tokens"] = {k: u.get(k) for k in ("input_tokens","output_tokens",
+                                           "cache_creation_input_tokens","cache_read_input_tokens") if k in u}
+err = ""
+try: err = open(errf).read()[-800:]
+except Exception: pass
+if out["state"] != "done" and err:
+    out["error"] = err.strip()[:800]
+    # Group correlated failures: 20 near-identical prompts fail in the same way,
+    # and the UI dedupes on this so one row replaces twenty.
+    sig = re.sub(r'[0-9a-f]{8,}|/[^\s]+|\d+', '', err).strip()[:120]
+    out["error_signature"] = sig or None
+print(json.dumps(out))
+PY
+)"
+
+[ -n "$OUT" ] && printf '%s\n' "$REPORT" > "$OUT"
+
+# ---- report, with backoff ---------------------------------------------------
+# Maestro may be restarting. The result is already on disk, so retries are about
+# getting it home, not about re-running work.
+if [ -n "$REPORT_URL" ] && [ -n "$TOKEN" ]; then
+  for delay in 1 3 8 20 60; do
+    if curl -sS -m 20 -X POST "$REPORT_URL/api/swarm-report" \
+         -H 'Content-Type: application/json' \
+         -H "X-Maestro-Worker-Token: $TOKEN" \
+         -d "$REPORT" >/dev/null 2>&1; then
+      break
+    fi
+    sleep "$delay"
+  done
+fi
+
+printf '%s\n' "$REPORT"
+[ "${gateway_dead:-0}" -eq 1 ] && exit 3
+[ "$state" = "done" ] && exit 0
+exit 1

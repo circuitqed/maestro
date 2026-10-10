@@ -131,9 +131,12 @@ ok(S.getSwarm(sw.id).state === 'halted', 'kill switch halts running swarms');
 ok(code(() => S.admitWorker(sw2.id, { idx: 9 })) === 'DISABLED', 'nothing admits after the kill switch');
 
 // ---- the estimate a human approves ----------------------------------------
+// Measured: $0.15 cold + 6 x $0.05 warm = $0.45, ceiling 7 x $0.40 = $2.80.
 const est = S.estimateSwarm({ workers: 7, perWorkerUsd: 0.4 });
-ok(est.floorUsd === 1.33 && est.ceilingUsd === 2.8,
+ok(est.floorUsd === 0.45 && est.ceilingUsd === 2.8,
    `7 workers: floor $${est.floorUsd} / ceiling $${est.ceilingUsd} shown separately`);
+ok(S.estimateSwarm({ workers: 1, perWorkerUsd: 0.4 }).floorUsd === 0.15,
+   'a single worker pays only the cold start');
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n  ${pass} passed, ${fail} failed`);
