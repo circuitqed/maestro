@@ -583,6 +583,13 @@ export function AppProvider({ children }) {
   const approveSwarm = useCallback((id, opts) => swarmAction(id, '/approve', opts), [swarmAction]);
   const pauseSwarm = useCallback((id, paused) => swarmAction(id, '/pause', { paused }), [swarmAction]);
   const cancelSwarm = useCallback((id) => swarmAction(id, '/cancel'), [swarmAction]);
+  // One stuck worker should not cost you the whole swarm. The server route has
+  // always existed; nothing in the UI reached it, so the only kill available was
+  // "Cancel all".
+  const killWorker = useCallback(
+    (id, workerId) => swarmAction(id, `/workers/${workerId}/kill`),
+    [swarmAction],
+  );
   const setSwarmConcurrency = useCallback((id, n) => swarmAction(id, '/concurrency', { n }), [swarmAction]);
 
   /**
@@ -687,6 +694,7 @@ export function AppProvider({ children }) {
     approveSwarm,
     pauseSwarm,
     cancelSwarm,
+    killWorker,
     setSwarmConcurrency,
     fetchSwarm,
     swarmAuths,

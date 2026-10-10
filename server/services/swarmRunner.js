@@ -32,6 +32,7 @@ import { getTmuxSessions, killSession } from './tmux.js';
 import {
   admitWorker, finishWorker, getSwarm, haltSwarm, listSwarms, listWorkers,
   logSwarmEvent, swarmLedger, TERMINAL_WORKER_STATES,
+  authorizationsToAnnounce, markAuthorizationAnnounced,
   getWorker} from './swarm.js';
 import { launchWorker, sessionNameFor } from './swarmLaunch.js';
 import { deliverWhenSafe, observeIdle } from './inject.js';
@@ -344,12 +345,28 @@ export async function reapHalted() {
  * machine was asleep); the grace period keeps us from racing its own report, which
  * carries the cost figure this one cannot.
  */
+/**
+ * Kill workers that have outlived their deadline.
+ *
+ * Both sides of the comparison are CAST to INTEGER, and that is load-bearing, not
+ * tidiness. strftime('%s', ...) returns TEXT. Adding the grace period coerces only
+ * the left side to a number, and SQLite sorts every number before every string
+ * regardless of value -- so `strftime(...) + 30 < strftime('%s','now')` is
+ * unconditionally TRUE and this function killed every live worker on the first tick
+ * that saw it.
+ *
+ * It survived testing because the trivial prompts used to exercise the pipeline
+ * finish in ~3s, inside the 5s tick, and so were already `done` before the reaper
+ * looked. Only workers doing real work lived long enough to be killed, which made
+ * it look like real tasks were broken and the harness was fine.
+ */
 export async function reapDeadlines() {
   const rows = getDb().prepare(
     `SELECT id, swarm_id, session_name FROM swarm_workers
       WHERE state IN (${holes(LIVE.length)})
         AND deadline_at IS NOT NULL
-        AND strftime('%s', deadline_at) + ? < strftime('%s','now')`
+        AND CAST(strftime('%s', deadline_at) AS INTEGER) + ?
+            < CAST(strftime('%s','now') AS INTEGER)`
   ).all(...LIVE, DEADLINE_GRACE_S);
 
   for (const w of rows) {
@@ -579,6 +596,55 @@ async function notifySpawners() {
   }
 }
 
+/**
+ * Tell an agent what a human decided about its spend-envelope request.
+ *
+ * Without this, approving is silent: the row flips to `approved` and the agent that
+ * asked goes on waiting on a person who has already answered. Denials matter more
+ * than approvals here -- an agent that is never told "no" waits forever, where one
+ * that is never told "yes" at least retries eventually.
+ *
+ * The text is Maestro's own, and deliberately does NOT quote the request's `reason`
+ * back. That field is agent-written, and the whole point of the shell-provider guard
+ * below is that text arriving in a pane can be executed; re-emitting agent-supplied
+ * text through this path would hand it a way to write its own delivery.
+ */
+async function announceAuthorizations() {
+  for (const a of authorizationsToAnnounce()) {
+    const agent = getAgent(a.agent_id);
+    if (!agent || !agent.screen_session) {
+      // Nothing can ever deliver this. Mark it, or it is retried every 5s forever.
+      markAuthorizationAnnounced(a.id);
+      continue;
+    }
+    // Same rule as the swarm summary: a `shell` agent's pane is a bash prompt, so
+    // pasted text is executed rather than read.
+    const provider = (agent.config && agent.config.provider) || 'claude';
+    if (provider === 'shell') {
+      markAuthorizationAnnounced(a.id);
+      continue;
+    }
+    const text = a.state === 'approved'
+      ? `[maestro] Your spend envelope was approved: $${Number(a.requested_usd).toFixed(2)} `
+        + `until ${a.expires_at} UTC. Swarms whose ceiling fits inside it now start `
+        + `without a further approval. Check remaining budget with: maestro-swarm list`
+      : `[maestro] Your spend envelope request was ${a.state}. No swarm will start. `
+        + `Do not retry the request automatically -- ask your human first.`;
+
+    const host = agent.host_id ? getHost(agent.host_id) : null;
+    let out;
+    try {
+      out = await deliverWhenSafe(agent, text, { host, scope: SCOPE });
+    } catch (err) {
+      console.error(`[swarm] announce ${a.id}: ${describeHostError(err, host)}`);
+      continue; // unreachable host: leave unannounced and try again next tick
+    }
+    // `busy` and `prompt` are not failures -- deliverWhenSafe is waiting for the
+    // agent to be between turns. Only a sent message closes this out.
+    if (out.sent) markAuthorizationAnnounced(a.id);
+  }
+}
+
 function summaryText(swarm) {
   const workers = listWorkers(swarm.id);
   const led = swarmLedger(swarm.id);
@@ -623,6 +689,7 @@ export async function tick() {
     await fillSwarms();
     closeFinished();
     await notifySpawners();
+    await announceAuthorizations();
   } catch (err) {
     console.error('[swarm] tick:', err.message);
   } finally {

@@ -162,6 +162,36 @@ ok(reaped.state === 'timeout' && reaped.terminal_reason === 'deadline_exceeded',
    'a worker past its deadline is killed and marked timeout', JSON.stringify(reaped));
 ok(!sessions().has(wedged.session_name), 'its tmux session is gone');
 
+// ---- a deadline in the FUTURE must be left alone ---------------------------
+// The case above only ever set a deadline in the past, so it passed even while
+// reapDeadlines was killing everything: strftime('%s',...) returns TEXT, the grace
+// addition made the left side an INTEGER, and SQLite sorts all numbers before all
+// strings -- so the predicate was unconditionally true. Trivial workers finished
+// inside one 5s tick and never noticed; real ones were killed seconds after launch
+// and reported as "deadline_exceeded", which blamed the clock for a bug.
+//
+// Written in the ISO-8601 form launchWorker actually stores (with T and Z), not the
+// SQLite format the old test used -- the mismatch between those two is what hid it.
+const fut = S.createSwarm({
+  name: 'future deadline', spawnerAgentId: 1, items: ['z'],
+  maxWorkers: 1, maxSpendUsd: 0.5, perWorkerUsd: 0.4, perWorkerSeconds: 600, itemsPerWorker: 1,
+});
+S.approveSwarm(fut.id);
+R.addSwarmItems(fut.id, ['a long but healthy item']);
+stubSleeps(120);
+await R.fillSwarms();
+const healthy = S.listWorkers(fut.id)[0];
+ok(sessions().has(healthy.session_name), 'the healthy worker is running');
+dbMod.getDb().prepare('UPDATE swarm_workers SET deadline_at = ? WHERE id = ?')
+  .run(new Date(Date.now() + 600_000).toISOString(), healthy.id);
+await R.reapDeadlines();
+ok(S.getWorker(healthy.id).state === 'running',
+   'a worker 10 minutes from its deadline is NOT reaped',
+   JSON.stringify({ state: S.getWorker(healthy.id).state, deadline: S.getWorker(healthy.id).deadline_at }));
+ok(sessions().has(healthy.session_name), 'and its session is still alive');
+S.haltSwarm(fut.id, 'test cleanup');
+await R.reapHalted();
+
 // ---- halting kills live workers -------------------------------------------
 const hl = S.createSwarm({
   name: 'halt check', spawnerAgentId: 1, items: ['y'],

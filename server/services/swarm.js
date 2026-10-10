@@ -154,6 +154,11 @@ export function initSwarmTables() {
   // amount instead, and only an unusually large ask escalates. 0 means always ask.
   try { db.exec('ALTER TABLE swarms ADD COLUMN authorization_id TEXT'); }
   catch { /* already there */ }
+  // When the agent was told the decision. A decision it never hears about leaves it
+  // waiting on a human who has already answered -- so this is tracked separately
+  // from decided_at, which only records that a human clicked.
+  try { db.exec('ALTER TABLE swarm_authorizations ADD COLUMN announced_at DATETIME'); }
+  catch { /* already there */ }
 
   for (const [k, v] of Object.entries(SETTING_DEFAULTS)) {
     if (getSetting(k) === null || getSetting(k) === undefined) setSetting(k, v);
@@ -303,6 +308,31 @@ export function decideAuthorization(id, approved, { usd, hours } = {}) {
   vals.push(id);
   getDb().prepare(`UPDATE swarm_authorizations SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
   return getAuthorization(id);
+}
+
+/**
+ * Decisions the requesting agent has not been told about yet.
+ *
+ * Deliberately includes denials and revocations, not just approvals: an agent that
+ * is never told "no" waits exactly as long as one that is never told "yes", and in
+ * the denial case it waits forever.
+ *
+ * Bounded to recent decisions so that enabling this does not announce a backlog of
+ * long-settled rows into an agent's pane the first time the runner ticks.
+ */
+export function authorizationsToAnnounce({ withinHours = 24 } = {}) {
+  return getDb().prepare(
+    `SELECT * FROM swarm_authorizations
+      WHERE announced_at IS NULL
+        AND state IN ('approved','denied','revoked')
+        AND decided_at IS NOT NULL
+        AND decided_at >= datetime('now', ?)
+      ORDER BY decided_at`,
+  ).all(`-${Math.max(1, Math.round(withinHours))} hours`).map(withSpend);
+}
+
+export function markAuthorizationAnnounced(id) {
+  getDb().prepare('UPDATE swarm_authorizations SET announced_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
 }
 
 export function revokeAuthorization(id, reason = 'revoked') {

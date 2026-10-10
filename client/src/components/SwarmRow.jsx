@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { ago, money, swarmLook } from '../lib/swarmFormat';
 
@@ -15,7 +15,10 @@ import { ago, money, swarmLook } from '../lib/swarmFormat';
  * anything waiting on me.
  */
 function SwarmRow({ swarm, nested = false }) {
-  const { openSwarm, activeSwarm } = useApp();
+  const { openSwarm, activeSwarm, cancelSwarm } = useApp();
+  // Two-step, because this spends nothing but throws away work already paid for.
+  const [confirming, setConfirming] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const look = swarmLook(swarm);
   const l = swarm.ledger || {};
   const c = swarm.counts || {};
@@ -33,13 +36,22 @@ function SwarmRow({ swarm, nested = false }) {
     'Spawning stops when spent + reserved reaches the cap, which is before the cap has actually been spent.',
   ].join('\n');
 
+  // A live swarm is spending money every second it runs, so stopping it must not
+  // require finding and opening its panel first. The row is the place you are when
+  // you notice. (The panel keeps the finer controls -- pause, concurrency, killing
+  // one worker -- because those are decisions you make after looking.)
+  const stoppable = !swarm.finished;
+
   return (
+    <div
+      className={`w-full flex items-center rounded-lg transition-colors ${
+        selected ? 'bg-indigo-500/15 ring-1 ring-indigo-500/40' : 'bg-gray-700/50 hover:bg-gray-700'
+      }`}
+    >
     <button
       type="button"
       onClick={() => openSwarm(swarm.id)}
-      className={`w-full text-left flex items-center gap-3 py-2 px-3 rounded-lg transition-colors ${
-        selected ? 'bg-indigo-500/15 ring-1 ring-indigo-500/40' : 'bg-gray-700/50 hover:bg-gray-700'
-      }`}
+      className="flex-1 min-w-0 text-left flex items-center gap-3 py-2 pl-3 pr-1 bg-transparent"
     >
       {/* State indicator */}
       <span
@@ -127,6 +139,45 @@ function SwarmRow({ swarm, nested = false }) {
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
       </svg>
     </button>
+
+      {stoppable && (
+        <div className="flex-shrink-0 pr-2 pl-1">
+          {confirming ? (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                disabled={stopping}
+                onClick={async () => {
+                  setStopping(true);
+                  try { await cancelSwarm(swarm.id); } finally { setStopping(false); setConfirming(false); }
+                }}
+                className="rounded bg-red-600 px-2 py-0.5 text-[11px] font-medium text-white
+                           hover:bg-red-500 disabled:opacity-50"
+              >
+                {stopping ? 'Stopping…' : 'Confirm'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirming(false)}
+                className="rounded px-1.5 py-0.5 text-[11px] text-gray-400 hover:text-gray-200"
+              >
+                No
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirming(true)}
+              className="rounded px-2 py-0.5 text-[11px] text-red-300/70
+                         hover:bg-red-500/15 hover:text-red-200"
+              title="Stop this swarm — kills every live worker and refunds their reservations"
+            >
+              Stop
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

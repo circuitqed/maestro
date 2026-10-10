@@ -119,7 +119,8 @@ const stalledStmt = () => getDb().prepare(`
      AND (
        (state = 'running'
           AND deadline_at IS NOT NULL
-          AND strftime('%s', deadline_at) < strftime('%s','now'))
+          AND CAST(strftime('%s', deadline_at) AS INTEGER)
+              < CAST(strftime('%s','now') AS INTEGER))
        OR (state IN ('admitted','launching')
           AND strftime('%s','now') - strftime('%s', created_at) > @graceS)
      )`);

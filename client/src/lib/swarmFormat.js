@@ -34,6 +34,15 @@ const UNKNOWN_WORKER = { icon: '?', label: 'unknown', text: 'text-gray-400', chi
 export const workerLook = (state) => WORKER_LOOK[state] || UNKNOWN_WORKER;
 
 /**
+ * Worker states that are over. Mirrors TERMINAL_WORKER_STATES in server/services/
+ * swarm.js -- the server is authoritative, this copy exists so the UI can decide
+ * whether to offer a Kill button without a round trip. An unknown state is treated
+ * as LIVE: offering a kill on something already finished is harmless, whereas
+ * hiding it on something still running is the failure that matters.
+ */
+export const TERMINAL_WORKER = new Set(['done', 'failed', 'timeout', 'over_budget', 'cancelled']);
+
+/**
  * Attention is NOT a state -- it is why this worker is in the NEEDS YOU band. Only
  * `stalled` has no corresponding state: a worker wedged before launch, or one past
  * its deadline that the runner has not reaped yet, still reads as alive everywhere

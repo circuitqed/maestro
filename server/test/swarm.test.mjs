@@ -175,6 +175,32 @@ ok(!names({ activeOnly: true, graceSeconds: 0 }).includes('just-finished'),
 ok(names({}).includes('long-finished'),
    'history keeps every swarm -- activeOnly is a view, not a prune');
 
+// ---- telling the agent what was decided ------------------------------------
+// Approving used to be silent: the row flipped and the agent that asked went on
+// waiting on a human who had already answered.
+const aPend = S.requestAuthorization(1, { usd: 5, hours: 8, reason: 'pilot' });
+ok(S.authorizationsToAnnounce().length === 0, 'an undecided request is not announced');
+S.decideAuthorization(aPend.id, true, { usd: 2, hours: 4 });
+const toSay = S.authorizationsToAnnounce();
+ok(toSay.length === 1 && toSay[0].id === aPend.id, 'an approval is queued for the agent');
+ok(Number(toSay[0].requested_usd) === 2,
+   'the queued figure is what the human approved, not what the agent asked for');
+S.markAuthorizationAnnounced(aPend.id);
+ok(S.authorizationsToAnnounce().length === 0, 'announcing once does not repeat every tick');
+
+// A denial has to reach the agent too -- an agent never told "no" waits forever,
+// where one never told "yes" at least retries.
+const aDeny = S.requestAuthorization(2, { usd: 3, hours: 2, reason: 'nope' });
+S.decideAuthorization(aDeny.id, false);
+ok(S.authorizationsToAnnounce().some((x) => x.id === aDeny.id && x.state === 'denied'),
+   'a denial is queued for the agent, not only an approval');
+
+// Enabling this must not dump a backlog of long-settled rows into a pane.
+dbMod.getDb().prepare("UPDATE swarm_authorizations SET decided_at=datetime('now','-3 days') WHERE id=?")
+  .run(aDeny.id);
+ok(!S.authorizationsToAnnounce().some((x) => x.id === aDeny.id),
+   'decisions older than the window are not announced');
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

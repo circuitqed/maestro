@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { ago, attentionLook, money, remaining, secs, swarmLook, workerLook } from '../lib/swarmFormat';
+import {
+  ago, attentionLook, money, remaining, secs, swarmLook, workerLook, TERMINAL_WORKER as TERMINAL,
+} from '../lib/swarmFormat';
 
 const POLL_MS = 2000;
 // Two missed polls. Below that the label would flicker between fresh and stale on
@@ -90,7 +92,7 @@ function WorkerChip({ state }) {
  * on screen are money and a human will act on them.
  */
 function SwarmPanel({ swarmId, onClose }) {
-  const { fetchSwarm, pauseSwarm, cancelSwarm, setSwarmConcurrency, openTerminal } = useApp();
+  const { fetchSwarm, pauseSwarm, cancelSwarm, setSwarmConcurrency, openTerminal, killWorker } = useApp();
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [fetchedAt, setFetchedAt] = useState(null);
@@ -420,16 +422,32 @@ function SwarmPanel({ swarmId, onClose }) {
                         {w.errorSignature || w.terminalReason || (w.resultChars ? `${w.resultChars} chars` : '')}
                       </td>
                       <td className="px-2 py-1.5">
-                        {w.session ? (
-                          <button
-                            type="button"
-                            onClick={() => openTerminal(w.session, null)}
-                            className="font-mono text-gray-400 hover:text-white truncate max-w-[12rem]"
-                            title={`Attach to ${w.session}`}
-                          >
-                            {w.session}
-                          </button>
-                        ) : <span className="text-gray-600">—</span>}
+                        <div className="flex items-center gap-2">
+                          {w.session ? (
+                            <button
+                              type="button"
+                              onClick={() => openTerminal(w.session, null)}
+                              className="font-mono text-gray-400 hover:text-white truncate max-w-[10rem]"
+                              title={`Attach to ${w.session}`}
+                            >
+                              {w.session}
+                            </button>
+                          ) : <span className="text-gray-600">—</span>}
+                          {/* Only live workers can be killed. A finished one has already
+                              released its slot and its reservation, so a button there
+                              would do nothing but look like it had. */}
+                          {!TERMINAL.has(w.state) && (
+                            <button
+                              type="button"
+                              onClick={() => act(() => killWorker(data.id, w.id))}
+                              className="ml-auto flex-shrink-0 rounded px-1.5 py-0.5 text-[11px]
+                                         text-red-300/80 hover:bg-red-500/15 hover:text-red-200"
+                              title="Kill this worker — the rest of the swarm continues"
+                            >
+                              Kill
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
