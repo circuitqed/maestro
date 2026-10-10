@@ -14,7 +14,7 @@ import { ago, money, swarmLook } from '../lib/swarmFormat';
  * What the row owes you is the decision: is this costing more than it should, and is
  * anything waiting on me.
  */
-function SwarmRow({ swarm }) {
+function SwarmRow({ swarm, nested = false }) {
   const { openSwarm, activeSwarm } = useApp();
   const look = swarmLook(swarm);
   const l = swarm.ledger || {};
@@ -103,7 +103,7 @@ function SwarmRow({ swarm }) {
             </>
           )}
           <span className="text-gray-600"> · </span>
-          <span>{swarm.spawner ? swarm.spawner.name : 'unknown'}</span>
+          <span>{nested ? 'swarm' : (swarm.spawner ? swarm.spawner.name : 'unknown')}</span>
           {swarm.finished && swarm.finishedAgoS !== null && (
             <>
               <span className="text-gray-600"> · </span>

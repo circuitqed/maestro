@@ -32,7 +32,7 @@ import { getTmuxSessions, killSession } from './tmux.js';
 import {
   admitWorker, finishWorker, getSwarm, haltSwarm, listSwarms, listWorkers,
   logSwarmEvent, swarmLedger, TERMINAL_WORKER_STATES,
-} from './swarm.js';
+  getWorker} from './swarm.js';
 import { launchWorker, sessionNameFor } from './swarmLaunch.js';
 import { deliverWhenSafe, observeIdle } from './inject.js';
 
@@ -210,6 +210,39 @@ function secondsSince(ts) {
   if (!ts) return Infinity;
   const row = getDb().prepare("SELECT strftime('%s','now') - strftime('%s', ?) AS s").get(ts);
   return row && row.s != null ? Number(row.s) : Infinity;
+}
+
+/**
+ * Stop live workers now, and mark them so their slots and reservations are freed.
+ *
+ * Cancelling a swarm used to halt admissions and leave running workers alone --
+ * the response literally said "N worker(s) still finishing". A person who presses
+ * cancel is trying to stop spending money, so the one thing it must do is the one
+ * thing it did not.
+ */
+export async function killSwarmWorkers(swarmId, reason = 'cancelled') {
+  const live = getDb().prepare(
+    `SELECT * FROM swarm_workers WHERE swarm_id = ? AND state IN (${holes(LIVE.length)})`
+  ).all(swarmId, ...LIVE);
+  for (const w of live) {
+    await killWorkerSession(w);
+    finishWorker(w.id, { state: 'cancelled', terminalReason: reason });
+    logSwarmEvent(swarmId, 'worker_killed', `${w.session_name || '(not launched)'}: ${reason}`, w.id);
+  }
+  syncItemStates();
+  return live.length;
+}
+
+/** One worker, by id. Same teardown, so the ledger stays consistent either way. */
+export async function killOneWorker(workerId, reason = 'killed by a user') {
+  const w = getWorker(workerId);
+  if (!w) return null;
+  if (TERMINAL_WORKER_STATES.includes(w.state)) return w;
+  await killWorkerSession(w);
+  const out = finishWorker(w.id, { state: 'cancelled', terminalReason: reason });
+  logSwarmEvent(w.swarm_id, 'worker_killed', `${w.session_name || '(not launched)'}: ${reason}`, w.id);
+  syncItemStates();
+  return out;
 }
 
 async function killWorkerSession(w) {

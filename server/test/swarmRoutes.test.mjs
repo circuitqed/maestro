@@ -25,6 +25,9 @@ dbMod.getDb().exec(`
 
 const S = await import('../services/swarm.js');
 S.initSwarmTables();
+// Production inits both: swarm.js owns the money tables, swarmRunner the work
+// queue. Without the second, anything that touches items 500s in here only.
+(await import('../services/swarmRunner.js')).initSwarmItems();
 dbMod.setSetting('swarm_enabled', '1');
 S.grantSwarm(1, { maxWorkers: 6, maxSpendUsd: 4.0, accountDir: '/home/dave/.claude-accts/stanford-api' });
 
@@ -146,9 +149,13 @@ ok(r.body.paused === true, 'pause is reflected back immediately');
 r = await call('POST', `/api/swarms/${a.id}/cancel`);
 ok(r.body.state === 'cancelled' && /cancelled by dave/.test(r.body.haltReason),
    'cancel records WHO, and narrows halted to cancelled');
-ok(S.getWorker(w2.id).state === 'running',
-   'cancelling does NOT mark live workers dead: only the runner may kill a billing process');
-ok(r.body.note.includes('1 worker'), 'the answer says how many are still finishing');
+// Changed deliberately. Cancel used to halt admissions and leave live workers
+// running -- the response said "1 worker(s) still finishing" while that worker
+// kept billing. A person pressing cancel is trying to stop spending, so cancel
+// now kills what is live and frees its slot and reservation.
+ok(S.getWorker(w2.id).state === 'cancelled',
+   'cancelling kills live workers rather than leaving them billing');
+ok(r.body.note.includes('killed'), 'the answer says how many were killed', r.body.note);
 
 r = await call('POST', `/api/swarms/${a.id}/cancel`);
 ok(r.status === 200 && r.body.alreadyFinished === true, 'cancelling twice is idempotent');

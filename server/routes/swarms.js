@@ -25,7 +25,7 @@ import {
   revokeSwarmGrant, setSwarmPaused, swarmLedger,
   pendingAuthorizations, listAuthorizations, decideAuthorization, revokeAuthorization,
 } from '../services/swarm.js';
-import { swarmItemStats } from '../services/swarmRunner.js';
+import { swarmItemStats, killSwarmWorkers, killOneWorker} from '../services/swarmRunner.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -433,7 +433,7 @@ router.post('/:id/pause', (req, res) => {
  * while the processes kept spending would make the ledger lie in the one direction
  * that matters.
  */
-router.post('/:id/cancel', (req, res) => {
+router.post('/:id/cancel', async (req, res) => {
   try {
     const s = namedSwarm(req, res);
     if (!s) return;
@@ -450,17 +450,37 @@ router.post('/:id/cancel', (req, res) => {
     // agent-facing cancel route.
     haltSwarm(s.id, denied ? `denied by ${who}` : `cancelled by ${who}`);
     getDb().prepare("UPDATE swarms SET state = 'cancelled' WHERE id = ? AND state = 'halted'").run(s.id);
+    // Halting only stops NEW workers. Someone pressing cancel is trying to stop
+    // spending, so the live ones must die too -- otherwise a cancelled swarm keeps
+    // billing while the UI cheerfully calls it "still finishing".
+    const killed = await killSwarmWorkers(s.id, `cancelled by ${who}`);
 
     const counts = countsBySwarm();
     const view = swarmView(getSwarm(s.id), counts[s.id], isAdmin(req));
     res.json({
       ...view,
-      note: view.ledger.live
-        ? `${view.ledger.live} worker(s) still finishing; no new ones will start`
-        : 'no workers were live',
+      note: killed ? `${killed} running worker(s) killed` : 'no workers were live',
     });
   } catch (err) { fail(res, err); }
 });
+/**
+ * Kill one worker. Separate from cancelling the swarm because the common case is a
+ * single wedged worker holding a concurrency slot while the rest of the batch is
+ * fine -- killing the whole swarm to clear it would throw away good work.
+ */
+router.post('/:id/workers/:workerId/kill', async (req, res) => {
+  try {
+    const s = namedSwarm(req, res);
+    if (!s) return;
+    const who = req.user?.username || 'a user';
+    const w = await killOneWorker(req.params.workerId, `killed by ${who}`);
+    if (!w) return res.status(404).json({ error: 'unknown worker' });
+    if (w.swarm_id !== s.id) return res.status(400).json({ error: 'worker is not in this swarm' });
+    const counts = countsBySwarm();
+    res.json({ worker: w, swarm: swarmView(getSwarm(s.id), counts[s.id], isAdmin(req)) });
+  } catch (err) { fail(res, err); }
+});
+
 
 /** How many of this swarm's workers may run at once. The cheapest brake there is. */
 router.post('/:id/concurrency', (req, res) => {

@@ -165,13 +165,27 @@ function Dashboard() {
   // A finished swarm stays on screen for a while: its results are read from the panel
   // this row opens, and a swarm that vanishes the second it completes takes them with
   // it. Server-computed seconds, never a parsed timestamp (see swarmFormat.js).
-  const SWARM_LINGER_S = 15 * 60;
+  // Two minutes, not fifteen: fifteen reads as "it will not go away", which is how
+  // it was reported. A COMPLETED swarm lingers briefly because its results are read
+  // from the panel this row opens. A CANCELLED one does not linger at all -- there
+  // is nothing to read, and leaving it in Active makes the button look broken.
+  const SWARM_LINGER_S = 2 * 60;
+  const dismissed = (s) => ['cancelled', 'halted'].includes(s.state);
   const activeSwarms = (swarms || [])
     .filter((s) => s.state !== 'pending_approval')
+    .filter((s) => !dismissed(s))
     .filter((s) => !s.finished || (s.finishedAgoS !== null && s.finishedAgoS < SWARM_LINGER_S))
     // Oldest first, which is a stable order: a new swarm is appended below the ones
     // already on screen instead of shoving them down under the cursor on a poll.
     .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+
+  // Finished and cancelled swarms, out of the way but not gone: results, costs and
+  // the event log stay reachable from these rows.
+  const finishedSwarms = (swarms || [])
+    .filter((s) => s.state !== 'pending_approval')
+    .filter((s) => dismissed(s) || (s.finished && (s.finishedAgoS === null || s.finishedAgoS >= SWARM_LINGER_S)))
+    .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+    .slice(0, 20);
 
   const activeAgents = agents.filter((a) => bucket(a) === 'active').sort(byRecency);
   const idleAgents = agents.filter((a) => bucket(a) === 'idle').sort(byRecency);
@@ -350,19 +364,42 @@ function Dashboard() {
       {/* Agents View */}
       {view === 'agents' && (
         <div>
-          {/* Active Agents, with swarms pinned above them. Workers are cattle: a
-              swarm is ONE row here however many workers it is running, and no worker
-              ever appears in this list -- they are not agents. */}
+          {/* A swarm belongs to the agent that launched it, so it nests UNDER that
+              agent rather than floating at the top: a swarm is something an agent is
+              doing, not a peer of it. Orphans -- spawner deleted, or not currently
+              active -- fall back to the bottom so nothing is ever hidden. Workers
+              themselves never appear here; they are cattle, not agents. */}
           <Section title="Active" count={activeAgents.length + activeSwarms.length} variant="active">
             <div className="space-y-2">
-              {activeSwarms.map((swarm) => (
-                <SwarmRow key={swarm.id} swarm={swarm} />
-              ))}
-              {activeAgents.map((agent) => (
-                <AgentRow key={agent.id} agent={agent} showProject />
-              ))}
+              {activeAgents.map((agent) => {
+                const own = activeSwarms.filter((s) => s.spawner && s.spawner.id === agent.id);
+                return (
+                  <div key={agent.id} className="space-y-1">
+                    <AgentRow agent={agent} showProject />
+                    {own.length > 0 && (
+                      // Indented behind a rail so ownership reads at a glance,
+                      // without having to compare names between two rows.
+                      <div className="ml-6 pl-3 border-l-2 border-violet-500/30 space-y-1">
+                        {own.map((swarm) => <SwarmRow key={swarm.id} swarm={swarm} nested />)}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {activeSwarms
+                .filter((s) => !s.spawner || !activeAgents.some((a) => a.id === s.spawner.id))
+                .map((swarm) => <SwarmRow key={swarm.id} swarm={swarm} />)}
             </div>
           </Section>
+
+          {finishedSwarms.length > 0 && (
+            <Section title="Swarms · finished" count={finishedSwarms.length} variant="idle" defaultCollapsed>
+              <div className="space-y-1">
+                {finishedSwarms.map((swarm) => <SwarmRow key={swarm.id} swarm={swarm} />)}
+              </div>
+            </Section>
+          )}
+
 
           {/* Idle Agents */}
           <Section title="Ready" count={idleAgents.length} variant="idle" defaultCollapsed={activeAgents.length > 0}>
