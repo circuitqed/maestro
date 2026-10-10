@@ -97,15 +97,40 @@ for pair in sys.argv[3:]:
 print(json.dumps(body))
 PY
 
+read -r -d '' BUDGET_PROG <<'PY' || true
+import json, sys
+usd, hours, reason = sys.argv[1], sys.argv[2], sys.argv[3]
+print(json.dumps({"usd": float(usd), "hours": float(hours), "reason": reason or None}))
+PY
+
 read -r -d '' FMT_PROG <<'PY' || true
 import json, sys
 
 mode = sys.argv[1]
+
 try:
     d = json.load(sys.stdin)
+
 except Exception:
     sys.stderr.write("no parseable response from Maestro -- is it running?\n")
     sys.exit(1)
+if mode == "budget":
+    a = d.get("active")
+    if a:
+        print("  budget in force")
+        print("    remaining  $%.2f of $%.2f   (spent $%.2f, reserved $%.2f)"
+              % (a["remaining"], a["usd"], a["spent"], a["reserved"]))
+        print("    expires    %s" % a["expiresAt"])
+        print("    a swarm whose CEILING fits the remainder runs without asking")
+    elif d.get("pending"):
+        print("  requested $%.2f - waiting for a human" % d["pending"]["usd"])
+    elif d.get("id"):
+        print("  requested $%.2f until %s" % (d.get("usd", 0), d.get("expiresAt", "?")))
+        print("  %s" % d.get("note", ""))
+    else:
+        print("  no standing budget; every swarm needs approval")
+    raise SystemExit
+
 
 # Refusals are the common case worth getting right: an agent has to be able to tell
 # backpressure from a hard stop, or it will either hammer a dead system or abandon
@@ -192,6 +217,23 @@ fmt() { python3 -c "$FMT_PROG" "$1"; }
 
 cmd="${1:-}"; shift 2>/dev/null || true
 case "$cmd" in
+  budget)
+    # Ask for a standing budget instead of per-swarm approval. With no flags it
+    # reports the envelope currently in force.
+    usd=""; hours=""; reason=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --usd) usd="$2"; shift 2;; --hours) hours="$2"; shift 2;;
+        --reason) reason="$2"; shift 2;; *) die "unknown flag $1";;
+      esac
+    done
+    if [ -z "$usd" ] && [ -z "$hours" ]; then
+      api GET /swarm-budget | fmt budget; exit $?
+    fi
+    [ -n "$usd" ] && [ -n "$hours" ] \
+      || die 'usage: maestro-swarm budget --usd 5 --hours 8 [--reason "..."]'
+    body="$(python3 -c "$BUDGET_PROG" "$usd" "$hours" "$reason")" || exit 1
+    api POST /swarm-budget "$body" | fmt budget ;;
   list)    api GET /swarms | fmt list ;;
   status)  [ $# -ge 1 ] || die "usage: maestro-swarm status ID"; api GET "/swarms/$1" | fmt status ;;
   results) [ $# -ge 1 ] || die "usage: maestro-swarm results ID"; api GET "/swarms/$1/results" | fmt results ;;

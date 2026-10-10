@@ -18,6 +18,7 @@ import { requireAgentIdentity } from '../middleware/agentIdentity.js';
 import {
   createSwarm, getSwarm, swarmLedger, listWorkers, haltSwarm, logSwarmEvent,
   estimateSwarm, getGrant, globalLedger, TERMINAL_WORKER_STATES, COLD_START_USD,
+  requestAuthorization, activeAuthorization, listAuthorizations,
 } from '../services/swarm.js';
 
 const router = Router();
@@ -289,6 +290,38 @@ router.post('/swarms/:id/cancel', (req, res) => {
     // kept billing would make the ledger lie in the one direction that matters.
     live: l.live,
     note: l.live ? `${l.live} worker(s) still finishing; no new ones will start` : 'no workers were live',
+  });
+});
+
+/**
+ * Ask for a standing budget instead of per-swarm approval. The agent states an
+ * amount, a duration and why; a human decides once.
+ */
+router.post('/swarm-budget', (req, res) => {
+  const { usd, hours, reason } = req.body || {};
+  try {
+    const a = requestAuthorization(req.agent.id, { usd, hours, reason });
+    res.json({
+      id: a.id, state: a.state, usd: a.requested_usd, expiresAt: a.expires_at,
+      note: 'pending — a human approves this once, then swarms inside it run without asking',
+    });
+  } catch (err) {
+    const map = { NOT_GRANTED: 403, BAD_REQUEST: 400 };
+    res.status(map[err.code] || 500).json({ error: err.message, code: err.code || 'ERROR' });
+  }
+});
+
+router.get('/swarm-budget', (req, res) => {
+  const a = activeAuthorization(req.agent.id);
+  if (!a) {
+    const pending = listAuthorizations(req.agent.id).find((x) => x.state === 'pending');
+    return res.json({ active: null, pending: pending ? { id: pending.id, usd: pending.requested_usd } : null });
+  }
+  res.json({
+    active: {
+      id: a.id, usd: a.requested_usd, spent: a.spent, reserved: a.reserved,
+      remaining: a.remaining, expiresAt: a.expires_at,
+    },
   });
 });
 

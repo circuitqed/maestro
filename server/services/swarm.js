@@ -80,6 +80,7 @@ export function initSwarmTables() {
       per_worker_seconds INTEGER NOT NULL,
       items_per_worker INTEGER NOT NULL DEFAULT 1,
       workers_launched INTEGER NOT NULL DEFAULT 0,
+      authorization_id TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       finished_at DATETIME
     );
@@ -121,9 +122,33 @@ export function initSwarmTables() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    -- A standing authorization: "you may spend up to $X on swarms until $T".
+    -- Requested BY the agent, approved once by a human, then spent against without
+    -- further prompting. Bounded in both money and time on purpose -- a spend cap
+    -- alone persists forever, and an expiry alone is unbounded until it lapses.
+    CREATE TABLE IF NOT EXISTS swarm_authorizations (
+      id TEXT PRIMARY KEY,
+      agent_id INTEGER NOT NULL,
+      requested_usd REAL NOT NULL,
+      expires_at DATETIME NOT NULL,
+      reason TEXT,
+      state TEXT NOT NULL DEFAULT 'pending',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      decided_at DATETIME,
+      revoked_reason TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_auth_agent ON swarm_authorizations(agent_id, state);
+
     CREATE INDEX IF NOT EXISTS idx_sw_state ON swarm_workers(swarm_id, state);
     CREATE INDEX IF NOT EXISTS idx_sw_live ON swarm_workers(state);
   `);
+  // Standing authorization: a swarm whose CEILING fits under this runs without
+  // asking. Approving every swarm defeats the point of delegation, but a blanket
+  // "never ask" removes the last human checkpoint -- so the human pre-authorizes an
+  // amount instead, and only an unusually large ask escalates. 0 means always ask.
+  try { db.exec('ALTER TABLE swarms ADD COLUMN authorization_id TEXT'); }
+  catch { /* already there */ }
+
   for (const [k, v] of Object.entries(SETTING_DEFAULTS)) {
     if (getSetting(k) === null || getSetting(k) === undefined) setSetting(k, v);
   }
@@ -157,6 +182,10 @@ export function grantSwarm(agentId, { maxWorkers = 4, maxSpendUsd = 4.0, account
   if (!accountDir || !String(accountDir).startsWith('/')) {
     throw err('BAD_ACCOUNT', 'accountDir must be an absolute path');
   }
+  // A grant says WHAT this agent may do (how many workers, against which account,
+  // up to what size per swarm). Whether it must ask first is a separate, expiring
+  // decision -- see swarm_authorizations. Keeping them apart means revoking the
+  // "don't ask me" does not also revoke the capability.
   getDb().prepare(`INSERT INTO swarm_grants (agent_id, max_workers, max_spend_usd, account_dir)
                    VALUES (?, ?, ?, ?)
                    ON CONFLICT(agent_id) DO UPDATE SET
@@ -169,6 +198,111 @@ export function grantSwarm(agentId, { maxWorkers = 4, maxSpendUsd = 4.0, account
 
 export function revokeSwarmGrant(agentId) {
   getDb().prepare('DELETE FROM swarm_grants WHERE agent_id = ?').run(agentId);
+}
+
+// ------------------------------------------------------ authorizations ---
+
+/**
+ * The agent asks for an envelope: "let me spend up to $X on swarms until $T".
+ * One pending request per agent -- a queue of them is just a way to get a human to
+ * rubber-stamp without reading.
+ */
+export function requestAuthorization(agentId, { usd, hours, reason = null }) {
+  if (!maySwarm(agentId)) throw err('NOT_GRANTED', 'this agent has no swarm grant');
+  const amount = Number(usd);
+  const hrs = Number(hours);
+  if (!(amount > 0)) throw err('BAD_REQUEST', 'usd must be positive');
+  if (!(hrs > 0) || hrs > 168) throw err('BAD_REQUEST', 'hours must be between 0 and 168 (one week)');
+
+  const db = getDb();
+  db.prepare("UPDATE swarm_authorizations SET state = 'superseded', decided_at = CURRENT_TIMESTAMP "
+    + "WHERE agent_id = ? AND state = 'pending'").run(agentId);
+  const id = randomUUID();
+  db.prepare(`INSERT INTO swarm_authorizations (id, agent_id, requested_usd, expires_at, reason)
+              VALUES (?, ?, ?, datetime('now', ?), ?)`)
+    .run(id, agentId, amount, `+${Math.round(hrs * 60)} minutes`, reason);
+  return getAuthorization(id);
+}
+
+export function getAuthorization(id) {
+  const row = getDb().prepare('SELECT * FROM swarm_authorizations WHERE id = ?').get(id);
+  return row ? withSpend(row) : null;
+}
+
+/** Spend is attributed through the swarms the authorization approved. */
+function withSpend(row) {
+  const spent = getDb().prepare(
+    `SELECT COALESCE(SUM(w.cost_usd),0) s FROM swarm_workers w
+      JOIN swarms sw ON sw.id = w.swarm_id
+     WHERE sw.authorization_id = ?`
+  ).get(row.id).s;
+  // In-flight workers count at their ceiling, exactly as the admission gate does.
+  const reserved = getDb().prepare(
+    `SELECT COALESCE(SUM(sw.per_worker_usd),0) r FROM swarm_workers w
+      JOIN swarms sw ON sw.id = w.swarm_id
+     WHERE sw.authorization_id = ? AND w.state IN ('admitted','launching','running')`
+  ).get(row.id).r;
+  const expired = new Date(`${row.expires_at}Z`.replace(' ', 'T')) <= new Date();
+  return {
+    ...row,
+    spent,
+    reserved,
+    remaining: Math.max(0, row.requested_usd - spent - reserved),
+    expired,
+    live: row.state === 'approved' && !expired && row.requested_usd - spent - reserved > 0,
+  };
+}
+
+export function pendingAuthorizations() {
+  return getDb().prepare("SELECT * FROM swarm_authorizations WHERE state = 'pending' ORDER BY created_at")
+    .all().map(withSpend);
+}
+
+export function listAuthorizations(agentId = null) {
+  const sql = agentId
+    ? 'SELECT * FROM swarm_authorizations WHERE agent_id = ? ORDER BY created_at DESC LIMIT 20'
+    : 'SELECT * FROM swarm_authorizations ORDER BY created_at DESC LIMIT 50';
+  return (agentId ? getDb().prepare(sql).all(agentId) : getDb().prepare(sql).all()).map(withSpend);
+}
+
+/** The one in force for this agent right now, or null. */
+export function activeAuthorization(agentId) {
+  const rows = getDb().prepare(
+    "SELECT * FROM swarm_authorizations WHERE agent_id = ? AND state = 'approved' ORDER BY created_at DESC"
+  ).all(agentId).map(withSpend);
+  return rows.find((r) => r.live) || null;
+}
+
+export function decideAuthorization(id, approved, { usd, hours } = {}) {
+  const a = getDb().prepare('SELECT * FROM swarm_authorizations WHERE id = ?').get(id);
+  if (!a) throw err('NO_AUTH', 'unknown authorization');
+  if (a.state !== 'pending') throw err('STATE', `authorization is ${a.state}`);
+  if (!approved) {
+    getDb().prepare("UPDATE swarm_authorizations SET state='denied', decided_at=CURRENT_TIMESTAMP WHERE id = ?").run(id);
+    return getAuthorization(id);
+  }
+  // The human may approve LESS than was asked for, which is the normal way to say
+  // "yes, but not that much" without a second round trip.
+  const amount = usd === undefined ? a.requested_usd : Math.max(0, Number(usd));
+  // One standing permission at a time. Several live envelopes would mean the
+  // agent's real headroom is their sum, which is not what anyone approving the
+  // second one thinks they are agreeing to -- and with CURRENT_TIMESTAMP's
+  // one-second resolution, "the newest" is not even well defined. Approving a new
+  // envelope replaces the old one.
+  getDb().prepare("UPDATE swarm_authorizations SET state='superseded', decided_at=CURRENT_TIMESTAMP "
+    + "WHERE agent_id = ? AND state = 'approved' AND id != ?").run(a.agent_id, id);
+  const sets = ["state='approved'", 'decided_at=CURRENT_TIMESTAMP', 'requested_usd=?'];
+  const vals = [amount];
+  if (hours !== undefined) { sets.push("expires_at=datetime('now', ?)"); vals.push(`+${Math.round(Number(hours) * 60)} minutes`); }
+  vals.push(id);
+  getDb().prepare(`UPDATE swarm_authorizations SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  return getAuthorization(id);
+}
+
+export function revokeAuthorization(id, reason = 'revoked') {
+  getDb().prepare("UPDATE swarm_authorizations SET state='revoked', revoked_reason=?, decided_at=CURRENT_TIMESTAMP WHERE id = ?")
+    .run(reason, id);
+  return getAuthorization(id);
 }
 
 // ------------------------------------------------------------- accounting ---
@@ -264,6 +398,28 @@ export function createSwarm({
       Math.max(30, Number(perWorkerSeconds) || DEFAULTS.per_worker_seconds), ipw);
 
   logSwarmEvent(id, 'created', `${items.length} items, ${workers} workers, cap $${spend.toFixed(2)}`);
+
+  // Run without asking IF a live authorization covers this swarm's CEILING.
+  //
+  // Ceiling, not estimate: the ceiling is the most the swarm can possibly cost, so
+  // one that fits inside the envelope can never overspend it. Comparing the
+  // estimate would let a run that behaves worse than expected eat budget the human
+  // never granted.
+  //
+  // The daily and monthly caps still apply underneath. An authorization says "you
+  // need not ask me again"; it does not say "spend without limit".
+  const ceiling = workers * perWorker;
+  const auth = activeAuthorization(spawnerAgentId);
+  if (auth && auth.remaining >= ceiling) {
+    getDb().prepare("UPDATE swarms SET state = 'running', authorization_id = ? WHERE id = ?")
+      .run(auth.id, id);
+    logSwarmEvent(id, 'auto_approved',
+      `under authorization ${auth.id.slice(0, 8)}: ceiling $${ceiling.toFixed(2)}, ` +
+      `$${auth.remaining.toFixed(2)} of $${auth.requested_usd.toFixed(2)} left, expires ${auth.expires_at}`);
+  } else if (auth) {
+    logSwarmEvent(id, 'needs_approval',
+      `ceiling $${ceiling.toFixed(2)} exceeds the $${auth.remaining.toFixed(2)} left on authorization ${auth.id.slice(0, 8)}`);
+  }
   if (workers < wanted) {
     logSwarmEvent(id, 'clamped', `asked for ${wanted} workers, grant allows ${grant.max_workers}`);
   }

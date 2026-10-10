@@ -23,6 +23,7 @@ import {
   approveSwarm, estimateSwarm, getGrant, getSwarm, globalLedger, grantSwarm,
   haltSwarm, initSwarmTables, listSwarms, listWorkers, logSwarmEvent,
   revokeSwarmGrant, setSwarmPaused, swarmLedger,
+  pendingAuthorizations, listAuthorizations, decideAuthorization, revokeAuthorization,
 } from '../services/swarm.js';
 import { swarmItemStats } from '../services/swarmRunner.js';
 
@@ -333,7 +334,7 @@ router.post('/grants', requireAdmin, (req, res) => {
     if (!Number.isFinite(spend) || spend <= 0) {
       return refuse(res, 'BAD_REQUEST', 'maxSpendUsd must be greater than 0');
     }
-    const grant = grantSwarm(agent.id, { maxWorkers: workers, maxSpendUsd: spend, accountDir });
+    const grant = grantSwarm(agent.id, { maxWorkers: workers, maxSpendUsd: spend, accountDir  });
     res.json({
       agentId: grant.agent_id,
       agent: spawnerView(grant.agent_id),
@@ -480,6 +481,24 @@ router.post('/:id/concurrency', (req, res) => {
     const counts = countsBySwarm();
     res.json(swarmView(getSwarm(s.id), counts[s.id], isAdmin(req)));
   } catch (err) { fail(res, err); }
+});
+
+// --- standing authorizations (the human side) -------------------------------
+
+router.get('/authorizations/pending', (req, res) => res.json(pendingAuthorizations()));
+router.get('/authorizations', (req, res) => res.json(listAuthorizations()));
+
+router.post('/authorizations/:id/decide', (req, res) => {
+  const { approved, usd, hours } = req.body || {};
+  try {
+    res.json(decideAuthorization(req.params.id, !!approved, { usd, hours }));
+  } catch (err) {
+    res.status(err.code === 'NO_AUTH' ? 404 : 400).json({ error: err.message, code: err.code });
+  }
+});
+
+router.post('/authorizations/:id/revoke', (req, res) => {
+  res.json(revokeAuthorization(req.params.id, (req.body && req.body.reason) || 'revoked'));
 });
 
 export default router;
