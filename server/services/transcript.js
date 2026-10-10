@@ -322,17 +322,26 @@ export function tailSpawnArgs(host, filePath) {
       '-o',
       'ServerAliveInterval=15',
       host.ssh_target,
-      // NOT `exec tail`: killing the local ssh leaves the remote tail running, because
-      // `tail -F` on a quiet transcript never writes and so never sees the closed pipe.
-      // (27 of these had accumulated on the Mac mini, the oldest 9 days old.) Instead
-      // run tail in the background and heartbeat a blank line — the parser skips empty
-      // lines — so a dead channel surfaces as a failed write within 20s and the trap
-      // takes the tail down with the shell. Self-healing even if Maestro itself dies.
+        // Killing the local ssh does NOT kill the remote tail by itself: `tail -F` on a
+        // quiet transcript never writes, so it never notices the closed pipe.
+        //
+        // The previous fix heartbeat a blank line every 20s and relied on that write
+        // FAILING once the channel died. On macOS it does not fail -- the write keeps
+        // succeeding, the loop never exits, and the shell grows without bound. Six were
+        // found on the Mac mini at 1.1-7.0 GB each (~0.6 GB/min, 20.7 GB on a 16 GB
+        // box), all tailing one agent's transcript; killing them returned 6.9 GB at
+        // once. Same zsh signature as both kernel panics.
+        //
+        // So key the lifetime to stdin rather than to a write succeeding. Maestro holds
+        // the stdin pipe open and never writes to it; when the local ssh dies the remote
+        // stdin hits EOF, `cat` returns, and the tail is killed. EOF is delivered by the
+        // kernel on teardown instead of being inferred from an error code, so there is
+        // nothing for a platform to disagree about.
       remoteWrap(
         host,
         `tail -n ${INITIAL_TAIL_LINES} -F ${shellQuote(filePath)} & tp=$!; ` +
           `trap 'kill $tp 2>/dev/null' EXIT HUP INT TERM PIPE; ` +
-          `while kill -0 $tp 2>/dev/null; do printf '\\n' || exit 0; sleep 20; done`
+          `cat > /dev/null; kill $tp 2>/dev/null`
       ),
     ],
   };
@@ -451,7 +460,9 @@ export function setupTranscriptWS(wss) {
         if (closed || ws.readyState !== ws.OPEN) return;
 
         const { file, args } = tailSpawnArgs(host, filePath);
-        child = spawn(file, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        // stdin is a pipe held open and never written to: closing it (on kill, or
+        // when Maestro exits) is what tells the remote shell to reap its tail.
+        child = spawn(file, args, { stdio: ['pipe', 'pipe', 'pipe'] });
 
         // The connection may have closed between the check and spawn.
         if (closed) {
