@@ -15,6 +15,10 @@ export function AppProvider({ children }) {
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [swarms, setSwarms] = useState([]);
   const [swarmGlobal, setSwarmGlobal] = useState(null);
+  // Standing spend envelopes an agent has asked for and nobody has decided yet.
+  // Separate from `swarms`: a swarm is work waiting to start, an authorization is
+  // an agent asking for the headroom to start work for the next N hours at all.
+  const [swarmAuths, setSwarmAuths] = useState([]);
   const [activeSwarm, setActiveSwarm] = useState(null);
   // The right-hand slot holds one thing at a time, but both the agent panel and the
   // swarm panel keep their own state. This says which of the two is on top; closing
@@ -150,6 +154,11 @@ export function AppProvider({ children }) {
       const data = await res.json();
       setSwarms(data.swarms || []);
       setSwarmGlobal(data.global || null);
+      // Polled on the same tick as swarms deliberately. An agent that has asked for
+      // an envelope is BLOCKED until someone answers -- it cannot spawn at all -- so
+      // the request must not wait on a separate, slower refresh to become visible.
+      const ar = await fetch('/api/swarms/authorizations/pending');
+      if (ar.ok) setSwarmAuths(await ar.json());
     } catch (err) {
       // Keep the last known list. A swarm row that blinks out on one failed poll
       // reads as "the swarm ended", which is the opposite of the truth.
@@ -161,7 +170,9 @@ export function AppProvider({ children }) {
   // whether anything is happening: a swarm spends money by the second and a pending
   // approval is someone waiting, but an account with no swarms at all should not pay
   // for a request every 3s forever -- phones included.
-  const swarmsIdle = swarms.length === 0 && !activeSwarm;
+  // A pending authorization counts as "something happening": an agent is blocked
+  // waiting on an answer, so this is the wrong moment to drop to the 20s idle poll.
+  const swarmsIdle = swarms.length === 0 && !activeSwarm && swarmAuths.length === 0;
   useEffect(() => {
     if (!authenticated) return undefined;
     const id = setInterval(loadSwarms, swarmsIdle ? 20000 : 3000);
@@ -574,6 +585,35 @@ export function AppProvider({ children }) {
   const cancelSwarm = useCallback((id) => swarmAction(id, '/cancel'), [swarmAction]);
   const setSwarmConcurrency = useCallback((id, n) => swarmAction(id, '/concurrency', { n }), [swarmAction]);
 
+  /**
+   * Answer a standing-envelope request. `usd` and `hours` are optional overrides:
+   * approving a smaller amount or a shorter window than was asked for is the normal
+   * way to say "yes, but not that much" without another round trip, so the UI must
+   * be able to send them.
+   */
+  const decideAuthorization = useCallback(async (id, approved, { usd, hours } = {}) => {
+    const res = await fetch(`/api/swarms/authorizations/${id}/decide`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approved, usd, hours }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'decision failed');
+    const out = await res.json();
+    await loadSwarms();
+    return out;
+  }, [loadSwarms]);
+
+  const revokeAuthorization = useCallback(async (id) => {
+    const res = await fetch(`/api/swarms/authorizations/${id}/revoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'revoked from the dashboard' }),
+    });
+    if (!res.ok) throw new Error('revoke failed');
+    await loadSwarms();
+    return res.json();
+  }, [loadSwarms]);
+
   const fetchSwarm = useCallback(async (id, signal) => {
     const res = await fetch(`/api/swarms/${id}`, { signal });
     if (!res.ok) {
@@ -649,6 +689,9 @@ export function AppProvider({ children }) {
     cancelSwarm,
     setSwarmConcurrency,
     fetchSwarm,
+    swarmAuths,
+    decideAuthorization,
+    revokeAuthorization,
 
     // Terminal / agent views
     panelFocus,

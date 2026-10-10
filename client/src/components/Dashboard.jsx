@@ -5,6 +5,7 @@ import AgentRow from './AgentRow';
 import AddAgentForm from './AddAgentForm';
 import SwarmRow from './SwarmRow';
 import SwarmApprovalCard from './SwarmApprovalCard';
+import AuthorizationRequestCard from './AuthorizationRequestCard';
 
 // Collapsible section component
 function Section({ title, count, defaultCollapsed = false, children, variant = 'default' }) {
@@ -44,7 +45,7 @@ function Section({ title, count, defaultCollapsed = false, children, variant = '
 }
 
 function Dashboard() {
-  const { projects, agents, createProject, agentStates, loadAgents, swarms } = useApp();
+  const { projects, agents, createProject, agentStates, loadAgents, swarms, swarmAuths } = useApp();
   const [view, setView] = useState(() => localStorage.getItem('dashboardView') || 'projects');
   const [showAddProject, setShowAddProject] = useState(false);
   const [showAddAgent, setShowAddAgent] = useState(false);
@@ -296,6 +297,14 @@ function Dashboard() {
           />
         </div>
       )}
+
+      {/* Envelope requests come FIRST, above pending swarms. An agent waiting on an
+          envelope cannot spawn anything at all, so this is the more blocking of the
+          two decisions -- and an agent that has been granted one stops producing the
+          per-swarm cards below it. */}
+      {(swarmAuths || []).map((auth) => (
+        <AuthorizationRequestCard key={auth.id} auth={auth} />
+      ))}
 
       {/* Swarms awaiting a human. Above the view toggle's content and in both views:
           a swarm is not a project and not an agent, it is money waiting on a decision,

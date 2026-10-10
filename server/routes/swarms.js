@@ -359,6 +359,29 @@ router.delete('/grants/:agentId', requireAdmin, (req, res) => {
 
 // ------------------------------------------------------------ one swarm ---
 
+// --- standing authorizations (the human side) -------------------------------
+// Declared ABOVE GET /:id, for the same reason /grants is: Express matches in
+// order, so a bare '/authorizations' would otherwise be swallowed by '/:id' as a
+// swarm whose id is the literal string "authorizations". The two-segment routes
+// escaped that by accident; leaving them below only worked until one of them
+// wasn't two segments.
+
+router.get('/authorizations/pending', (req, res) => res.json(pendingAuthorizations()));
+router.get('/authorizations', (req, res) => res.json(listAuthorizations()));
+
+router.post('/authorizations/:id/decide', (req, res) => {
+  const { approved, usd, hours } = req.body || {};
+  try {
+    res.json(decideAuthorization(req.params.id, !!approved, { usd, hours }));
+  } catch (err) {
+    res.status(err.code === 'NO_AUTH' ? 404 : 400).json({ error: err.message, code: err.code });
+  }
+});
+
+router.post('/authorizations/:id/revoke', (req, res) => {
+  res.json(revokeAuthorization(req.params.id, (req.body && req.body.reason) || 'revoked'));
+});
+
 router.get('/:id', (req, res) => {
   try {
     const s = namedSwarm(req, res);
@@ -501,24 +524,6 @@ router.post('/:id/concurrency', (req, res) => {
     const counts = countsBySwarm();
     res.json(swarmView(getSwarm(s.id), counts[s.id], isAdmin(req)));
   } catch (err) { fail(res, err); }
-});
-
-// --- standing authorizations (the human side) -------------------------------
-
-router.get('/authorizations/pending', (req, res) => res.json(pendingAuthorizations()));
-router.get('/authorizations', (req, res) => res.json(listAuthorizations()));
-
-router.post('/authorizations/:id/decide', (req, res) => {
-  const { approved, usd, hours } = req.body || {};
-  try {
-    res.json(decideAuthorization(req.params.id, !!approved, { usd, hours }));
-  } catch (err) {
-    res.status(err.code === 'NO_AUTH' ? 404 : 400).json({ error: err.message, code: err.code });
-  }
-});
-
-router.post('/authorizations/:id/revoke', (req, res) => {
-  res.json(revokeAuthorization(req.params.id, (req.body && req.body.reason) || 'revoked'));
 });
 
 export default router;
