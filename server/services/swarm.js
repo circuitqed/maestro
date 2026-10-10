@@ -360,11 +360,39 @@ export function getSwarm(id) {
   return getDb().prepare('SELECT * FROM swarms WHERE id = ?').get(id) || null;
 }
 
-export function listSwarms({ activeOnly = false } = {}) {
-  const sql = activeOnly
-    ? "SELECT * FROM swarms WHERE state NOT IN ('done','halted','cancelled') ORDER BY created_at"
-    : 'SELECT * FROM swarms ORDER BY created_at DESC LIMIT 50';
-  return getDb().prepare(sql).all();
+/**
+ * @param activeOnly  drop swarms that have finished -- what the dashboard wants, so
+ *   a completed run stops taking up space forever.
+ * @param graceSeconds  how long a FINISHED swarm stays in that list anyway. Zero
+ *   would make a swarm vanish the instant its last worker reports, taking its result
+ *   and its final cost off screen while the user is still reading them. The grace
+ *   window is what makes "it left the list" feel like completion rather than a bug.
+ *   History is never pruned -- it is still in the table, and activeOnly:false
+ *   returns it.
+ */
+export function listSwarms({ activeOnly = false, graceSeconds = 120 } = {}) {
+  if (!activeOnly) {
+    return getDb().prepare('SELECT * FROM swarms ORDER BY created_at DESC LIMIT 50').all();
+  }
+  const grace = Math.max(0, Number(graceSeconds) || 0);
+  // Zero is handled separately rather than as a zero-width window. finished_at has
+  // second resolution, so `finished_at >= datetime('now')` is still TRUE for a swarm
+  // that ended this same second -- a 0 that sometimes keeps a row is worse than no
+  // option at all.
+  if (grace === 0) {
+    return getDb().prepare(
+      "SELECT * FROM swarms WHERE state NOT IN ('done','halted','cancelled') ORDER BY created_at",
+    ).all();
+  }
+  // finished_at is only set by the terminal transitions; a NULL means still live.
+  // Compared in SQLite's own clock to match the CURRENT_TIMESTAMP that wrote it.
+  return getDb().prepare(
+    `SELECT * FROM swarms
+      WHERE state NOT IN ('done','halted','cancelled')
+         OR (finished_at IS NOT NULL
+             AND finished_at >= datetime('now', ?))
+      ORDER BY created_at`,
+  ).all(`-${grace} seconds`);
 }
 
 /**

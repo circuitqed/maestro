@@ -140,7 +140,12 @@ export function AppProvider({ children }) {
 
   const loadSwarms = useCallback(async () => {
     try {
-      const res = await fetch('/api/swarms');
+      // activeOnly: the dashboard is a view of what is happening, not a ledger.
+      // Without it every swarm ever run stays on screen -- the server supported the
+      // filter from the start and this call simply never asked for it. Finished
+      // swarms linger briefly (server-side grace window) so the outcome is readable,
+      // then drop off; full history stays available without the flag.
+      const res = await fetch('/api/swarms?activeOnly=1');
       if (!res.ok) return;
       const data = await res.json();
       setSwarms(data.swarms || []);

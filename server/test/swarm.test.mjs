@@ -138,6 +138,36 @@ ok(est.floorUsd === 0.45 && est.ceilingUsd === 2.8,
 ok(S.estimateSwarm({ workers: 1, perWorkerUsd: 0.4 }).floorUsd === 0.15,
    'a single worker pays only the cold start');
 
+// ---- what the dashboard is allowed to show --------------------------------
+// Untested, this shipped broken: the filter worked and the client never passed it,
+// so every swarm ever run stayed on screen forever. The grace window is the part
+// worth pinning -- at 0s a swarm vanishes the instant its last worker reports,
+// taking its result off screen mid-read.
+dbMod.setSetting('swarm_enabled', '1');
+const swLive = S.createSwarm({ name: 'still-going', spawnerAgentId: 2, maxWorkers: 1, maxSpendUsd: 0.2, perWorkerUsd: 0.1 });
+S.approveSwarm(swLive.id);
+const swOld = S.createSwarm({ name: 'long-finished', spawnerAgentId: 2, maxWorkers: 1, maxSpendUsd: 0.2, perWorkerUsd: 0.1 });
+S.approveSwarm(swOld.id);
+dbMod.getDb().prepare(
+  "UPDATE swarms SET state='done', finished_at=datetime('now','-1 hour') WHERE id=?",
+).run(swOld.id);
+const swJust = S.createSwarm({ name: 'just-finished', spawnerAgentId: 2, maxWorkers: 1, maxSpendUsd: 0.2, perWorkerUsd: 0.1 });
+S.approveSwarm(swJust.id);
+dbMod.getDb().prepare(
+  "UPDATE swarms SET state='done', finished_at=datetime('now') WHERE id=?",
+).run(swJust.id);
+
+const names = (opts) => S.listSwarms(opts).map((s) => s.name);
+ok(names({ activeOnly: true }).includes('still-going'), 'a live swarm is on the dashboard');
+ok(!names({ activeOnly: true }).includes('long-finished'),
+   'a swarm that finished an hour ago has left the list');
+ok(names({ activeOnly: true }).includes('just-finished'),
+   'a swarm that just finished lingers so its result stays readable');
+ok(!names({ activeOnly: true, graceSeconds: 0 }).includes('just-finished'),
+   'graceSeconds:0 drops it immediately');
+ok(names({}).includes('long-finished'),
+   'history keeps every swarm -- activeOnly is a view, not a prune');
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
