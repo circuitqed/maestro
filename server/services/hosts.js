@@ -1,3 +1,4 @@
+import * as childProcess from 'child_process';
 import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
@@ -84,6 +85,39 @@ export async function execOnHost(host, command, opts = {}) {
  * failure — connect timeout, refused, DNS, auth, host key — and our own
  * execFile timeout shows up as a kill.
  */
+/**
+ * Run a command on `host` with `input` on its stdin.
+ *
+ * execOnHost uses execFile, which cannot feed stdin, so anything large or secret
+ * had to go in argv -- where it is world-readable from /proc and may blow the
+ * command-length limit. A swarm worker's prompt is both large and
+ * attacker-influenceable, so it rides stdin instead.
+ */
+export function execOnHostWithInput(host, command, input, opts = {}) {
+  const { spawn } = childProcess;
+  const [file, args] = isRemote(host)
+    ? ['ssh', [...sshBaseArgs(host), host.ssh_target, remoteWrap(host, command)]]
+    : ['sh', ['-c', command]];
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('timed out')); },
+      opts.timeout || 20000);
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) return resolve({ stdout, stderr });
+      const e = new Error(`exit ${code}`);
+      e.stdout = stdout; e.stderr = stderr; e.code = code;
+      reject(e);
+    });
+    child.stdin.on('error', () => { /* closed early; the close handler reports it */ });
+    child.stdin.end(input);
+  });
+}
+
 export function isHostUnreachable(err) {
   if (!err) return false;
   if (err.code === 255) return true;

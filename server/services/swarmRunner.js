@@ -234,33 +234,46 @@ export async function reconcile() {
   syncItemStates();
 
   const live = getDb().prepare(
-    `SELECT w.id, w.swarm_id, w.state, w.session_name,
+    `SELECT w.id, w.swarm_id, w.state, w.session_name, s.host_id,
             strftime('%s','now') - strftime('%s', w.created_at) AS age_s
        FROM swarm_workers w JOIN swarms s ON s.id = w.swarm_id
-      WHERE w.state IN (${holes(LIVE.length)})
-        -- v1 launches locally only, so one local session listing answers for every
-        -- worker. A remote row could never be judged from it.
-        AND s.host_id IS NULL`
+      WHERE w.state IN (${holes(LIVE.length)})`
   ).all(...LIVE);
   if (!live.length) return;
 
-  let names;
-  try {
-    names = new Set((await getTmuxSessions(null)).map((s) => s.name));
-  } catch {
-    return; // the host's state is unknown; never conclude "gone" from a failed probe
+  // One session listing PER HOST, not one for everything. Workers now run wherever
+  // their swarm's spawner lives, and judging a garage-wsl worker against oracle's
+  // session list would declare every one of them vanished -- killing live work and
+  // nulling its cost. Grouped so a host is probed once per tick however many
+  // workers it holds.
+  const byHost = new Map();
+  for (const w of live) {
+    const k = w.host_id ?? 0;
+    if (!byHost.has(k)) byHost.set(k, []);
+    byHost.get(k).push(w);
   }
 
-  for (const w of live) {
-    if (w.session_name && names.has(w.session_name)) continue;
-    // Admitted and launching have not necessarily got a session yet. Past the grace
-    // period they never will -- that is a Maestro that died between admit and launch.
-    if (w.state !== 'running' && Number(w.age_s) < LAUNCH_GRACE_S) continue;
-    finishWorker(w.id, { state: 'failed', terminalReason: 'vanished', errorSignature: 'vanished' });
-    logSwarmEvent(
-      w.swarm_id, 'worker_vanished',
-      `${w.session_name || '(never launched)'} is gone and never reported`, w.id
-    );
+  for (const [hostKey, workers] of byHost) {
+    const host = hostKey ? getHost(hostKey) : null;
+    let names;
+    try {
+      names = new Set((await getTmuxSessions(host)).map((x) => x.name));
+    } catch {
+      // Unknown, not empty. A sleeping Mac mini must never be read as "all its
+      // workers vanished" -- the same rule agentMonitor already follows for agents.
+      continue;
+    }
+    for (const w of workers) {
+      if (w.session_name && names.has(w.session_name)) continue;
+      // Admitted and launching have not necessarily got a session yet. Past the
+      // grace period they never will -- a Maestro that died between admit and launch.
+      if (w.state !== 'running' && Number(w.age_s) < LAUNCH_GRACE_S) continue;
+      finishWorker(w.id, { state: 'failed', terminalReason: 'vanished', errorSignature: 'vanished' });
+      logSwarmEvent(
+        w.swarm_id, 'worker_vanished',
+        `${w.session_name || '(never launched)'} is gone and never reported`, w.id
+      );
+    }
   }
   syncItemStates();
 }

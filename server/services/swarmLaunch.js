@@ -31,7 +31,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { getAgent, getHost, getProject, getSetting } from './db.js';
-import { execOnHost, isRemote, isValidSessionName, shellQuote as q } from './hosts.js';
+import { execOnHost, isRemote, isValidSessionName, shellQuote as q, execOnHostWithInput } from './hosts.js';
 import { killSession, sessionExists } from './tmux.js';
 import { resolveAgentWorkingDir } from './projectPaths.js';
 import { logSwarmEvent, setWorkerStateIfLive } from './swarm.js';
@@ -49,6 +49,8 @@ const WORKER_BIN_DEFAULT = '/home/projects/maestro/scripts/maestro-worker';
 // container-internal addresses are wrong: 7007 is the published port, matching the
 // MAESTRO_URL that scripts/install-agent-cli.sh writes for agents.
 const MAESTRO_URL_DEFAULT = 'http://127.0.0.1:7007';
+// oracle's tailnet address: reachable from every host in the fleet.
+const MAESTRO_REMOTE_URL_DEFAULT = 'http://100.72.255.33:7007';
 
 // v1 workers analyse, they do not edit. maestro-worker turns this into an explicit
 // deny-list over the write tools; it is not configurable per swarm on purpose --
@@ -72,8 +74,18 @@ function fail(code, message) {
 export const workerBin = () =>
   getSetting('swarm_worker_bin') || process.env.MAESTRO_WORKER_BIN || WORKER_BIN_DEFAULT;
 
-export const maestroUrl = () =>
-  getSetting('maestro_url') || process.env.MAESTRO_URL || MAESTRO_URL_DEFAULT;
+/**
+ * Where a worker should POST its report.
+ *
+ * Host-dependent: a worker on garage-wsl reporting to 127.0.0.1 would hit its own
+ * loopback, so a remote worker needs an address that is routable FROM the worker
+ * (the tailnet one). Getting this wrong does not fail loudly -- the worker just
+ * retries for five minutes and the result only survives in its --out file.
+ */
+export const maestroUrl = (host = null) =>
+  (isRemote(host)
+    ? getSetting('maestro_remote_url') || process.env.MAESTRO_REMOTE_URL || MAESTRO_REMOTE_URL_DEFAULT
+    : getSetting('maestro_url') || process.env.MAESTRO_URL || MAESTRO_URL_DEFAULT);
 
 /**
  * `swarm-<first 8 of the swarm id>-<idx>`. Charset-validated by the caller before it
@@ -118,9 +130,6 @@ function workerCwd(swarm, host) {
  */
 export async function launchWorker(swarm, worker) {
   const host = swarm.host_id ? getHost(swarm.host_id) : null;
-  if (isRemote(host)) {
-    throw fail('REMOTE_UNSUPPORTED', 'v1 runs swarm workers on the local host only');
-  }
 
   const session = worker.session_name || sessionNameFor(swarm.id, worker.idx);
   if (!isValidSessionName(session)) {
@@ -133,11 +142,18 @@ export async function launchWorker(swarm, worker) {
   // 0700 on the directory, not just 0600 on the prompt: the report written beside it
   // holds the worker's answer, and /tmp is shared with every process on the box.
   const dir = runDir(swarm.id);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const promptFile = path.join(dir, `${worker.idx}.prompt`);
   const logFile = path.join(dir, `${worker.idx}.log`);
   const outFile = path.join(dir, `${worker.idx}.json`);
-  fs.writeFileSync(promptFile, prompt, { mode: 0o600 });
+  // Written ON the host that will read it, over stdin. Locally this is the same
+  // file either way; remotely the container's /tmp is not the worker's /tmp, and
+  // putting the prompt in argv (the obvious alternative) is exactly what fd 3
+  // exists to avoid -- it is large and it is attacker-influenceable.
+  await execOnHostWithInput(
+    host,
+    `mkdir -p ${q(dir)} && chmod 700 ${q(dir)} && umask 077 && cat > ${q(promptFile)}`,
+    prompt
+  );
 
   try {
     // 'launching' before anything is started, with the session name recorded: if
@@ -159,7 +175,7 @@ export async function launchWorker(swarm, worker) {
       '--budget', q(usd(swarm.per_worker_usd)),
       '--timeout', q(String(swarm.per_worker_seconds)),
       '--account', q(swarm.account_dir),
-      '--report-url', q(maestroUrl()),
+      '--report-url', q(maestroUrl(host)),
       '--profile', q(PROFILE),
       // A second copy of the report, on disk, for the case the POST never lands.
       '--out', q(outFile),
@@ -183,7 +199,7 @@ export async function launchWorker(swarm, worker) {
       // which makes the runner's "session gone => worker gone" rule declare every
       // live worker vanished within seconds. One fd stays on the pty; the report is
       // on stdout, so it is also what `capture-pane` shows while the worker is up.
-      `exec env MAESTRO_URL=${q(maestroUrl())} ${args.join(' ')} <&3 2>>${q(logFile)}`,
+      `exec env MAESTRO_URL=${q(maestroUrl(host))} ${args.join(' ')} <&3 2>>${q(logFile)}`,
     ].join('; ');
 
     // The report token rides the SESSION environment, not argv: argv is readable
@@ -204,7 +220,12 @@ export async function launchWorker(swarm, worker) {
   } catch (err) {
     // The unlink normally happens inside the pane; if we never got that far the
     // prompt is still sitting there.
-    try { fs.unlinkSync(promptFile); } catch { /* already gone */ }
+    // The inner script rm's it the moment fd 3 is open, so this is only a
+    // belt-and-braces sweep for a launch that failed before that ran.
+    try {
+      if (isRemote(host)) await execOnHost(host, `rm -f ${q(promptFile)}`);
+      else fs.unlinkSync(promptFile);
+    } catch { /* already gone */ }
     throw err;
   }
 }
