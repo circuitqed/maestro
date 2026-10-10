@@ -309,6 +309,14 @@ router.get('/grants', requireAdmin, (req, res) => {
 });
 
 router.post('/grants', requireAdmin, (req, res) => {
+    // A shell agent's pane executes what is pasted into it, and swarm summaries
+    // quote worker output, so granting one swarm rights creates a command-injection
+    // path from any worker. Refuse at the boundary rather than silently withholding
+    // the summary later.
+    const tgt = getAgent(Number(req.body && req.body.agentId));
+    if (tgt && ((tgt.config && tgt.config.provider) || 'claude') === 'shell') {
+      return res.status(400).json({ error: 'shell agents cannot be granted swarm rights', code: 'BAD_PROVIDER' });
+    }
   try {
     const { agentId, maxWorkers, maxSpendUsd, accountDir } = req.body || {};
     // Checked before the lookup: better-sqlite3 refuses to bind undefined or NaN, so

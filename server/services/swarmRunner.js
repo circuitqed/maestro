@@ -504,6 +504,17 @@ async function notifySpawners() {
       logSwarmEvent(s.id, 'reported', 'spawner has no session to deliver into');
       continue;
     }
+    // Only deliver into a pane that treats text as INPUT. A `shell` agent's pane is
+    // a bash prompt, so a pasted summary is EXECUTED -- observed: "[maestro-swarm:
+    // command not found". That is not merely noisy: the summary quotes worker
+    // results, and a worker's output is attacker-influenceable, so a crafted result
+    // would become a command on the host. Conversational providers only.
+    const provider = (agent.config && agent.config.provider) || 'claude';
+    if (provider === 'shell') {
+      logSwarmEvent(s.id, 'reported',
+        `spawner ${agent.name} is a shell agent; summary withheld (pasted text would execute)`);
+      continue;
+    }
     const host = agent.host_id ? getHost(agent.host_id) : null;
     // sendText throws when the pane is gone, and execFile stringifies the ENTIRE
     // argv into err.message -- which here is the whole swarm summary, worker
