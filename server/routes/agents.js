@@ -26,6 +26,7 @@ import { resetHostBackoff, registerAgent, unregisterAgent } from '../services/ag
 import { startAgentSession } from '../services/agentStart.js';
 import { getProvider, getProviderList } from '../services/providers.js';
 import { listAccounts } from '../services/accounts.js';
+import { usageForAgent } from '../services/usage.js';
 import { isRemote, isValidSessionName, execOnHost, shellQuote, sshBaseArgs, remoteWrap, isHostUnreachable, describeHostError } from '../services/hosts.js';
 import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js';
 import { appendAgentLane } from '../services/scaffold.js';
@@ -249,6 +250,18 @@ router.get('/accounts', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// How much of its plan this agent's account has used. Sources differ by provider
+// (see services/usage.js) and either may be unavailable, so this always answers
+// 200 with an ok flag rather than erroring -- an indicator must not be able to
+// break the view it sits in.
+router.get('/:id/usage', async (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ ok: false, reason: 'no such agent' });
+  if (!checkAgentAccess(req, res, agent)) return;
+  const host = agent.host_id ? getHost(agent.host_id) : null;
+  res.json(await usageForAgent(agent, host));
 });
 
 // List available tmux sessions (optionally on a specific host)

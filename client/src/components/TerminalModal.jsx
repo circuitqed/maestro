@@ -4,6 +4,7 @@ import ChatView from './ChatView';
 import ModelBadge from './ModelBadge';
 import ConnectionBadge from './ConnectionBadge';
 import AccountBadge from './AccountBadge';
+import UsageBadge from './UsageBadge';
 import { useApp } from '../context/AppContext';
 
 function ViewToggle({ mode, onChange }) {
@@ -120,6 +121,9 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
           {mode === 'chat' && agentId != null && <ConnectionBadge hostId={hostId} />}
           {mode === 'chat' && agentId != null && (
             <AccountBadge agentId={agentId} hostId={hostId} provider={agentProvider} running={agentRunning} />
+          )}
+          {mode === 'chat' && agentId != null && (
+            <UsageBadge agentId={agentId} provider={agentProvider} />
           )}
           </div>
           {agentId != null && <ViewToggle mode={mode} onChange={setViewMode} />}
