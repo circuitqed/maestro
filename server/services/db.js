@@ -3,7 +3,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dbPath = path.join(__dirname, '../data/maestro.db');
+// Overridable so tests can run against a throwaway file. Without this the only
+// way to exercise db-backed logic was against the real database, or by stubbing
+// an ES module export -- which is frozen and cannot be redefined.
+const dbPath = process.env.MAESTRO_DB_PATH || path.join(__dirname, '../data/maestro.db');
 
 let db;
 
