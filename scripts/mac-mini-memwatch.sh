@@ -51,6 +51,16 @@ SWAP_CRIT_MB=${SWAP_CRIT_MB:-6000}
 # A shell this big is broken by definition; the panic ones were 11-24 GB. High
 # enough that no legitimate login shell or launchd job script is ever a candidate.
 REAP_SHELL_MB=${REAP_SHELL_MB:-2048}
+# ...but measured how? `ps` RSS counts only RESIDENT pages, and the leak this was
+# built to catch was 96% swapped out: six transcript tailers holding 1.1-7.0 GB
+# each reported 255 MB of RSS, so the reaper never fired once (reaped=0 on every
+# CRIT) and only the compressor alarm caught the machine going down.
+#
+# So RSS is a cheap PRE-FILTER, not the measurement. Any shell past it gets a
+# vmmap, whose "Physical footprint" counts swapped-out dirty pages too, and the
+# reap decision is made on that. vmmap costs ~100ms, which is why it is not run
+# over every process every minute.
+SUSPECT_SHELL_MB=${SUSPECT_SHELL_MB:-200}
 # Early tripwires, independent of memory. Waiting for the compressor to fill means
 # only learning the cause once a week; shells pile up long before that, so capture
 # the moment the pile starts. Both are far below anything healthy: this box ran 13
@@ -107,6 +117,19 @@ snapshot() {
   echo "$f"
 }
 
+# Real memory held by a process, INCLUDING pages swapped out. This is the number
+# that mattered: ps said 255 MB, vmmap said 7.0 GB.
+footprint_mb() {
+  vmmap --summary "$1" 2>/dev/null | awk '
+    /Physical footprint:/ {
+      v=$3
+      if (v ~ /G$/) { sub(/G$/,"",v); printf "%d", v*1024 }
+      else if (v ~ /M$/) { sub(/M$/,"",v); printf "%d", v }
+      else if (v ~ /K$/) { sub(/K$/,"",v); printf "%d", v/1024 }
+      exit
+    }'
+}
+
 # Narrow on purpose. Only shells, only orphans (ppid 1 -- their real parent died,
 # so nothing is coming to clean them up), and only ones past a size no working
 # shell reaches. Legitimate launchd job scripts also run with ppid 1, which is
@@ -115,8 +138,10 @@ reap() {
   local killed=0 line pid rss args
   while read -r pid rss args; do
     [ -z "${pid:-}" ] && continue
-    [ "$rss" -lt $(( REAP_SHELL_MB * 1024 )) ] && continue
-    echo "$(now) REAP pid=$pid rss=$((rss/1024))MB args=$args" >> "$LOG"
+    [ "$rss" -lt $(( SUSPECT_SHELL_MB * 1024 )) ] && continue
+    fp=$(footprint_mb "$pid")
+    [ "${fp:-0}" -lt "$REAP_SHELL_MB" ] && continue
+    echo "$(now) REAP pid=$pid rss=$((rss/1024))MB footprint=${fp}MB args=$args" >> "$LOG"
     kill -9 "$pid" 2>/dev/null && killed=$((killed+1))
   done <<EOF
 $(ps -Ao pid,ppid,rss,comm,args 2>/dev/null | awk '$2==1 && $4 ~ /(^|\/)(zsh|bash|sh)$/ {pid=$1; rss=$3; $1=$2=$3=$4=""; print pid, rss, $0}')
@@ -129,8 +154,17 @@ EOF
 count_shells() {
   ORPHAN_SHELLS=$(ps -Ao pid,ppid,rss,comm 2>/dev/null \
     | awk '$2==1 && $4 ~ /(^|\/)(zsh|bash|sh)$/' | wc -l | tr -d ' ')
-  BIGGEST_SHELL_MB=$(ps -Ao rss,comm 2>/dev/null \
-    | awk '$2 ~ /(^|\/)(zsh|bash|sh)$/ {if ($1>m) m=$1} END {printf "%d", m/1024}')
+  # Reported as footprint, not RSS, for the same reason: the biggest shell on this
+  # box read 255 MB while holding 7 GB, so an RSS-based metric in the log would have
+  # looked calm for the entire slide into the panic.
+  local bigpid
+  bigpid=$(ps -Ao rss,pid,comm 2>/dev/null \
+    | awk '$3 ~ /(^|\/)(zsh|bash|sh)$/ {if ($1>m) {m=$1; p=$2}} END {print p}')
+  BIGGEST_SHELL_MB=0
+  if [ -n "${bigpid:-}" ]; then
+    BIGGEST_SHELL_MB=$(footprint_mb "$bigpid")
+    [ -z "$BIGGEST_SHELL_MB" ] && BIGGEST_SHELL_MB=0
+  fi
   ORPHAN_SHELLS=${ORPHAN_SHELLS:-0}
   BIGGEST_SHELL_MB=${BIGGEST_SHELL_MB:-0}
 }
