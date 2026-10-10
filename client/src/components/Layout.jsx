@@ -6,16 +6,28 @@ import Header from './Header';
 import Dashboard from './Dashboard';
 import TerminalPanel from './TerminalPanel';
 import TerminalModal from './TerminalModal';
+import SwarmPanel from './SwarmPanel';
 
 function Layout() {
-  const { terminalOpen, activeTerminal, closeTerminal } = useApp();
+  const { terminalOpen, activeTerminal, closeTerminal, activeSwarm, closeSwarm, panelFocus } = useApp();
   const isMobile = useMediaQuery('(max-width: 767px)');
   const terminalRef = useRef(null);
 
+  // One slot, two tenants: whichever was opened last is on top, and the other is
+  // parked rather than closed. Closing the one on top reveals the parked one -- which
+  // is what makes "Open session" on a stuck worker safe to click, since the swarm you
+  // were reading comes back when you are done looking at the pane.
+  const terminalAvailable = terminalOpen && !!activeTerminal;
+  const swarmAvailable = !!activeSwarm;
+  const swarmShown = swarmAvailable && (panelFocus === 'swarm' || !terminalAvailable);
+  const terminalShown = !swarmShown && terminalAvailable;
+  const slotFilled = swarmShown || terminalShown;
+
   // Global keyboard capture - focus terminal when typing
   const handleGlobalKeyDown = useCallback((e) => {
-    // Don't capture if terminal is closed
-    if (!terminalOpen || !activeTerminal) return;
+    // Don't capture if terminal is closed, or if the swarm panel has the slot — its
+    // buttons and scroll must not have every keystroke stolen by a hidden xterm.
+    if (!terminalOpen || !activeTerminal || swarmShown) return;
 
     // Only capture for the terminal view (chat has its own textarea)
     if (activeTerminal.mode && activeTerminal.mode !== 'terminal') return;
@@ -43,7 +55,7 @@ function Layout() {
     if (terminalRef.current?.focus) {
       terminalRef.current.focus();
     }
-  }, [terminalOpen, activeTerminal]);
+  }, [terminalOpen, activeTerminal, swarmShown]);
 
   useEffect(() => {
     document.addEventListener('keydown', handleGlobalKeyDown);
@@ -58,7 +70,7 @@ function Layout() {
         <div className="flex-1 min-h-0 overflow-auto">
           <Dashboard />
         </div>
-        {terminalOpen && activeTerminal && (
+        {terminalShown && (
           <TerminalModal
             onClose={closeTerminal}
             agentId={activeTerminal.agentId}
@@ -66,6 +78,13 @@ function Layout() {
             hostId={activeTerminal.hostId}
             mode={activeTerminal.mode}
           />
+        )}
+        {/* No TerminalModal equivalent for swarms: the panel is ordinary scrolling
+            HTML, so it needs none of that component's keyboard-viewport arithmetic. */}
+        {swarmShown && (
+          <div className="fixed inset-0 z-50 flex flex-col bg-gray-900">
+            <SwarmPanel swarmId={activeSwarm.id} onClose={closeSwarm} />
+          </div>
         )}
       </div>
     );
@@ -75,7 +94,7 @@ function Layout() {
   return (
     <div className="h-screen flex flex-col bg-gray-900">
       <Header />
-      {terminalOpen && activeTerminal ? (
+      {slotFilled ? (
         <PanelGroup direction="horizontal" className="flex-1 min-h-0">
           <Panel defaultSize={35} minSize={20} className="overflow-hidden">
             <div className="h-full overflow-auto">
@@ -86,14 +105,18 @@ function Layout() {
             <div className="w-1 h-8 bg-gray-600 group-hover:bg-primary-400 rounded-full transition-colors" />
           </PanelResizeHandle>
           <Panel defaultSize={65} minSize={30} style={{ display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
-            <TerminalPanel
-              ref={terminalRef}
-              agentId={activeTerminal.agentId}
-              sessionName={activeTerminal.session}
-              hostId={activeTerminal.hostId}
-              mode={activeTerminal.mode}
-              onClose={closeTerminal}
-            />
+            {swarmShown ? (
+              <SwarmPanel swarmId={activeSwarm.id} onClose={closeSwarm} />
+            ) : (
+              <TerminalPanel
+                ref={terminalRef}
+                agentId={activeTerminal.agentId}
+                sessionName={activeTerminal.session}
+                hostId={activeTerminal.hostId}
+                mode={activeTerminal.mode}
+                onClose={closeTerminal}
+              />
+            )}
           </Panel>
         </PanelGroup>
       ) : (

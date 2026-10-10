@@ -39,6 +39,13 @@ while [ $# -gt 0 ]; do
     *) echo "unknown flag $1" >&2; exit 2;;
   esac
 done
+# The report token may arrive in the environment instead of argv. Its authority is
+# "close out this worker", and argv is world-readable from /proc for the worker's
+# whole life -- a local process could POST {state:done,cost_usd:0}, freeing the
+# concurrency slot and its reservation while the real worker keeps billing, and
+# understating the daily ledger. tmux -e keeps it out of `ps`.
+TOKEN="${TOKEN:-${MAESTRO_REPORT_TOKEN:-}}"
+
 [ -n "$ID" ] || { echo "--id is required" >&2; exit 2; }
 [ -n "$ACCOUNT" ] || { echo "--account is required" >&2; exit 2; }
 

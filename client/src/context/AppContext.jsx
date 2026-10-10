@@ -13,6 +13,14 @@ export function AppProvider({ children }) {
   const [hosts, setHosts] = useState([]);
   const [activeTerminal, setActiveTerminal] = useState(null);
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [swarms, setSwarms] = useState([]);
+  const [swarmGlobal, setSwarmGlobal] = useState(null);
+  const [activeSwarm, setActiveSwarm] = useState(null);
+  // The right-hand slot holds one thing at a time, but both the agent panel and the
+  // swarm panel keep their own state. This says which of the two is on top; closing
+  // it falls back to the other rather than emptying the slot, so opening a swarm to
+  // check on it does not cost you the agent you were reading.
+  const [panelFocus, setPanelFocus] = useState('terminal');
 
   // Notifications
   const {
@@ -34,6 +42,7 @@ export function AppProvider({ children }) {
       loadProjects();
       loadAgents();
       loadHosts();
+      loadSwarms();
     }
   }, [authenticated]);
 
@@ -94,6 +103,9 @@ export function AppProvider({ children }) {
     setUser(null);
     setProjects([]);
     setAgents([]);
+    setSwarms([]);
+    setSwarmGlobal(null);
+    setActiveSwarm(null);
   };
 
   const loadProjects = async () => {
@@ -125,6 +137,31 @@ export function AppProvider({ children }) {
       console.error('Failed to load hosts:', err);
     }
   };
+
+  const loadSwarms = useCallback(async () => {
+    try {
+      const res = await fetch('/api/swarms');
+      if (!res.ok) return;
+      const data = await res.json();
+      setSwarms(data.swarms || []);
+      setSwarmGlobal(data.global || null);
+    } catch (err) {
+      // Keep the last known list. A swarm row that blinks out on one failed poll
+      // reads as "the swarm ended", which is the opposite of the truth.
+      console.error('Failed to load swarms:', err);
+    }
+  }, []);
+
+  // Swarms have no notifications socket, so the list is a poll. The rate follows
+  // whether anything is happening: a swarm spends money by the second and a pending
+  // approval is someone waiting, but an account with no swarms at all should not pay
+  // for a request every 3s forever -- phones included.
+  const swarmsIdle = swarms.length === 0 && !activeSwarm;
+  useEffect(() => {
+    if (!authenticated) return undefined;
+    const id = setInterval(loadSwarms, swarmsIdle ? 20000 : 3000);
+    return () => clearInterval(id);
+  }, [authenticated, swarmsIdle, loadSwarms]);
 
   const createProject = async (projectData) => {
     const res = await fetch('/api/projects', {
@@ -422,6 +459,7 @@ export function AppProvider({ children }) {
       mode,
     });
     setTerminalOpen(true);
+    setPanelFocus('terminal');
   }, []);
 
   // Back-compat: open a terminal by raw session name (no associated agent id).
@@ -433,6 +471,9 @@ export function AppProvider({ children }) {
     }
     setActiveTerminal({ agentId: null, session: sessionName, hostId, mode: 'terminal' });
     setTerminalOpen(true);
+    // A worker's tmux session is opened this way from the swarm panel, so taking the
+    // slot is the point -- the swarm stays open underneath and comes back on close.
+    setPanelFocus('terminal');
   }, []);
 
   // Swap the rendered view for the currently open agent panel in place.
@@ -495,6 +536,54 @@ export function AppProvider({ children }) {
     }, 300);
   }, []);
 
+  // ----------------------------------------------------------------- swarms ---
+
+  const openSwarm = useCallback((swarmId) => {
+    setActiveSwarm({ id: swarmId });
+    setPanelFocus('swarm');
+  }, []);
+
+  const closeSwarm = useCallback(() => {
+    setActiveSwarm(null);
+    setPanelFocus('terminal');
+  }, []);
+
+  /** POST, then refresh the list so the row and the panel agree immediately. */
+  const swarmAction = useCallback(async (swarmId, path, body) => {
+    const res = await fetch(`/api/swarms/${swarmId}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    let data = null;
+    try { data = await res.json(); } catch { /* an empty body is still an answer */ }
+    if (!res.ok) throw new Error((data && data.error) || 'Swarm action failed');
+    await loadSwarms();
+    return data;
+  }, [loadSwarms]);
+
+  // maxWorkers may only ever narrow the request; the server ignores anything larger,
+  // because widening here would route around the grant the agent was clamped to.
+  const approveSwarm = useCallback((id, opts) => swarmAction(id, '/approve', opts), [swarmAction]);
+  const pauseSwarm = useCallback((id, paused) => swarmAction(id, '/pause', { paused }), [swarmAction]);
+  const cancelSwarm = useCallback((id) => swarmAction(id, '/cancel'), [swarmAction]);
+  const setSwarmConcurrency = useCallback((id, n) => swarmAction(id, '/concurrency', { n }), [swarmAction]);
+
+  const fetchSwarm = useCallback(async (id, signal) => {
+    const res = await fetch(`/api/swarms/${id}`, { signal });
+    if (!res.ok) {
+      let message = 'Failed to load swarm';
+      try {
+        const data = await res.json();
+        message = data.error || message;
+      } catch {
+        // ignore JSON parse errors
+      }
+      throw new Error(message);
+    }
+    return res.json();
+  }, []);
+
   const value = {
     // Auth
     authenticated,
@@ -543,7 +632,21 @@ export function AppProvider({ children }) {
     deleteHost,
     testHost,
 
+    // Swarms
+    swarms,
+    swarmGlobal,
+    loadSwarms,
+    activeSwarm,
+    openSwarm,
+    closeSwarm,
+    approveSwarm,
+    pauseSwarm,
+    cancelSwarm,
+    setSwarmConcurrency,
+    fetchSwarm,
+
     // Terminal / agent views
+    panelFocus,
     activeTerminal,
     terminalOpen,
     openTerminal,

@@ -1,20 +1,14 @@
 /**
  * The interface agents themselves call, as opposed to the one the browser calls.
  *
- * Authentication is deliberately two-part, because "which agent is this?" matters
- * as much as "is this allowed?":
- *
- *   - a shared token proves the caller is something Maestro installed, not any
- *     process that happens to reach the port;
- *   - the tmux session name proves WHICH agent is calling, and the server resolves
- *     it against the agents table rather than trusting a name in the body.
- *
- * The session name is read by the CLI from its own $TMUX context, so an agent
- * cannot claim to be a different agent just by passing a flag. That matters: the
- * sender's identity is what the delegation allowlist is checked against.
+ * Who the caller is matters as much as whether it is allowed -- the delegation
+ * allowlist is checked against the sender's identity -- so identity comes from the
+ * caller's tmux session, never from the body. That middleware is shared with the
+ * other routers mounted at /api/agent; see middleware/agentIdentity.js.
  */
 import { Router } from 'express';
 import { getDb, getAgent } from '../services/db.js';
+import { requireAgentIdentity } from '../middleware/agentIdentity.js';
 import {
   submitTask, getTask, acknowledgeTask, finishTask, cancelTask,
   inboxFor, outboxFor, listDelegates, config,
@@ -22,37 +16,7 @@ import {
 
 const router = Router();
 
-function tokenOk(req) {
-  const expected = getDb().prepare("SELECT value FROM settings WHERE key = 'agent_api_token'").get();
-  if (!expected || !expected.value) return false;
-  const got = req.get('X-Maestro-Agent-Token') || '';
-  // Length-independent compare is overkill for a localhost/tailnet token, but the
-  // cost is nil and it avoids a trivially timeable equality.
-  if (got.length !== expected.value.length) return false;
-  let diff = 0;
-  for (let i = 0; i < got.length; i++) diff |= got.charCodeAt(i) ^ expected.value.charCodeAt(i);
-  return diff === 0;
-}
-
-router.use((req, res, next) => {
-  if (!tokenOk(req)) return res.status(401).json({ error: 'bad or missing agent token' });
-  const session = req.get('X-Maestro-Session');
-  if (!session) return res.status(400).json({ error: 'missing X-Maestro-Session' });
-  // Session names are unique per HOST, not globally -- `aws-awr` exists on both
-  // oracle and garage-wsl today. A .get() silently picked whichever row SQLite
-  // returned first, so one agent could be answered as another. Refuse instead.
-  const rows = getDb().prepare('SELECT * FROM agents WHERE screen_session = ?').all(session);
-  if (rows.length === 0) return res.status(404).json({ error: `no agent registered for session ${session}` });
-  if (rows.length > 1) {
-    return res.status(409).json({
-      error: `session name ${session} exists on ${rows.length} hosts (${rows.map((r) => r.host_id ?? 'local').join(', ')}) — cannot tell which agent is calling`,
-      code: 'AMBIGUOUS_SESSION',
-    });
-  }
-  const row = rows[0];
-  req.agent = row;
-  next();
-});
+router.use(requireAgentIdentity);
 
 const fail = (res, err) => {
   const map = { NOT_PERMITTED: 403, NOT_YOURS: 403, NO_TASK: 404, CAP: 429, SELF: 400, EMPTY: 400, FINISHED: 409 };

@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# Spawn a budget-capped swarm of short-lived workers, then collect what they found.
+#
+# A swarm is neither free nor instant. Every worker costs ~$0.05 of cached system
+# prompt before it reads a single line (the first one ~$0.15), so batching items is
+# what makes it worth doing -- and nothing starts until a human approves the swarm
+# in Maestro. Spawn, then poll `status`, then `results`.
+#
+#   maestro-swarm spawn --name NAME --items-file FILE [--workers N] [--budget USD]
+#                       [--per-worker USD] [--items-per-worker N] [--model ID]
+#                       [--timeout SECS]
+#   maestro-swarm list
+#   maestro-swarm status ID
+#   maestro-swarm results ID
+#   maestro-swarm cancel ID
+#
+# The items file is one item per line; blank lines and #-comments are skipped, and
+# `--items-file -` reads stdin. Requests above your grant are CLAMPED, not refused,
+# so always read the clamped/COST lines spawn prints back.
+#
+# Exit codes: 0 ok. 1 usage or transport. 3 refused but retryable -- a cap is full,
+# wait and retry or ask for less. 4 refused for good -- no grant, swarms disabled,
+# approval withheld, not your swarm; tell your human instead of retrying.
+set -uo pipefail
+
+# Per-host settings written by install-agent-cli.sh. A remote host cannot reach
+# Maestro on localhost.
+[ -r "$HOME/.maestro/env" ] && . "$HOME/.maestro/env"
+
+BASE="${MAESTRO_URL:-http://localhost:7007}"
+TOKEN_FILE="${MAESTRO_AGENT_TOKEN_FILE:-$HOME/.maestro/agent-token}"
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+
+usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# Before any credential or identity work: `--help` is the first thing an agent runs
+# to find out what this is, and failing it behind a token check teaches the agent
+# the tool is broken.
+case "${1:-}" in
+  ''|-h|--help|help) usage; exit 0 ;;
+esac
+
+[ -r "$TOKEN_FILE" ] || die "no agent token at $TOKEN_FILE — ask Dave to run scripts/install-agent-cli.sh on this host"
+TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
+
+# Identity is not a flag: the swarm GRANT is checked against whoever is calling, so
+# the caller must not be able to name itself. Maestro sets MAESTRO_SESSION on the
+# tmux session, so every process in the pane inherits it even when the agent's shell
+# tooling strips $TMUX (Codex does).
+SESSION="${MAESTRO_SESSION:-}"
+if [ -z "$SESSION" ] && [ -n "${TMUX:-}" ]; then
+  SESSION="$(tmux display-message -p '#S' 2>/dev/null)"
+fi
+[ -n "$SESSION" ] || die "cannot tell which agent this is: no MAESTRO_SESSION in the environment and not inside tmux.
+If this agent was started before swarms existed, restart it from Maestro and it will pick the variable up."
+
+api() { # method path [json]
+  local method="$1" path="$2" body="${3:-}"
+  if [ -n "$body" ]; then
+    curl -sS -X "$method" "$BASE/api/agent$path" \
+      -H "X-Maestro-Agent-Token: $TOKEN" -H "X-Maestro-Session: $SESSION" \
+      -H 'Content-Type: application/json' -d "$body"
+  else
+    curl -sS -X "$method" "$BASE/api/agent$path" \
+      -H "X-Maestro-Agent-Token: $TOKEN" -H "X-Maestro-Session: $SESSION"
+  fi
+}
+
+# Both python programs are held in variables rather than inlined. `python3 -c '...'`
+# cannot contain a single quote, and `python3 - <<EOF` would take the heredoc as
+# stdin -- which is where the JSON being formatted arrives.
+read -r -d '' BUILD_PROG <<'PY' || true
+import json, sys
+
+path, name = sys.argv[1], sys.argv[2]
+fh = sys.stdin if path == "-" else open(path, encoding="utf-8", errors="replace")
+items = []
+for line in fh:
+    s = line.strip()
+    # Agents generate these files and comment out the items they decided against.
+    # A commented line is a decision, not an item.
+    if s and not s.startswith("#"):
+        items.append(s)
+if not items:
+    sys.stderr.write("no items found in %s\n" % path)
+    sys.exit(1)
+
+body = {"name": name, "items": items}
+# Typed, not stringified: the server clamps these numbers, it does not parse them.
+cast = {"maxWorkers": int, "maxSpendUsd": float, "perWorkerUsd": float,
+        "itemsPerWorker": int, "perWorkerSeconds": int, "model": str}
+for pair in sys.argv[3:]:
+    k, _, v = pair.partition("=")
+    if v:
+        body[k] = cast[k](v)
+print(json.dumps(body))
+PY
+
+read -r -d '' FMT_PROG <<'PY' || true
+import json, sys
+
+mode = sys.argv[1]
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.stderr.write("no parseable response from Maestro -- is it running?\n")
+    sys.exit(1)
+
+# Refusals are the common case worth getting right: an agent has to be able to tell
+# backpressure from a hard stop, or it will either hammer a dead system or abandon
+# a queue that would have drained in a minute.
+if isinstance(d, dict) and d.get("error"):
+    sys.stderr.write("refused: %s - %s\n" % (d.get("code") or "ERROR", d["error"]))
+    if d.get("retryable"):
+        sys.stderr.write("retryable: a cap is full right now. Wait, or ask for fewer/cheaper workers.\n")
+        sys.exit(3)
+    sys.stderr.write("not retryable: a human must change something (grant, approval, kill switch).\n")
+    sys.exit(4)
+
+def usd(x):
+    return "$%.2f" % float(x or 0)
+
+def line(*bits):
+    print("  ".join(str(b) for b in bits if b not in (None, "")))
+
+if mode == "spawn":
+    e = d.get("estimate") or {}
+    print("swarm %s" % d["id"])
+    print("  name     %s" % d["name"])
+    print("  state    %s" % d["state"])
+    print("  batch    %s items -> %s workers x %s items, %ss each"
+          % (d.get("items"), d["maxWorkers"], d["itemsPerWorker"], d["perWorkerSeconds"]))
+    print("  COST     floor %s   ceiling %s   swarm cap %s"
+          % (usd(e.get("floorUsd")), usd(e.get("ceilingUsd")), usd(d["maxSpendUsd"])))
+    print("           %s for the first worker then %s each, before any work is done"
+          % (usd(e.get("coldStartUsd")), usd(e.get("spawnFloorEach"))))
+    for c in d.get("clamped") or []:
+        print("  CLAMPED  %s" % c)
+    for w in d.get("warnings") or []:
+        print("  WARN     %s" % w)
+    if d.get("approvalRequired"):
+        print("  PENDING APPROVAL - a human approves this in Maestro; no worker starts before then")
+    print("  poll     maestro-swarm status %s" % d["id"])
+elif mode == "list":
+    if not d:
+        print("(no swarms)")
+    for s in d:
+        line(s["id"][:8], "%-16s" % s["state"],
+             "%s/%s" % (usd(s.get("spentUsd")), usd(s["maxSpendUsd"])),
+             "live %s" % s.get("live"),
+             "%s/%s launched" % (s.get("launched"), s["maxWorkers"]),
+             s["name"])
+elif mode == "status":
+    l, g = d.get("ledger") or {}, d.get("global") or {}
+    print("%s  [%s%s]  %s" % (d["name"], d["state"], " PAUSED" if d.get("paused") else "", d["id"]))
+    if d.get("haltReason"):
+        print("  stopped: %s" % d["haltReason"])
+    print("  spent %s + reserved %s of %s   workers %s/%s launched, %s live"
+          % (usd(l.get("spent")), usd(l.get("reserved")), usd(l.get("cap")),
+             l.get("launched"), l.get("maxWorkers"), l.get("live")))
+    if not g.get("enabled"):
+        print("  swarms are globally DISABLED (kill switch) - nothing will spawn")
+    print("  global %s/%s live, %s/%s spent today"
+          % (g.get("liveWorkers"), g.get("maxLiveWorkers"), usd(g.get("spentToday")), usd(g.get("dailyCap"))))
+    for w in d.get("workers") or []:
+        line("    #%s" % w["idx"], w["state"],
+             usd(w["costUsd"]) if w.get("costUsd") is not None else None,
+             w.get("terminalReason"), (w.get("errorSignature") or "")[:60])
+elif mode == "results":
+    counts = ", ".join("%s=%s" % kv for kv in (d.get("counts") or {}).items())
+    print("%s  [%s]  %s" % (d["name"], d["state"], counts or "nothing has finished yet"))
+    if d.get("pending"):
+        print("  %s worker(s) still running - what follows is partial" % d["pending"])
+    if not d.get("complete"):
+        print("  NOT COMPLETE: more workers may still launch. Collate when complete is true.")
+    for r in d.get("results") or []:
+        print("")
+        print(("--- #%s %s %s %s" % (r["idx"], r["state"], (usd(r.get("costUsd")) if r.get("costUsd") is not None else "cost unknown"),
+                                    r.get("terminalReason") or "")).rstrip())
+        print(r.get("result") or "(no result; %s)" % (r.get("errorSignature") or "no error recorded"))
+elif mode == "cancel":
+    print("%s is now %s%s" % (d["id"], d["state"],
+                              " (was already finished)" if d.get("alreadyFinished") else ""))
+    if d.get("note"):
+        print("  %s" % d["note"])
+else:
+    json.dump(d, sys.stdout, indent=2)
+PY
+
+fmt() { python3 -c "$FMT_PROG" "$1"; }
+
+cmd="${1:-}"; shift 2>/dev/null || true
+case "$cmd" in
+  list)    api GET /swarms | fmt list ;;
+  status)  [ $# -ge 1 ] || die "usage: maestro-swarm status ID"; api GET "/swarms/$1" | fmt status ;;
+  results) [ $# -ge 1 ] || die "usage: maestro-swarm results ID"; api GET "/swarms/$1/results" | fmt results ;;
+  cancel)  [ $# -ge 1 ] || die "usage: maestro-swarm cancel ID"; api POST "/swarms/$1/cancel" '{}' | fmt cancel ;;
+  spawn)
+    name=""; file=""; workers=""; budget=""; per=""; ipw=""; model=""; tmo=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --name) name="$2"; shift 2;;
+        --items-file|--items) file="$2"; shift 2;;
+        --workers) workers="$2"; shift 2;;
+        --budget) budget="$2"; shift 2;;
+        --per-worker) per="$2"; shift 2;;
+        --items-per-worker) ipw="$2"; shift 2;;
+        --model) model="$2"; shift 2;;
+        --timeout) tmo="$2"; shift 2;;
+        *) die "unknown flag $1";;
+      esac
+    done
+    [ -n "$name" ] && [ -n "$file" ] || die 'usage: maestro-swarm spawn --name NAME --items-file FILE'
+    [ "$file" = "-" ] || [ -r "$file" ] || die "cannot read items file $file"
+    body="$(python3 -c "$BUILD_PROG" "$file" "$name" \
+      "maxWorkers=$workers" "maxSpendUsd=$budget" "perWorkerUsd=$per" \
+      "itemsPerWorker=$ipw" "perWorkerSeconds=$tmo" "model=$model")" || exit 1
+    api POST /swarms "$body" | fmt spawn ;;
+  *) die "unknown command: $cmd (try --help)" ;;
+esac

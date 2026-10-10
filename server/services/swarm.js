@@ -422,6 +422,34 @@ export function finishWorker(id, { state, result = null, costUsd = null, termina
   });
 }
 
+/**
+ * Move a worker forward ONLY if it is still live.
+ *
+ * launchWorker sets 'launching' then 'running' around three execOnHost round
+ * trips (sessionExists, killSession, new-session), each up to 15s. A fast worker
+ * can POST its report inside that window and already be `done` -- at which point
+ * an unconditional setWorkerState writes it back to `running`, reconcile() then
+ * finds a running row with no tmux session, and finishWorker(..., 'vanished')
+ * overwrites its cost and result with null.
+ *
+ * That breaks the money invariant in BOTH directions at once: it re-reserves a
+ * full per-worker slot against a process that has already exited, and it erases
+ * real spend from the daily and monthly ledgers, raising everyone's headroom.
+ * Reproduced: two workers each reported done at $0.05; one finished as
+ * failed/vanished with null cost and the swarm ledger read $0.05 instead of $0.10.
+ */
+export function setWorkerStateIfLive(id, state, fields = {}) {
+  const sets = ['state = ?'];
+  const vals = [state];
+  for (const [k, v] of Object.entries(fields)) { sets.push(`${k} = ?`); vals.push(v); }
+  vals.push(id);
+  getDb().prepare(
+    `UPDATE swarm_workers SET ${sets.join(', ')}
+     WHERE id = ? AND state IN ('admitted','launching','running')`
+  ).run(...vals);
+  return getWorker(id);
+}
+
 export function listWorkers(swarmId) {
   return getDb().prepare('SELECT * FROM swarm_workers WHERE swarm_id = ? ORDER BY idx').all(swarmId);
 }

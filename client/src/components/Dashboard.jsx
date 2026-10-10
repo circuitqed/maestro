@@ -3,6 +3,8 @@ import { useApp } from '../context/AppContext';
 import ProjectCard from './ProjectCard';
 import AgentRow from './AgentRow';
 import AddAgentForm from './AddAgentForm';
+import SwarmRow from './SwarmRow';
+import SwarmApprovalCard from './SwarmApprovalCard';
 
 // Collapsible section component
 function Section({ title, count, defaultCollapsed = false, children, variant = 'default' }) {
@@ -42,7 +44,7 @@ function Section({ title, count, defaultCollapsed = false, children, variant = '
 }
 
 function Dashboard() {
-  const { projects, agents, createProject, agentStates, loadAgents } = useApp();
+  const { projects, agents, createProject, agentStates, loadAgents, swarms } = useApp();
   const [view, setView] = useState(() => localStorage.getItem('dashboardView') || 'projects');
   const [showAddProject, setShowAddProject] = useState(false);
   const [showAddAgent, setShowAddAgent] = useState(false);
@@ -157,6 +159,20 @@ function Dashboard() {
     (tsOf(b.last_seen_at) - tsOf(a.last_seen_at)) ||
     (tsOf(b.last_user_at) - tsOf(a.last_user_at)) ||
     (a.name || '').localeCompare(b.name || '');
+  // Swarms. A pending one is a DECISION, so it renders as the approval card at the
+  // top and gets no row — the same swarm in two places would read as two swarms.
+  const pendingSwarms = (swarms || []).filter((s) => s.state === 'pending_approval');
+  // A finished swarm stays on screen for a while: its results are read from the panel
+  // this row opens, and a swarm that vanishes the second it completes takes them with
+  // it. Server-computed seconds, never a parsed timestamp (see swarmFormat.js).
+  const SWARM_LINGER_S = 15 * 60;
+  const activeSwarms = (swarms || [])
+    .filter((s) => s.state !== 'pending_approval')
+    .filter((s) => !s.finished || (s.finishedAgoS !== null && s.finishedAgoS < SWARM_LINGER_S))
+    // Oldest first, which is a stable order: a new swarm is appended below the ones
+    // already on screen instead of shoving them down under the cursor on a poll.
+    .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+
   const activeAgents = agents.filter((a) => bucket(a) === 'active').sort(byRecency);
   const idleAgents = agents.filter((a) => bucket(a) === 'idle').sort(byRecency);
   const stoppedAgents = agents.filter((a) => bucket(a) === 'stopped').sort(byRecency);
@@ -267,11 +283,25 @@ function Dashboard() {
         </div>
       )}
 
+      {/* Swarms awaiting a human. Above the view toggle's content and in both views:
+          a swarm is not a project and not an agent, it is money waiting on a decision,
+          and the one thing it must not do is hide behind the tab you are not on. */}
+      {pendingSwarms.map((swarm) => (
+        <SwarmApprovalCard key={swarm.id} swarm={swarm} />
+      ))}
+
       {/* Projects View */}
       {view === 'projects' && (
         <div>
           {/* Active Projects */}
-          <Section title="Active" count={activeProjects.length} variant="active">
+          <Section title="Active" count={activeProjects.length + activeSwarms.length} variant="active">
+            {activeSwarms.length > 0 && (
+              <div className="space-y-2 mb-4">
+                {activeSwarms.map((swarm) => (
+                  <SwarmRow key={swarm.id} swarm={swarm} />
+                ))}
+              </div>
+            )}
             <div className="space-y-4">
               {activeProjects.map((project) => (
                 <ProjectCard
@@ -320,9 +350,14 @@ function Dashboard() {
       {/* Agents View */}
       {view === 'agents' && (
         <div>
-          {/* Active Agents */}
-          <Section title="Active" count={activeAgents.length} variant="active">
+          {/* Active Agents, with swarms pinned above them. Workers are cattle: a
+              swarm is ONE row here however many workers it is running, and no worker
+              ever appears in this list -- they are not agents. */}
+          <Section title="Active" count={activeAgents.length + activeSwarms.length} variant="active">
             <div className="space-y-2">
+              {activeSwarms.map((swarm) => (
+                <SwarmRow key={swarm.id} swarm={swarm} />
+              ))}
               {activeAgents.map((agent) => (
                 <AgentRow key={agent.id} agent={agent} showProject />
               ))}

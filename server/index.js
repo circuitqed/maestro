@@ -11,6 +11,11 @@ import agentsRoutes from './routes/agents.js';
 import connectionRoutes from './routes/connections.js';
 import hostsRoutes from './routes/hosts.js';
 import agentApiRoutes from './routes/agentApi.js';
+import swarmApiRoutes from './routes/swarmApi.js';
+import swarmReportRoutes from './routes/swarmReport.js';
+import swarmsRoutes from './routes/swarms.js';
+import { initSwarmTables } from './services/swarm.js';
+import { startSwarmRunner, initSwarmItems } from './services/swarmRunner.js';
 import { initTaskTables } from './services/tasks.js';
 import { startTaskRunner } from './services/taskRunner.js';
 import { ensureAgentApiToken } from './services/agentToken.js';
@@ -42,11 +47,20 @@ const sessionParser = session({
 });
 
 // Middleware
-app.use(express.json());
+// 4mb, not the 100kb default: swarmApi advertises up to 500 items x 4000 chars,
+// so a legitimate batch returned a 413 HTML error page that the CLI could not
+// parse and reported as "Maestro is down".
+app.use(express.json({ limit: '4mb' }));
 app.use(sessionParser);
 
 // API Routes
 app.use('/api/agent', agentApiRoutes);  // called by agents themselves, token-authed
+app.use('/api/agent', swarmApiRoutes);  // swarm spawn/status, same agent identity
+// NOT behind requireAuth: a worker has no session, only a one-shot per-worker
+// token. Mounted at its own exact path -- the router also answers '/', so
+// mounting it at the root would have made it intercept POST / as well.
+app.use('/api/swarm-report', swarmReportRoutes);
+app.use('/api/swarms', swarmsRoutes);  // browser-facing
 app.use('/api/auth', authRoutes);
 app.use('/api/projects', projectsRoutes);
 app.use('/api/agents', agentsRoutes);
@@ -165,6 +179,11 @@ initDb().then(() => {
       initTaskTables();
       ensureAgentApiToken();
       startTaskRunner(5000);
+      // Swarms. initSwarmItems is separate because swarm.js owns the money tables
+      // and the runner owns the work queue.
+      initSwarmTables();
+      if (typeof initSwarmItems === 'function') initSwarmItems();
+      startSwarmRunner(5000);
   });
 }).catch((err) => {
   console.error('Failed to initialize database:', err);

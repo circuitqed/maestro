@@ -2,56 +2,22 @@
  * Moves assignments between agents: delivers queued tasks into the worker's session,
  * and reports results back to the requester.
  *
- * The one piece of judgement here is WHEN to deliver. Maestro infers busy/idle from
- * pane text, which is a guess, not a signal -- a single idle reading can land in a
- * pause mid-turn. So an agent must look idle on several consecutive ticks before
- * anything is injected. That is slower and much harder to get wrong; interrupting a
- * worker mid-task is the failure this exists to avoid.
+ * The one piece of judgement here is WHEN to deliver, and it now lives in
+ * inject.js -- swarms report home the same way, and a second copy of that rule
+ * would be a second chance to get it wrong. What stays here is the task-shaped part:
+ * which message goes where, and what is recorded once it has gone.
  *
  * Delivery is at-least-once and says so. If Maestro dies between injecting the text
  * and recording the delivery, the task stays `queued` and goes out again -- which is
  * why the message tells the worker to check whether it already accepted the task,
  * and why acknowledgement is a separate state from delivery.
  */
-import { getDb, getAgent, getHost } from './db.js';
-import { sendText, capturePane } from './tmux.js';
+import { getAgent, getHost } from './db.js';
 import { pendingDeliveries, pendingNotifications, markDelivered, markNotified, noteTask, config } from './tasks.js';
+import { deliverWhenSafe, observeIdle } from './inject.js';
 
-/**
- * Is this session sitting on an interactive prompt (a model switch, a trust
- * dialog, an AskUserQuestion)?
- *
- * Found the hard way: em-sim-claude reported `idle` while blocked on a "Switch
- * model?" dialog. Delivering into it lost the message entirely -- the widget has no
- * text input -- and the trailing Enter could just as easily have ANSWERED the
- * dialog, picking whatever option happened to be highlighted. A task delivery must
- * never double as a keystroke on someone else's prompt.
- *
- * Matches the shape rather than the wording: a cursor line plus numbered options is
- * what every one of these widgets looks like, and matching words would miss the
- * next dialog someone adds.
- */
-export function looksLikePrompt(pane) {
-  const lines = String(pane || '').split('\n').map((l) => l.trim()).filter(Boolean).slice(-18);
-  const numbered = lines.filter((l) => /^(❯\s*)?\d+[.)]\s+\S/.test(l)).length;
-  const cursor = lines.some((l) => l.startsWith('❯'));
-  return cursor && numbered >= 2;
-}
-
-const idleStreak = new Map(); // agentId -> consecutive idle observations
-
-const RUNNING = new Set(['idle', 'running']);
-
-function observe() {
-  const rows = getDb().prepare('SELECT id, status FROM agents').all();
-  for (const r of rows) {
-    // 'idle' means the session is up and not mid-turn. 'busy' resets the streak.
-    if (r.status === 'idle') idleStreak.set(r.id, (idleStreak.get(r.id) || 0) + 1);
-    else idleStreak.set(r.id, 0);
-  }
-}
-
-const settled = (agentId) => (idleStreak.get(agentId) || 0) >= config.IDLE_TICKS_REQUIRED;
+// This runner's own idle streak. Each poller counts its own ticks (see inject.js).
+const SCOPE = 'tasks';
 
 function assignmentText(task, from) {
   return [
@@ -90,34 +56,32 @@ async function deliver(task) {
   const target = getAgent(task.target_agent_id);
   const from = getAgent(task.requester_agent_id);
   if (!target || !target.screen_session) return;
-  if (!settled(target.id)) return;
   const host = target.host_id ? getHost(target.host_id) : null;
-  // A prompting session is not available, whatever its status says. Stay queued and
-  // make the reason visible rather than firing text at a dialog.
-  const pane = await capturePane(target.screen_session, host).catch(() => '');
-  if (looksLikePrompt(pane)) {
-    noteTask(task.id, 'waiting: target is showing an interactive prompt — needs a human');
-    return;
-  }
+  const out = await deliverWhenSafe(target, assignmentText(task, from), {
+    host,
+    scope: SCOPE,
+    ticks: config.IDLE_TICKS_REQUIRED,
+    // Stay queued and make the reason visible rather than firing text at a dialog.
+    onPrompt: () => noteTask(task.id, 'waiting: target is showing an interactive prompt — needs a human'),
+  });
   // Mark delivered only after the injection succeeds. The reverse order would lose
   // a task whenever a host blips; this way the worst case is a repeat, which the
   // message and the ack state are built to absorb.
-  await sendText(target.screen_session, assignmentText(task, from), host);
-  markDelivered(task.id);
-  idleStreak.set(target.id, 0); // it is about to be busy
+  if (out.sent) markDelivered(task.id);
 }
 
 async function notify(task) {
   const requester = getAgent(task.requester_agent_id);
   const worker = getAgent(task.target_agent_id);
   if (!requester || !requester.screen_session) { markNotified(task.id); return; }
-  if (!settled(requester.id)) return;
   const host = requester.host_id ? getHost(requester.host_id) : null;
-  const pane = await capturePane(requester.screen_session, host).catch(() => '');
-  if (looksLikePrompt(pane)) return; // tell it later; the result is already durable
-  await sendText(requester.screen_session, resultText(task, worker), host);
-  markNotified(task.id);
-  idleStreak.set(requester.id, 0);
+  // No note when it is prompting: tell it later, the result is already durable.
+  const out = await deliverWhenSafe(requester, resultText(task, worker), {
+    host,
+    scope: SCOPE,
+    ticks: config.IDLE_TICKS_REQUIRED,
+  });
+  if (out.sent) markNotified(task.id);
 }
 
 let running = false;
@@ -126,7 +90,7 @@ export async function tick() {
   if (running) return; // a slow ssh must not overlap the next tick
   running = true;
   try {
-    observe();
+    observeIdle(SCOPE);
     for (const t of pendingDeliveries()) {
       try { await deliver(t); } catch (err) { console.error(`[tasks] deliver ${t.id}:`, err.message); }
     }
