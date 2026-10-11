@@ -2061,6 +2061,39 @@ function codexInjectedBlock(text) {
   return { title: spec.label || `Codex ${src || 'internal'} context`, objective: body.trim() };
 }
 
+/**
+ * Codex replays earlier user turns into the rollout.
+ *
+ * On `/goal` continuation and on resume it re-emits the prior conversation, so a
+ * message typed ONCE is recorded several times -- measured in one em-sim session:
+ * Dave's "You are approved to spend up to $100..." appears 5 times, alongside 18
+ * re-injections of the goal. Rendering each occurrence as a fresh blue "you"
+ * bubble makes it look like he keeps repeating himself, and buries the one turn he
+ * actually just sent.
+ *
+ * Only exact repeats above REPLAY_MIN_CHARS are collapsed. Short messages are left
+ * alone deliberately: "yes", "ok", "continue" are things a person really does send
+ * twice, and silently swallowing the second would be worse than the noise.
+ */
+const REPLAY_MIN_CHARS = 60;
+
+function ReplayedUserMarker({ text }) {
+  const [open, setOpen] = useState(false);
+  const first = text.replace(/\s+/g, ' ').slice(0, 60);
+  return (
+    <div className="flex justify-end my-0.5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="max-w-[85%] text-left text-[11px] text-gray-500 hover:text-gray-300 border border-gray-700/70 bg-gray-800/40 rounded px-2 py-0.5"
+        title="Codex replayed an earlier message of yours; you did not send it again"
+      >
+        {open ? text : `↻ repeated by Codex: "${first}${text.length > 60 ? '…' : ''}"`}
+      </button>
+    </div>
+  );
+}
+
 // A collapsed marker for one of those injected blocks: says what it is, and opens
 // to show the objective so the goal is still inspectable from chat.
 function CodexContextPill({ info }) {
@@ -2108,10 +2141,27 @@ function codexPart(rec, ctx) {
   if (rec.type === 'event_msg' && p.type === 'user_message' && p.message) {
     const internal = codexInjectedBlock(p.message);
     if (internal) {
-      return { message: internal.hidden ? null : <CodexContextPill info={internal} />, tool: null, toolCount: 0 };
+      if (internal.hidden) return { message: null, tool: null, toolCount: 0 };
+      // The goal block is re-injected verbatim every turn (18 times in one session).
+      // The first is worth a pill -- it is the objective being pursued -- but the
+      // rest say nothing new, and the comment on environment_context above already
+      // settled that one pill per turn is its own kind of noise.
+      const key1 = `${internal.title}\u0000${internal.objective}`;
+      if (ctx && ctx.seenPills) {
+        if (ctx.seenPills.has(key1)) return { message: null, tool: null, toolCount: 0 };
+        ctx.seenPills.add(key1);
+      }
+      return { message: <CodexContextPill info={internal} />, tool: null, toolCount: 0 };
     }
     const task = maestroTaskMessage(p.message);
     if (task) return { message: <TaskMessageCard info={task} />, tool: null, toolCount: 0 };
+    const body1 = String(p.message).trim();
+    if (ctx && ctx.seenUserTexts) {
+      if (body1.length >= REPLAY_MIN_CHARS && ctx.seenUserTexts.has(body1)) {
+        return { message: <ReplayedUserMarker text={body1} />, tool: null, toolCount: 0 };
+      }
+      ctx.seenUserTexts.add(body1);
+    }
     return {
       message: (
         <div className="flex justify-end">
@@ -2157,10 +2207,23 @@ function codexPart(rec, ctx) {
     if (role === 'user') {
       const internal = codexInjectedBlock(text);
       if (internal) {
-        return { message: internal.hidden ? null : <CodexContextPill info={internal} />, tool: null, toolCount: 0 };
+        if (internal.hidden) return { message: null, tool: null, toolCount: 0 };
+        const key2 = `${internal.title}\u0000${internal.objective}`;
+        if (ctx && ctx.seenPills) {
+          if (ctx.seenPills.has(key2)) return { message: null, tool: null, toolCount: 0 };
+          ctx.seenPills.add(key2);
+        }
+        return { message: <CodexContextPill info={internal} />, tool: null, toolCount: 0 };
       }
       const task = maestroTaskMessage(text);
       if (task) return { message: <TaskMessageCard info={task} />, tool: null, toolCount: 0 };
+      const body2 = String(text).trim();
+      if (ctx && ctx.seenUserTexts) {
+        if (body2.length >= REPLAY_MIN_CHARS && ctx.seenUserTexts.has(body2)) {
+          return { message: <ReplayedUserMarker text={body2} />, tool: null, toolCount: 0 };
+        }
+        ctx.seenUserTexts.add(body2);
+      }
       return {
         message: (
           <div className="flex justify-end">
@@ -2957,7 +3020,14 @@ function ChatView({ agentId, session, onMeta }) {
         }
       });
     }
-    const ctx = { onImage: setLightbox, onAnswer: onAnswerQuestion, results, codexEventTexts, sentFileIds };
+    // Rebuilt every pass, and populated AS the records are rendered rather than up
+    // front: the first occurrence must render normally and only later copies
+    // collapse, which requires render order, not a precomputed tally.
+    const seenUserTexts = new Set();
+    const seenPills = new Set();
+    const ctx = {
+      onImage: setLightbox, onAnswer: onAnswerQuestion, results, codexEventTexts, sentFileIds, seenUserTexts, seenPills,
+    };
     const partsOf = provider === 'codex' ? codexPart : claudeParts;
 
     const out = [];
