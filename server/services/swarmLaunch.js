@@ -199,7 +199,14 @@ export async function launchWorker(swarm, worker) {
       // which makes the runner's "session gone => worker gone" rule declare every
       // live worker vanished within seconds. One fd stays on the pty; the report is
       // on stdout, so it is also what `capture-pane` shows while the worker is up.
-      `exec env MAESTRO_URL=${q(maestroUrl(host))} ${args.join(' ')} <&3 2>>${q(logFile)}`,
+      // WORKER_MAX_OUTPUT_TOKENS caps a single response, not the run: exceeding it
+      // makes the model CONTINUE in a new turn rather than stop, so this bounds how
+      // much arrives at once, never how much work gets done. Per-swarm because an
+      // extraction job wants short answers and a derivation wants long ones, and the
+      // agent asking for the work is the one that knows which.
+      `exec env MAESTRO_URL=${q(maestroUrl(host))}`
+        + (swarm.max_output_tokens ? ` WORKER_MAX_OUTPUT_TOKENS=${q(String(swarm.max_output_tokens))}` : '')
+        + ` ${args.join(' ')} <&3 2>>${q(logFile)}`,
     ].join('; ');
 
     // The report token rides the SESSION environment, not argv: argv is readable
@@ -228,4 +235,44 @@ export async function launchWorker(swarm, worker) {
     } catch { /* already gone */ }
     throw err;
   }
+}
+
+/**
+ * Delete run directories for swarms that finished long ago.
+ *
+ * These accumulate one per swarm and nothing ever removed them -- 91 after a day of
+ * testing. Small individually, but each holds the worker's full report, and the
+ * whole point of the capture fix is that reports are now the complete output rather
+ * than a truncated tail, so the growth rate goes up, not down.
+ *
+ * Age is taken from the directory's own mtime rather than the swarms table: the
+ * table is the wrong authority here, because a directory left behind by a swarm row
+ * that was deleted is exactly the kind that never gets cleaned otherwise.
+ *
+ * Local only. A remote host writes its own run dirs under the same path, and
+ * reaching across SSH to delete files is a bigger hammer than an unbounded /tmp
+ * warrants -- those live on a tmpfs that a reboot clears.
+ */
+export function pruneRunDirs({ keepHours = 48, root = RUN_ROOT } = {}) {
+  let entries;
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return { removed: 0, kept: 0 }; // nothing has run yet
+  }
+  const cutoff = Date.now() - keepHours * 3600 * 1000;
+  let removed = 0;
+  let kept = 0;
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const full = path.join(root, e.name);
+    try {
+      if (fs.statSync(full).mtimeMs >= cutoff) { kept += 1; continue; }
+      fs.rmSync(full, { recursive: true, force: true });
+      removed += 1;
+    } catch {
+      kept += 1; // in use, or not ours to delete
+    }
+  }
+  return { removed, kept };
 }

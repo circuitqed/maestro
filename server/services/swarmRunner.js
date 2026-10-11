@@ -34,10 +34,11 @@ import {
   logSwarmEvent, swarmLedger, TERMINAL_WORKER_STATES,
   authorizationsToAnnounce, markAuthorizationAnnounced,
   getWorker} from './swarm.js';
-import { launchWorker, sessionNameFor } from './swarmLaunch.js';
+import { launchWorker, pruneRunDirs, sessionNameFor } from './swarmLaunch.js';
 import { deliverWhenSafe, observeIdle } from './inject.js';
 
 const LIVE = ['admitted', 'launching', 'running'];
+let lastPruneAt = 0;
 const DEAD = TERMINAL_WORKER_STATES.filter((s) => s !== 'done');
 const holes = (n) => new Array(n).fill('?').join(',');
 
@@ -532,6 +533,12 @@ export function closeFinished() {
       `${stats.done}/${stats.total} items`,
       `${s.workers_launched} worker(s)`,
       `$${led.spent.toFixed(2)} spent of a $${s.max_spend_usd} cap`,
+      // Never let a worker that died without reporting read as free. "$0.00 spent"
+      // for three timed-out workers is a claim the provider charged nothing, which
+      // nothing here established.
+      led.unreconciledCount
+        ? `${led.unreconciledCount} worker(s) reported no cost — up to $${led.unreconciled.toFixed(2)} unaccounted`
+        : null,
       stats.failed ? `${stats.failed} item(s) failed` : null,
       stats.pending ? `${stats.pending} item(s) never launched (worker ceiling ${s.max_workers})` : null,
     ].filter(Boolean).join(', ');
@@ -690,6 +697,13 @@ export async function tick() {
     closeFinished();
     await notifySpawners();
     await announceAuthorizations();
+    // Cheap (one readdir) and idempotent, but pointless every 5s: once an hour is
+    // often enough for something measured in days.
+    if (Date.now() - lastPruneAt > 3600_000) {
+      lastPruneAt = Date.now();
+      const { removed } = pruneRunDirs();
+      if (removed) console.log(`[swarm] pruned ${removed} finished run director${removed === 1 ? 'y' : 'ies'}`);
+    }
   } catch (err) {
     console.error('[swarm] tick:', err.message);
   } finally {

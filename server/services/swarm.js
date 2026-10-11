@@ -159,6 +159,9 @@ export function initSwarmTables() {
   // from decided_at, which only records that a human clicked.
   try { db.exec('ALTER TABLE swarm_authorizations ADD COLUMN announced_at DATETIME'); }
   catch { /* already there */ }
+  // Caps one RESPONSE, not the run. NULL means the worker's own default.
+  try { db.exec('ALTER TABLE swarms ADD COLUMN max_output_tokens INTEGER'); }
+  catch { /* already there */ }
 
   for (const [k, v] of Object.entries(SETTING_DEFAULTS)) {
     if (getSetting(k) === null || getSetting(k) === undefined) setSetting(k, v);
@@ -363,14 +366,54 @@ const spentSince = (sqlInterval) =>
      WHERE w.created_at > datetime('now', ?)`
   ).get(sqlInterval).s;
 
+/**
+ * Workers that ENDED without ever reporting a cost.
+ *
+ * SUM() skips NULLs, so these contributed exactly zero to every spend figure --
+ * which reads as "this worker was free". It was not: a worker killed on its
+ * deadline or cancelled mid-run had already been billed for whatever it did before
+ * it died, and nothing ever reconciles that. Three timed-out workers were displayed
+ * as $0.00 while their true cost was simply unknown.
+ *
+ * Counted at the per-worker ceiling, because the only safe direction to be wrong
+ * about unverified spend is upward.
+ */
+const TERMINAL_HOLES = TERMINAL_WORKER_STATES.map(() => '?').join(',');
+
+const unreconciledSwarm = (swarmId) =>
+  getDb().prepare(
+    `SELECT COUNT(*) n, COALESCE(SUM(s.per_worker_usd),0) usd
+       FROM swarm_workers w JOIN swarms s ON s.id = w.swarm_id
+      WHERE w.swarm_id = ?
+        AND w.cost_usd IS NULL
+        AND w.state IN (${TERMINAL_HOLES})`,
+  ).get(swarmId, ...TERMINAL_WORKER_STATES);
+
+const unreconciledSince = (sqlInterval) =>
+  getDb().prepare(
+    `SELECT COUNT(*) n, COALESCE(SUM(s.per_worker_usd),0) usd
+       FROM swarm_workers w JOIN swarms s ON s.id = w.swarm_id
+      WHERE w.created_at > datetime('now', ?)
+        AND w.cost_usd IS NULL
+        AND w.state IN (${TERMINAL_HOLES})`,
+  ).get(sqlInterval, ...TERMINAL_WORKER_STATES);
+
 /** Everything the UI and the approval card need, without creating anything. */
 export function swarmLedger(swarmId) {
   const s = getSwarm(swarmId);
   if (!s) return null;
   const live = liveWorkers(swarmId);
+  const unrec = unreconciledSwarm(swarmId);
   return {
     spent: spentSwarm(swarmId),
     reserved: live * s.per_worker_usd,
+    // Kept as its own number rather than folded into `spent`. Three figures answer
+    // three different questions: what was definitely billed, what is committed to
+    // workers still running, and what was spent by workers that died without
+    // telling us. Summing them would hide the third, which is the one you cannot
+    // verify.
+    unreconciled: unrec.usd,
+    unreconciledCount: unrec.n,
     cap: s.max_spend_usd,
     live,
     launched: s.workers_launched,
@@ -379,12 +422,17 @@ export function swarmLedger(swarmId) {
 }
 
 export function globalLedger() {
+  const dayUnrec = unreconciledSince('-1 day');
+  const monthUnrec = unreconciledSince('-30 days');
   return {
     liveWorkers: liveWorkersAll(),
     maxLiveWorkers: num('swarm_max_live_workers'),
     spentToday: spentSince('-1 day'),
+    unreconciledToday: dayUnrec.usd,
+    unreconciledTodayCount: dayUnrec.n,
     dailyCap: num('swarm_daily_usd'),
     spentMonth: spentSince('-30 days'),
+    unreconciledMonth: monthUnrec.usd,
     monthlyCap: num('swarm_monthly_usd'),
     enabled: getSetting('swarm_enabled') === '1',
   };
@@ -440,6 +488,7 @@ export function listSwarms({ activeOnly = false, graceSeconds = 120 } = {}) {
 export function createSwarm({
   name, spawnerAgentId, hostId = null, items = [],
   maxWorkers, maxSpendUsd, perWorkerUsd, perWorkerSeconds, itemsPerWorker, model = null,
+  maxOutputTokens = null,
 }) {
   const grant = getGrant(spawnerAgentId);
   if (getSetting('swarm_enabled') !== '1') throw err('DISABLED', 'swarms are disabled');
@@ -455,11 +504,15 @@ export function createSwarm({
   const id = randomUUID();
   getDb().prepare(`INSERT INTO swarms
       (id, name, spawner_agent_id, host_id, account_dir, model, state,
-       max_workers, max_concurrent, max_spend_usd, per_worker_usd, per_worker_seconds, items_per_worker)
-      VALUES (?, ?, ?, ?, ?, ?, 'pending_approval', ?, ?, ?, ?, ?, ?)`)
+       max_workers, max_concurrent, max_spend_usd, per_worker_usd, per_worker_seconds, items_per_worker,
+       max_output_tokens)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending_approval', ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, String(name).trim(), spawnerAgentId, hostId, grant.account_dir, model,
       workers, Math.min(DEFAULTS.max_concurrent, workers), spend, perWorker,
-      Math.max(30, Number(perWorkerSeconds) || DEFAULTS.per_worker_seconds), ipw);
+      Math.max(30, Number(perWorkerSeconds) || DEFAULTS.per_worker_seconds), ipw,
+      // Clamped, not trusted: 1k is below anything useful and 64k is past what the
+      // model will emit in one response, so a typo cannot wedge every worker.
+      maxOutputTokens == null ? null : Math.min(64000, Math.max(1000, Number(maxOutputTokens) || 0)) || null);
 
   logSwarmEvent(id, 'created', `${items.length} items, ${workers} workers, cap $${spend.toFixed(2)}`);
 
@@ -562,16 +615,26 @@ export function admitWorker(swarmId, { idx, prompt = null, sessionName = null })
     // creates N swarms that each pass the day gate at $0 observed.
     const projected = (liveAll + 1) * s.per_worker_usd;
 
+    // Workers that died without reporting count against the caps at their ceiling.
+    // They were billed for whatever they did before they died; treating that as $0
+    // because SUM() skips NULLs means a run of timeouts silently restores headroom
+    // that was already spent.
     const today = spentSince('-1 day');
+    const todayUnrec = unreconciledSince('-1 day').usd;
     const dailyCap = num('swarm_daily_usd');
-    if (today + projected > dailyCap) {
-      throw err('DAILY_SPEND', `daily cap: $${today.toFixed(2)} spent + $${projected.toFixed(2)} reserved > $${dailyCap}`);
+    if (today + todayUnrec + projected > dailyCap) {
+      throw err('DAILY_SPEND',
+        `daily cap: $${today.toFixed(2)} spent + $${todayUnrec.toFixed(2)} unreconciled `
+        + `+ $${projected.toFixed(2)} reserved > $${dailyCap}`);
     }
 
     const month = spentSince('-30 days');
+    const monthUnrec = unreconciledSince('-30 days').usd;
     const monthlyCap = num('swarm_monthly_usd');
-    if (month + projected > monthlyCap) {
-      throw err('MONTHLY_SPEND', `monthly cap: $${month.toFixed(2)} + $${projected.toFixed(2)} > $${monthlyCap}`);
+    if (month + monthUnrec + projected > monthlyCap) {
+      throw err('MONTHLY_SPEND',
+        `monthly cap: $${month.toFixed(2)} + $${monthUnrec.toFixed(2)} unreconciled `
+        + `+ $${projected.toFixed(2)} > $${monthlyCap}`);
     }
 
     if (s.workers_launched >= s.max_workers) {
@@ -584,10 +647,12 @@ export function admitWorker(swarmId, { idx, prompt = null, sessionName = null })
     }
 
     const spent = spentSwarm(swarmId);
+    const swarmUnrec = unreconciledSwarm(swarmId).usd;
     const swarmProjected = (live + 1) * s.per_worker_usd;
-    if (spent + swarmProjected > s.max_spend_usd) {
+    if (spent + swarmUnrec + swarmProjected > s.max_spend_usd) {
       throw err('SWARM_SPEND',
-        `swarm cap: $${spent.toFixed(2)} spent + $${swarmProjected.toFixed(2)} reserved > $${s.max_spend_usd}`);
+        `swarm cap: $${spent.toFixed(2)} spent + $${swarmUnrec.toFixed(2)} unreconciled `
+        + `+ $${swarmProjected.toFixed(2)} reserved > $${s.max_spend_usd}`);
     }
 
     const id = randomUUID();
@@ -625,8 +690,29 @@ export function setWorkerState(id, state, fields = {}) {
 export function finishWorker(id, { state, result = null, costUsd = null, terminalReason = null, errorSignature = null, claudeSessionId = null }) {
   const w = getWorker(id);
   if (!w) throw err('NO_WORKER', 'unknown worker');
-  if (TERMINAL_WORKER_STATES.includes(w.state)) return w; // idempotent: reports retry
-  const s = getSwarm(w.swarm_id);
+  const s0 = getSwarm(w.swarm_id);
+  if (TERMINAL_WORKER_STATES.includes(w.state)) {
+    // Already finished, so the STATE is settled -- a retried report must not move
+    // it. But a worker reaped on its deadline is recorded with no cost, and its own
+    // report (maestro-worker flushes on SIGINT and retries the POST for ~90s) often
+    // arrives afterwards carrying the real figure. Dropping it wholesale left that
+    // spend permanently unknown and charged against the cap at the ceiling forever.
+    // Fill in only what is still missing; never overwrite a known value.
+    const patch = {};
+    if (w.cost_usd === null && costUsd !== null) {
+      const ceil0 = (s0 ? s0.per_worker_usd : DEFAULTS.per_worker_usd) * 1.5;
+      patch.cost_usd = Math.round(Math.min(Math.max(0, Number(costUsd) || 0), ceil0) * 1e6) / 1e6;
+    }
+    if (!w.result && result) patch.result = result;
+    if (!w.claude_session_id && claudeSessionId) patch.claude_session_id = claudeSessionId;
+    if (!Object.keys(patch).length) return w;
+    const sets = Object.keys(patch).map((k) => `${k} = ?`).join(', ');
+    getDb().prepare(`UPDATE swarm_workers SET ${sets} WHERE id = ?`).run(...Object.values(patch), id);
+    logSwarmEvent(w.swarm_id, 'reconciled',
+      `worker ${w.idx} reported late: ${Object.keys(patch).join(', ')}`);
+    return getWorker(id);
+  }
+  const s = s0;
   const ceiling = (s ? s.per_worker_usd : DEFAULTS.per_worker_usd) * 1.5;
   // Rounded to 6dp: these are dollars, and the clamp arithmetic otherwise stores
   // artefacts like 0.6000000000000001 in a money column.

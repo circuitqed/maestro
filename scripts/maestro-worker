@@ -114,10 +114,50 @@ else
   state=done; reason=completed; gateway_dead=0
 fi
 
-REPORT="$(ID="$ID" STATE="$state" REASON="$reason" ELAPSED="$elapsed" RC="$rc" \
+REPORT="$(ID="$ID" STATE="$state" REASON="$reason" ELAPSED="$elapsed" RC="$rc" ACCOUNT="$ACCOUNT" \
   python3 - "$RAW" "$ERRF" <<'PY'
-import json, os, sys, re
+import json, os, sys, re, glob
 raw, errf = sys.argv[1], sys.argv[2]
+
+
+def full_text_from_transcript(session_id):
+    """Every assistant text block of the run, in order.
+
+    `--output-format json` sets `result` to the FINAL assistant message only. When a
+    response exceeds CLAUDE_CODE_MAX_OUTPUT_TOKENS the model continues in a new turn,
+    so `result` silently holds just the tail -- observed: 37,952 output tokens
+    reported, 15,496 characters produced, 12,124 stored, and the stored text began
+    mid-word exactly where the first turn was cut.
+
+    The session transcript is the only place the earlier turns survive, and the
+    worker is already running on the host that has it.
+    """
+    acct = os.environ.get("ACCOUNT") or ""
+    if not acct or not session_id:
+        return None
+    hits = glob.glob(os.path.join(acct, "projects", "*", session_id + ".jsonl"))
+    if not hits:
+        return None
+    parts = []
+    try:
+        with open(hits[0], encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if rec.get("type") != "assistant":
+                    continue
+                content = (rec.get("message") or {}).get("content")
+                if isinstance(content, list):
+                    for c in content:
+                        if c.get("type") == "text" and c.get("text"):
+                            parts.append(c["text"])
+    except Exception:
+        return None
+    return "".join(parts) or None
+
+
 out = {
     "worker_id": os.environ["ID"], "state": os.environ["STATE"],
     "terminal_reason": os.environ["REASON"], "elapsed_s": int(os.environ["ELAPSED"]),
@@ -128,9 +168,25 @@ try:
 except Exception:
     d = {}
 if isinstance(d, dict):
-    out["result"] = d.get("result") or d.get("text")
-    out["cost_usd"] = d.get("total_cost_usd")
+    tail = d.get("result") or d.get("text")
     out["claude_session_id"] = d.get("session_id")
+    # Prefer the reassembled transcript, but only when it genuinely contains more:
+    # a shorter reconstruction means the glob matched the wrong file or the format
+    # moved, and silently replacing a good result with a worse one is the failure
+    # this is supposed to prevent.
+    full = full_text_from_transcript(out.get("claude_session_id"))
+    if full and tail and len(full) >= len(tail):
+        out["result"] = full
+        out["result_source"] = "transcript"
+        # Recorded so a future truncation is visible as a number rather than as a
+        # reader noticing the text starts mid-sentence.
+        out["result_tail_chars"] = len(tail)
+        out["result_turns_joined"] = True if len(full) > len(tail) else False
+    else:
+        out["result"] = tail
+        out["result_source"] = "result_field"
+    out["result_chars"] = len(out["result"]) if out["result"] else 0
+    out["cost_usd"] = d.get("total_cost_usd")
     # claude reports its own stop reason; prefer it over our exit-code guess
     # Measured against claude 2.1.x: the budget stop surfaces as
     # subtype="error_max_budget_usd" with is_error=true. Guessed names like

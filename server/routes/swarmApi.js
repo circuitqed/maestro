@@ -87,6 +87,7 @@ const swarmView = (s) => ({
   perWorkerUsd: s.per_worker_usd,
   perWorkerSeconds: s.per_worker_seconds,
   itemsPerWorker: s.items_per_worker,
+  maxOutputTokens: s.max_output_tokens,
   createdAt: s.created_at,
   finishedAt: s.finished_at,
 });
@@ -154,6 +155,7 @@ router.post('/swarms', (req, res) => {
       perWorkerSeconds: b.perWorkerSeconds,
       itemsPerWorker: b.itemsPerWorker,
       model: b.model || null,
+      maxOutputTokens: b.maxOutputTokens,
     });
 
     // swarm.js stores the shape of the batch but not the batch itself (it only ever

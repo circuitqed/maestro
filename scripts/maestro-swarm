@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Spawn a budget-capped swarm of short-lived workers, then collect what they found.
 #
-# A swarm is neither free nor instant. Every worker costs ~$0.05 of cached system
-# prompt before it reads a single line (the first one ~$0.15), so batching items is
-# what makes it worth doing -- and nothing starts until a human approves the swarm
-# in Maestro. Spawn, then poll `status`, then `results`.
+# A swarm is neither free nor instant. Every worker pays ~$0.15 for the cached
+# system prompt before it reads a single line -- workers start concurrently, so they
+# race the same cold cache and each one pays it -- which is what makes batching
+# several items per worker worth doing. Nothing starts until a human approves the
+# swarm, or until it fits a standing budget you were granted.
+# Spawn, then poll `status`, then `results`.
 #
 #   maestro-swarm spawn --name NAME --items-file FILE [--workers N] [--budget USD]
 #                       [--per-worker USD] [--items-per-worker N] [--model ID]
-#                       [--timeout SECS]
+#                       [--timeout SECS] [--max-output-tokens N]
 #   maestro-swarm list
 #   maestro-swarm status ID
 #   maestro-swarm results ID
@@ -17,6 +19,10 @@
 # The items file is one item per line; blank lines and #-comments are skipped, and
 # `--items-file -` reads stdin. Requests above your grant are CLAMPED, not refused,
 # so always read the clamped/COST lines spawn prints back.
+#
+# --max-output-tokens caps ONE response, not the run: past it the model continues in
+# another turn, so it shapes how much comes back at a time, never how much work
+# happens. The full text of every turn is captured either way.
 #
 # Exit codes: 0 ok. 1 usage or transport. 3 refused but retryable -- a cap is full,
 # wait and retry or ask for less. 4 refused for good -- no grant, swarms disabled,
@@ -32,7 +38,7 @@ TOKEN_FILE="${MAESTRO_AGENT_TOKEN_FILE:-$HOME/.maestro/agent-token}"
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # Before any credential or identity work: `--help` is the first thing an agent runs
 # to find out what this is, and failing it behind a token check teaches the agent
@@ -89,7 +95,8 @@ if not items:
 body = {"name": name, "items": items}
 # Typed, not stringified: the server clamps these numbers, it does not parse them.
 cast = {"maxWorkers": int, "maxSpendUsd": float, "perWorkerUsd": float,
-        "itemsPerWorker": int, "perWorkerSeconds": int, "model": str}
+        "itemsPerWorker": int, "perWorkerSeconds": int, "model": str,
+        "maxOutputTokens": int}
 for pair in sys.argv[3:]:
     k, _, v = pair.partition("=")
     if v:
@@ -242,7 +249,7 @@ case "$cmd" in
   results) [ $# -ge 1 ] || die "usage: maestro-swarm results ID"; api GET "/swarms/$1/results" | fmt results ;;
   cancel)  [ $# -ge 1 ] || die "usage: maestro-swarm cancel ID"; api POST "/swarms/$1/cancel" '{}' | fmt cancel ;;
   spawn)
-    name=""; file=""; workers=""; budget=""; per=""; ipw=""; model=""; tmo=""
+    name=""; file=""; workers=""; budget=""; per=""; ipw=""; model=""; tmo=""; mot=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --name) name="$2"; shift 2;;
@@ -253,6 +260,7 @@ case "$cmd" in
         --items-per-worker) ipw="$2"; shift 2;;
         --model) model="$2"; shift 2;;
         --timeout) tmo="$2"; shift 2;;
+        --max-output-tokens) mot="$2"; shift 2;;
         *) die "unknown flag $1";;
       esac
     done
@@ -260,7 +268,8 @@ case "$cmd" in
     [ "$file" = "-" ] || [ -r "$file" ] || die "cannot read items file $file"
     body="$(python3 -c "$BUILD_PROG" "$file" "$name" \
       "maxWorkers=$workers" "maxSpendUsd=$budget" "perWorkerUsd=$per" \
-      "itemsPerWorker=$ipw" "perWorkerSeconds=$tmo" "model=$model")" || exit 1
+      "itemsPerWorker=$ipw" "perWorkerSeconds=$tmo" "model=$model" \
+      "maxOutputTokens=$mot")" || exit 1
     api POST /swarms "$body" | fmt spawn ;;
   *) die "unknown command: $cmd (try --help)" ;;
 esac

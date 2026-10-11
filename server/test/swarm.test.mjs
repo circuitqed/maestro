@@ -175,6 +175,47 @@ ok(!names({ activeOnly: true, graceSeconds: 0 }).includes('just-finished'),
 ok(names({}).includes('long-finished'),
    'history keeps every swarm -- activeOnly is a view, not a prune');
 
+// ---- unknown cost is not zero cost -----------------------------------------
+// SUM() skips NULLs, so a worker that died without reporting contributed exactly
+// $0.00 to every figure -- displayed as though the provider had charged nothing.
+dbMod.setSetting('swarm_enabled', '1');
+dbMod.setSetting('swarm_daily_usd', '100');
+dbMod.setSetting('swarm_monthly_usd', '100');
+const unrecSw = S.createSwarm({
+  name: 'unreconciled', spawnerAgentId: 2, maxWorkers: 4, maxSpendUsd: 0.9, perWorkerUsd: 0.25,
+});
+S.approveSwarm(unrecSw.id);
+const uw = S.admitWorker(unrecSw.id, { idx: 0 });
+ok(S.swarmLedger(unrecSw.id).unreconciled === 0, 'a live worker is reserved, not unreconciled');
+S.finishWorker(uw.id, { state: 'timeout', costUsd: null, terminalReason: 'wall_clock' });
+const uled = S.swarmLedger(unrecSw.id);
+ok(uled.spent === 0 && uled.unreconciledCount === 1 && uled.unreconciled === 0.25,
+   'a worker that died without reporting is unreconciled at its ceiling, not $0 spent',
+   JSON.stringify(uled));
+// And it must keep consuming budget, or a run of timeouts silently restores
+// headroom that was already spent.
+const uw2 = S.admitWorker(unrecSw.id, { idx: 1 });
+S.finishWorker(uw2.id, { state: 'timeout', costUsd: null, terminalReason: 'wall_clock' });
+const uw3 = S.admitWorker(unrecSw.id, { idx: 2 });
+S.finishWorker(uw3.id, { state: 'timeout', costUsd: null, terminalReason: 'wall_clock' });
+ok(S.swarmLedger(unrecSw.id).unreconciled === 0.75, 'unreconciled accumulates');
+ok(code(() => S.admitWorker(unrecSw.id, { idx: 3 })) === 'SWARM_SPEND',
+   'unreconciled spend counts against the swarm cap');
+// A late report -- maestro-worker flushes on SIGINT and retries the POST for ~90s,
+// so it usually lands AFTER the reaper has already recorded the worker as timed out.
+// That report must still be able to settle the cost, or the spend stays unknown and
+// is charged at the ceiling forever.
+S.finishWorker(uw.id, { state: 'done', costUsd: 0.1, terminalReason: 'completed' });
+const settled = S.getWorker(uw.id);
+ok(settled.state === 'timeout', 'a late report does NOT resurrect or restate a finished worker');
+ok(settled.cost_usd === 0.1, 'but it does settle the cost that was unknown', String(settled.cost_usd));
+const recLed = S.swarmLedger(unrecSw.id);
+ok(recLed.unreconciledCount === 2 && recLed.spent === 0.1,
+   'and the ledger moves that money from unreconciled to spent', JSON.stringify(recLed));
+// A second report must not be able to revise a figure that is already known.
+S.finishWorker(uw.id, { state: 'done', costUsd: 99, terminalReason: 'completed' });
+ok(S.getWorker(uw.id).cost_usd === 0.1, 'a known cost is never overwritten by a later report');
+
 // ---- telling the agent what was decided ------------------------------------
 // Approving used to be silent: the row flipped and the agent that asked went on
 // waiting on a human who had already answered.

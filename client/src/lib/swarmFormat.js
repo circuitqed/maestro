@@ -78,6 +78,16 @@ export const swarmLook = (swarm) => {
 export const money = (n) => `$${(Number(n) || 0).toFixed(2)}`;
 
 /**
+ * A cost that may not be known.
+ *
+ * money() coerces null to $0.00, which states as fact that nothing was charged. For
+ * a worker killed on its deadline or cancelled mid-run that is not known and is
+ * probably false -- it was billed for whatever it did before it died. Unknown has
+ * to look different from zero, or the only safe reading of "$0.00" is "maybe".
+ */
+export const moneyOrUnknown = (n) => (n === null || n === undefined ? '$?' : money(n));
+
+/**
  * Seconds, as counted by the server.
  *
  * Deliberately takes a count and not a timestamp: swarm rows carry a mix of naive-UTC
