@@ -14,15 +14,24 @@
 #   maestro-swarm list
 #   maestro-swarm status ID
 #   maestro-swarm results ID
+#   maestro-swarm fetch ID [--dir DIR]
 #   maestro-swarm cancel ID
 #
 # The items file is one item per line; blank lines and #-comments are skipped, and
 # `--items-file -` reads stdin. Requests above your grant are CLAMPED, not refused,
 # so always read the clamped/COST lines spawn prints back.
 #
-# --max-output-tokens caps ONE response, not the run: past it the model continues in
-# another turn, so it shapes how much comes back at a time, never how much work
-# happens. The full text of every turn is captured either way.
+# `fetch` is the one to prefer over `results` for anything substantial: it writes
+# MANIFEST.md plus one untruncated worker-N.md per worker and prints only the paths,
+# so a 50kB answer lands on disk where you can grep it instead of in your context.
+# The manifest also points at each worker's full Claude transcript.
+#
+# By default a worker's answer is NOT length-capped -- spawning one already costs
+# ~$0.15, so delegating is only worth it for substantial work. --max-output-tokens
+# caps ONE response if you want answers in smaller pieces; past it the model
+# continues in another turn rather than stopping, so it bounds neither the work nor
+# the spend. 0 or omitted means no cap. The full text of every turn is captured
+# either way; spend is bounded by --per-worker and time by --timeout.
 #
 # Exit codes: 0 ok. 1 usage or transport. 3 refused but retryable -- a cap is full,
 # wait and retry or ask for less. 4 refused for good -- no grant, swarms disabled,
@@ -38,7 +47,7 @@ TOKEN_FILE="${MAESTRO_AGENT_TOKEN_FILE:-$HOME/.maestro/agent-token}"
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # Before any credential or identity work: `--help` is the first thing an agent runs
 # to find out what this is, and failing it behind a token check teaches the agent
@@ -108,6 +117,86 @@ read -r -d '' BUDGET_PROG <<'PY' || true
 import json, sys
 usd, hours, reason = sys.argv[1], sys.argv[2], sys.argv[3]
 print(json.dumps({"usd": float(usd), "hours": float(hours), "reason": reason or None}))
+PY
+
+read -r -d '' FETCH_PROG <<'PY' || true
+import json, os, sys, re
+
+# Writes a swarm's output to disk and prints only the paths. A swarm can produce
+# tens of kB per worker; piping that into the requesting agent's context is both
+# wasteful and lossy, and the agent usually wants to grep or cite it rather than
+# read it end to end. Files are the right shape for that, and MANIFEST.md is the
+# index: what ran, what it cost, where each full result is, and which Claude
+# transcript holds the turn-by-turn detail the result text does not show.
+d = json.load(sys.stdin)
+if isinstance(d, dict) and d.get("error"):
+    sys.stderr.write("refused: %s\n" % d["error"])
+    sys.exit(4)
+outdir = sys.argv[1]
+
+def slug(t):
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", str(t)).strip("-")[:60] or "swarm"
+
+base = os.path.join(outdir, "%s-%s" % (slug(d.get("name")), str(d.get("id"))[:8]))
+os.makedirs(base, exist_ok=True)
+
+rows = d.get("results") or []
+lines = [
+    "# swarm: %s" % d.get("name"),
+    "",
+    "- id: `%s`" % d.get("id"),
+    "- state: **%s**%s" % (d.get("state"), "" if d.get("complete") else "  (INCOMPLETE - workers still running)"),
+    "- spent: $%.4f  (confirmed by the workers that reported)" % float(d.get("spentUsd") or 0),
+]
+# Unknown cost is not zero cost. Said plainly, or not at all.
+if d.get("unreconciledWorkers"):
+    lines.append("- **unreconciled: up to $%.4f across %d worker(s)** - they ended without reporting "
+                 "a cost, so this was spent but never confirmed"
+                 % (float(d.get("unreconciledUsd") or 0), d["unreconciledWorkers"]))
+if d.get("pending"):
+    lines.append("- pending: %d worker(s) had not finished when this was written" % d["pending"])
+lines += ["", "## artifacts", ""]
+
+wrote = []
+for r in rows:
+    idx = r.get("idx")
+    name = "worker-%s.md" % idx
+    path = os.path.join(base, name)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("<!-- swarm %s worker %s | state=%s | cost=%s -->\n\n"
+                 % (d.get("id"), idx, r.get("state"),
+                    r.get("costUsd") if r.get("costKnown") else "unknown"))
+        fh.write("## prompt\n\n```\n%s\n```\n\n## result\n\n" % (r.get("prompt") or ""))
+        fh.write(r.get("result") or "")
+    wrote.append(path)
+    cost = ("$%.4f" % r["costUsd"]) if r.get("costKnown") else "unknown (worker never reported)"
+    lines.append("### worker %s - %s" % (idx, r.get("state")))
+    lines.append("")
+    n = r.get("resultChars") or 0
+    if n:
+        lines.append("- full output: `%s`  (%d chars, complete and untruncated)" % (name, n))
+    else:
+        # Saying "complete" of an empty file would be a lie about the most
+        # confusing case there is: a worker that was killed mid-answer. Whatever it
+        # had written survives in the transcript below, and nowhere else.
+        lines.append("- **no output captured** - this worker did not finish. Any partial "
+                     "work is in the transcript below, not in `%s`." % name)
+    lines.append("- cost: %s" % cost)
+    if r.get("terminalReason"):
+        lines.append("- ended: %s" % r["terminalReason"])
+    if r.get("errorSignature"):
+        lines.append("- error: `%s`" % r["errorSignature"])
+    if r.get("transcript"):
+        lines.append("- full Claude transcript, every turn including tool calls, on the host "
+                     "that ran the worker: `%s`" % r["transcript"])
+    lines.append("")
+
+man = os.path.join(base, "MANIFEST.md")
+with open(man, "w", encoding="utf-8") as fh:
+    fh.write("\n".join(lines) + "\n")
+print(man)
+for w in wrote:
+    print(w)
 PY
 
 read -r -d '' FMT_PROG <<'PY' || true
@@ -248,6 +337,16 @@ case "$cmd" in
   status)  [ $# -ge 1 ] || die "usage: maestro-swarm status ID"; api GET "/swarms/$1" | fmt status ;;
   results) [ $# -ge 1 ] || die "usage: maestro-swarm results ID"; api GET "/swarms/$1/results" | fmt results ;;
   cancel)  [ $# -ge 1 ] || die "usage: maestro-swarm cancel ID"; api POST "/swarms/$1/cancel" '{}' | fmt cancel ;;
+  fetch)
+    [ $# -ge 1 ] || die "usage: maestro-swarm fetch ID [--dir DIR]"
+    fid="$1"; shift; fdir="${MAESTRO_SWARM_DIR:-./swarm-results}"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --dir) fdir="$2"; shift 2;;
+        *) die "unknown flag $1";;
+      esac
+    done
+    api GET "/swarms/$fid/results" | python3 -c "$FETCH_PROG" "$fdir" ;;
   spawn)
     name=""; file=""; workers=""; budget=""; per=""; ipw=""; model=""; tmo=""; mot=""
     while [ $# -gt 0 ]; do

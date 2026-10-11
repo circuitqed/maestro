@@ -666,17 +666,40 @@ function summaryText(swarm) {
   for (let i = 0; i < workers.length; i++) {
     const w = workers[i];
     const body = String(w.result || w.error_signature || '').trim();
-    const slice = body.length > PER_WORKER_CHARS ? `${body.slice(0, PER_WORKER_CHARS)}…` : body;
+    const cut = body.length > PER_WORKER_CHARS;
+    // Marked at the cut, not just in a footnote. An ellipsis is easy to miss and
+    // the consequence of missing it is an agent quoting a sentence that stops
+    // halfway as though that were the finding.
+    const slice = cut
+      ? `${body.slice(0, PER_WORKER_CHARS)}\n[PREVIEW TRUNCATED at ${PER_WORKER_CHARS} of ${body.length} chars — the stored result is complete]`
+      : body;
     if (budget - slice.length < 0) {
-      lines.push(`… ${workers.length - i} more worker(s) not shown`);
+      lines.push(`… ${workers.length - i} more worker(s) not previewed here`);
       break;
     }
     budget -= slice.length;
-    const bits = [w.state, w.terminal_reason, w.cost_usd != null ? `$${w.cost_usd}` : null].filter(Boolean);
+    // Unknown cost is never printed as $0.00: a worker that died without reporting
+    // was billed for whatever it did first.
+    const bits = [w.state, w.terminal_reason, w.cost_usd != null ? `$${w.cost_usd}` : 'cost unknown']
+      .filter(Boolean);
     lines.push(`— worker ${w.idx + 1} (${bits.join(', ')}):`, slice || '(no output)', '');
   }
 
-  lines.push(`Full results, including failures: GET /api/agent/swarms/${swarm.id}/results`);
+  if (led.unreconciledCount) {
+    lines.push(`${led.unreconciledCount} worker(s) ended without reporting a cost — `
+      + `up to $${led.unreconciled.toFixed(2)} was spent but never confirmed.`, '');
+  }
+
+  // The previews above are for deciding whether to look; this is how you look.
+  // Writing files beats returning text: a swarm can produce tens of kB per worker,
+  // and the agent usually wants to grep or cite it rather than hold it in context.
+  lines.push(
+    'Everything above is a PREVIEW. To get the complete output as files:',
+    `  maestro-swarm fetch ${swarm.id}`,
+    'which writes MANIFEST.md (what ran, what it cost, and where each full result and',
+    'Claude transcript lives) plus one untruncated worker-N.md per worker.',
+    `Raw JSON, if you prefer: GET /api/agent/swarms/${swarm.id}/results`,
+  );
   return lines.join('\n');
 }
 

@@ -170,6 +170,23 @@ export function initSwarmTables() {
 
 const num = (k) => Number(getSetting(k) ?? SETTING_DEFAULTS[k]);
 
+/**
+ * Per-response output cap: a positive integer, or null for none.
+ *
+ * null is the default and means the worker sets nothing, so the model answers at
+ * whatever length the work needs. Anything non-positive or unparseable is also
+ * null -- "no cap" is the safe reading of a malformed value, because the
+ * alternative is a worker that truncates every answer because of a typo.
+ */
+export function normaliseOutputTokens(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  // A floor, not a ceiling. Below a few hundred tokens the model cannot finish a
+  // sentence, which looks like corruption rather than a setting.
+  return Math.max(256, n);
+}
+
 function err(code, message, extra = {}) {
   const e = new Error(message);
   e.code = code;
@@ -510,9 +527,18 @@ export function createSwarm({
     .run(id, String(name).trim(), spawnerAgentId, hostId, grant.account_dir, model,
       workers, Math.min(DEFAULTS.max_concurrent, workers), spend, perWorker,
       Math.max(30, Number(perWorkerSeconds) || DEFAULTS.per_worker_seconds), ipw,
-      // Clamped, not trusted: 1k is below anything useful and 64k is past what the
-      // model will emit in one response, so a typo cannot wedge every worker.
-      maxOutputTokens == null ? null : Math.min(64000, Math.max(1000, Number(maxOutputTokens) || 0)) || null);
+      // NULL (the default) means no cap at all: the worker leaves
+      // CLAUDE_CODE_MAX_OUTPUT_TOKENS unset and the model answers at whatever
+      // length the work needs. A cap bounds nothing that costs money -- past it
+      // the model continues in another turn rather than stopping -- so capping by
+      // default only fragmented long answers. Spend is bounded by the per-worker
+      // budget and time by the deadline, which are the real limits.
+      //
+      // No upper clamp either: a ceiling here would be another invented number,
+      // and an oversized value is refused by the provider rather than silently
+      // obeyed. Only a floor, so a typo like 5 cannot wedge every worker into
+      // emitting nothing; 0 and negatives mean "no cap", same as omitting it.
+      normaliseOutputTokens(maxOutputTokens));
 
   logSwarmEvent(id, 'created', `${items.length} items, ${workers} workers, cap $${spend.toFixed(2)}`);
 

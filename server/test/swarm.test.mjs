@@ -242,6 +242,28 @@ dbMod.getDb().prepare("UPDATE swarm_authorizations SET decided_at=datetime('now'
 ok(!S.authorizationsToAnnounce().some((x) => x.id === aDeny.id),
    'decisions older than the window are not announced');
 
+// ---- output length is not capped by default --------------------------------
+// The old default was an invented 16,000 and it bounded nothing real: past the cap
+// the model continues in another turn rather than stopping, so it fragmented long
+// answers while spend stayed bounded by the budget and time by the deadline.
+ok(S.normaliseOutputTokens(undefined) === null, 'omitted means no cap');
+ok(S.normaliseOutputTokens(null) === null, 'null means no cap');
+ok(S.normaliseOutputTokens(0) === null, '0 explicitly means no cap');
+ok(S.normaliseOutputTokens(-5) === null, 'a negative is no cap, not a tiny cap');
+ok(S.normaliseOutputTokens('nonsense') === null, 'an unparseable value is no cap');
+ok(S.normaliseOutputTokens(8000) === 8000, 'a real value is kept exactly');
+ok(S.normaliseOutputTokens(250_000) === 250_000,
+   'no invented upper ceiling -- the provider refuses an impossible value, we do not guess it');
+ok(S.normaliseOutputTokens(5) === 256,
+   'a floor stops a typo wedging every worker mid-sentence');
+const noCap = S.createSwarm({ name: 'uncapped', spawnerAgentId: 2, maxWorkers: 1, maxSpendUsd: 0.3, perWorkerUsd: 0.3 });
+ok(S.getSwarm(noCap.id).max_output_tokens === null, 'a swarm is uncapped unless asked otherwise');
+const capped = S.createSwarm({
+  name: 'capped', spawnerAgentId: 2, maxWorkers: 1, maxSpendUsd: 0.3, perWorkerUsd: 0.3,
+  maxOutputTokens: 4000,
+});
+ok(S.getSwarm(capped.id).max_output_tokens === 4000, 'and carries the cap when one is given');
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

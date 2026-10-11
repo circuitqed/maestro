@@ -256,15 +256,30 @@ router.get('/swarms/:id/results', (req, res) => {
     pending,
     counts: terminal.reduce((acc, w) => ({ ...acc, [w.state]: (acc[w.state] || 0) + 1 }), {}),
     spentUsd: money(swarmLedger(s.id).spent),
+    // Separate from spentUsd on purpose: workers that died without reporting were
+    // billed for whatever they did first, and folding them in as $0 states as fact
+    // that they were free.
+    unreconciledUsd: money(swarmLedger(s.id).unreconciled),
+    unreconciledWorkers: swarmLedger(s.id).unreconciledCount,
+    accountDir: s.account_dir,
     results: terminal.map((w) => ({
       workerId: w.id,
       idx: w.idx,
       state: w.state,
       prompt: w.prompt,
       result: w.result,
+      resultChars: w.result ? w.result.length : 0,
       costUsd: w.cost_usd,
+      // Explicit, because null costUsd previously read as "free" downstream.
+      costKnown: w.cost_usd !== null,
       terminalReason: w.terminal_reason,
       errorSignature: w.error_signature,
+      // The full Claude-side transcript of this worker: every turn, including the
+      // tool calls the result text does not show. On the host that ran the worker.
+      claudeSessionId: w.claude_session_id,
+      transcript: w.claude_session_id
+        ? `${s.account_dir}/projects/*/${w.claude_session_id}.jsonl`
+        : null,
     })),
   });
 });

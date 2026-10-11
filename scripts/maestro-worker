@@ -20,6 +20,14 @@
 #                             stalled socket burns no tokens, so brake 2 never fires
 #                             while it holds a concurrency slot forever.
 #   4. depth env           -- a worker may not spawn workers.
+#
+# There is deliberately NO default cap on output length. Spawning a worker costs
+# ~$0.15 before it reads anything, so delegating is only worth it for substantial
+# work -- and a cap does not even bound that: past it the model continues in another
+# turn rather than stopping. It bounds nothing real while fragmenting long answers.
+# Spend is bounded by --max-budget-usd and time by `timeout`, which are the two
+# things that actually cost something. Set WORKER_MAX_OUTPUT_TOKENS only to make
+# responses arrive in smaller pieces on purpose.
 set -uo pipefail
 
 ID=""; BUDGET="0.40"; TIMEOUT="480"; ACCOUNT=""; MODEL=""; OUT=""
@@ -88,7 +96,7 @@ timeout --signal=INT "$TIMEOUT" \
   env CLAUDE_CONFIG_DIR="$ACCOUNT" \
       CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1 \
       CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=2 \
-      CLAUDE_CODE_MAX_OUTPUT_TOKENS="${WORKER_MAX_OUTPUT_TOKENS:-16000}" \
+      ${WORKER_MAX_OUTPUT_TOKENS:+CLAUDE_CODE_MAX_OUTPUT_TOKENS="$WORKER_MAX_OUTPUT_TOKENS"} \
       ${DISABLE_PROMPT_CACHING_OPUS:+DISABLE_PROMPT_CACHING_OPUS="$DISABLE_PROMPT_CACHING_OPUS"} \
   "$CLAUDE" --print --output-format json \
       --max-budget-usd "$BUDGET" \
