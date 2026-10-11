@@ -375,6 +375,25 @@ export function AppProvider({ children }) {
     return res.json();
   };
 
+  /**
+   * Change your OWN password. Distinct from updateUserAccount: this one requires
+   * the current password and is open to every role, whereas the admin route can
+   * set anyone's but is admin-gated. Without this a non-admin had no way to change
+   * their password at all -- the endpoint existed and nothing called it.
+   */
+  const changeOwnPassword = async (currentPassword, newPassword) => {
+    const res = await fetch('/api/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Failed to change password');
+    }
+    return res.json();
+  };
+
   const updateUserAccount = async (id, updates) => {
     const res = await fetch(`/api/auth/users/${id}`, {
       method: 'PATCH',
@@ -670,6 +689,7 @@ export function AppProvider({ children }) {
 
     // User management
     loadUsers,
+    changeOwnPassword,
     createNewUser,
     deleteUserAccount,
     updateUserAccount,

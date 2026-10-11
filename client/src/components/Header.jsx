@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import UserManagement from './UserManagement';
+import ChangePassword from './ChangePassword';
 import HostManagement from './HostManagement';
 
 function Header() {
   const { logout, user, projects, agents, soundEnabled, toggleSound, requestPermission } = useApp();
   const [showMenu, setShowMenu] = useState(false);
   const [showUserManagement, setShowUserManagement] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
   const [showHostManagement, setShowHostManagement] = useState(false);
 
   const runningAgents = agents.filter((a) =>
@@ -90,6 +92,22 @@ function Header() {
                       <div className="text-xs text-gray-400 capitalize">{user.role}</div>
                     </div>
                   )}
+                  {/* Not admin-gated: this is the only item in this menu that every
+                      role can use, and its absence meant a non-admin could not change
+                      their own password at all. */}
+                  <button
+                    onClick={() => {
+                      setShowChangePassword(true);
+                      setShowMenu(false);
+                    }}
+                    className="w-full px-4 py-2 text-left text-gray-300 hover:bg-gray-700 transition-colors flex items-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                            d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
+                    Change password
+                  </button>
                   {user?.role === 'admin' && (
                     <button
                       onClick={() => {
@@ -140,6 +158,9 @@ function Header() {
         </div>
       </header>
 
+      {showChangePassword && (
+        <ChangePassword onClose={() => setShowChangePassword(false)} />
+      )}
       {showUserManagement && (
         <UserManagement onClose={() => setShowUserManagement(false)} />
       )}

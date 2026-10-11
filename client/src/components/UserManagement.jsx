@@ -11,6 +11,11 @@ function UserManagement({ onClose }) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  // Which user's password is being reset, and to what. A bcrypt hash cannot be
+  // read back, so "I forgot their password" has exactly one answer: set a new one.
+  const [resetFor, setResetFor] = useState(null);
+  const [resetPw, setResetPw] = useState('');
+  const [resetDone, setResetDone] = useState(null);
 
   useEffect(() => {
     fetchUsers();
@@ -54,6 +59,44 @@ function UserManagement({ onClose }) {
     }
   };
 
+  /**
+   * Four words and a number: ~60 bits, and unlike a random string it survives
+   * being read aloud or retyped, which is how a reset password actually reaches
+   * the person it belongs to.
+   */
+  const suggestPassword = () => {
+    const words = ['copper', 'lantern', 'harbor', 'meadow', 'quartz', 'thicket', 'ember', 'cobalt',
+      'willow', 'saffron', 'glacier', 'pumice', 'bramble', 'cinder', 'fathom', 'juniper',
+      'marlin', 'orchid', 'pewter', 'rivet', 'sable', 'tundra', 'velvet', 'zephyr'];
+    const pick = () => words[crypto.getRandomValues(new Uint32Array(1))[0] % words.length];
+    const n = 10 + (crypto.getRandomValues(new Uint32Array(1))[0] % 90);
+    return `${pick()}-${pick()}-${pick()}-${pick()}-${n}`;
+  };
+
+  const openReset = (u) => {
+    setError('');
+    setResetDone(null);
+    setResetFor(u.id);
+    setResetPw(suggestPassword());
+  };
+
+  const handleReset = async (u) => {
+    setError('');
+    if (!resetPw.trim()) { setError('A password is required'); return; }
+    setLoading(true);
+    try {
+      await updateUserAccount(u.id, { password: resetPw });
+      // Shown once, deliberately: it is the only moment this value is readable,
+      // and the admin has to be able to pass it on.
+      setResetDone({ id: u.id, password: resetPw });
+      setResetFor(null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleToggleRole = async (targetUser) => {
     setError('');
     const newRole = targetUser.role === 'admin' ? 'user' : 'admin';
@@ -92,7 +135,8 @@ function UserManagement({ onClose }) {
           {/* User list */}
           <div className="flex-1 overflow-y-auto p-4 space-y-2">
             {users.map((u) => (
-              <div key={u.id} className="flex items-center justify-between bg-gray-700/50 rounded-lg px-3 py-2">
+              <div key={u.id} className="bg-gray-700/50 rounded-lg px-3 py-2">
+              <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
                     u.role === 'admin' ? 'bg-primary-600 text-white' : 'bg-gray-600 text-gray-300'
@@ -110,6 +154,15 @@ function UserManagement({ onClose }) {
                   </div>
                 </div>
                 <div className="flex items-center gap-1">
+                  {/* Reset password */}
+                  <button
+                    onClick={() => openReset(u)}
+                    className="px-2 py-1 text-xs rounded transition-colors
+                               text-gray-400 hover:text-white hover:bg-gray-600"
+                    title="Set a new password for this user"
+                  >
+                    Password
+                  </button>
                   {/* Toggle role */}
                   <button
                     onClick={() => handleToggleRole(u)}
@@ -150,6 +203,85 @@ function UserManagement({ onClose }) {
                     </button>
                   )}
                 </div>
+              </div>
+
+              {/* Reset form, inline under the user it belongs to */}
+              {resetFor === u.id && (
+                <div className="mt-2 border-t border-gray-600/70 pt-2">
+                  <label className="block text-xs text-gray-400 mb-1">
+                    New password for <span className="text-gray-200">{u.username}</span>
+                  </label>
+                  <div className="flex gap-2">
+                    {/* type=text, not password: the admin is setting a value to pass
+                        on to someone else, so hiding it serves nobody -- they cannot
+                        relay what they cannot read, and it is never read back later. */}
+                    <input
+                      type="text"
+                      value={resetPw}
+                      onChange={(e) => setResetPw(e.target.value)}
+                      className="flex-1 px-2 py-1 bg-gray-800 border border-gray-600 rounded text-sm
+                                 text-white font-mono focus:outline-none focus:ring-1 focus:ring-primary-500"
+                      autoFocus
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <button
+                      onClick={() => setResetPw(suggestPassword())}
+                      className="px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-600 rounded"
+                      title="Suggest another"
+                      type="button"
+                    >
+                      ↻
+                    </button>
+                    <button
+                      onClick={() => handleReset(u)}
+                      disabled={loading}
+                      className="px-3 py-1 text-xs bg-primary-600 hover:bg-primary-700 text-white rounded
+                                 disabled:opacity-50"
+                      type="button"
+                    >
+                      {loading ? 'Setting…' : 'Set'}
+                    </button>
+                    <button
+                      onClick={() => { setResetFor(null); setError(''); }}
+                      className="px-2 py-1 text-xs text-gray-400 hover:text-gray-200"
+                      type="button"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Shown once. The hash is one-way, so if this is lost the only
+                  remedy is another reset -- say so rather than let it be closed
+                  on the assumption it can be looked up again. */}
+              {resetDone && resetDone.id === u.id && (
+                <div className="mt-2 border-t border-gray-600/70 pt-2">
+                  <div className="text-xs text-gray-400 mb-1">
+                    New password for {u.username} — copy it now, it cannot be shown again:
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 px-2 py-1 bg-gray-900 rounded text-sm text-emerald-300 font-mono break-all">
+                      {resetDone.password}
+                    </code>
+                    <button
+                      onClick={() => { navigator.clipboard?.writeText(resetDone.password); }}
+                      className="px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-600 rounded"
+                      type="button"
+                    >
+                      Copy
+                    </button>
+                    <button
+                      onClick={() => setResetDone(null)}
+                      className="px-2 py-1 text-xs text-gray-400 hover:text-gray-200"
+                      type="button"
+                    >
+                      Done
+                    </button>
+                  </div>
+                </div>
+              )}
               </div>
             ))}
           </div>
