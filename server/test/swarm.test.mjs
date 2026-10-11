@@ -264,6 +264,30 @@ const capped = S.createSwarm({
 });
 ok(S.getSwarm(capped.id).max_output_tokens === 4000, 'and carries the cap when one is given');
 
+// ---- deadlines are the caller's call, not ours -----------------------------
+// The old default was 480s. It killed any job that genuinely needed longer and
+// recorded it as the worker timing out -- which reads as the worker's fault.
+ok(S.normaliseSeconds(undefined) === 0, 'omitted means no deadline');
+ok(S.normaliseSeconds(0) === 0, '0 explicitly means no deadline');
+ok(S.normaliseSeconds(-1) === 0, 'a negative is no deadline, not an instant kill');
+ok(S.normaliseSeconds('nonsense') === 0, 'an unparseable value is no deadline');
+ok(S.normaliseSeconds(1800) === 1800, 'a real value is kept exactly');
+ok(S.normaliseSeconds(2) === 30, 'a floor stops a typo killing every worker at launch');
+const noDl = S.createSwarm({ name: 'nodeadline', spawnerAgentId: 2, maxWorkers: 1, maxSpendUsd: 0.3, perWorkerUsd: 0.3 });
+S.approveSwarm(noDl.id);
+ok(S.getSwarm(noDl.id).per_worker_seconds === 0, 'a swarm has no deadline unless asked');
+const nw = S.admitWorker(noDl.id, { idx: 0 });
+ok(S.getWorker(nw.id).deadline_at === null,
+   'and its workers carry no deadline_at, so neither reaper can touch them');
+const dl2 = S.createSwarm({
+  name: 'withdeadline', spawnerAgentId: 2, maxWorkers: 1, maxSpendUsd: 0.3, perWorkerUsd: 0.3,
+  perWorkerSeconds: 900,
+});
+S.approveSwarm(dl2.id);
+ok(S.getSwarm(dl2.id).per_worker_seconds === 900, 'and carries the deadline when one is given');
+ok(S.getWorker(S.admitWorker(dl2.id, { idx: 0 }).id).deadline_at !== null,
+   'which does produce a deadline_at');
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

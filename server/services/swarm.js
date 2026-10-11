@@ -51,7 +51,11 @@ export const SPAWN_FLOOR_USD = 0.05;
 // Defaults. Every one is overridable per swarm (within the grant) or in settings.
 export const DEFAULTS = {
   per_worker_usd: 0.4, // ~2 spawn floors of headroom
-  per_worker_seconds: 480,
+  // 0 means no deadline. The orchestrator asking for the work is the only party
+  // that knows how long it should take; a number invented here is wrong for both
+  // a 20-second extraction and a 20-minute derivation, and the 480 that used to
+  // live here silently killed the long ones.
+  per_worker_seconds: 0,
   max_concurrent: 4,
   items_per_worker: 3, // batching is what makes the $0.19 floor tolerable
 };
@@ -178,6 +182,23 @@ const num = (k) => Number(getSetting(k) ?? SETTING_DEFAULTS[k]);
  * null -- "no cap" is the safe reading of a malformed value, because the
  * alternative is a worker that truncates every answer because of a typo.
  */
+/**
+ * Per-worker wall-clock deadline in seconds, or 0 for none.
+ *
+ * No default. A worker that outlives its usefulness costs nothing in tokens -- the
+ * budget brake already bounds spend -- it costs a concurrency slot, and that is a
+ * tradeoff for the caller to make, not for this file. What it must not do is
+ * silently impose a number: the old 480 killed any job that genuinely needed
+ * longer, and reported it as the worker's fault.
+ */
+export function normaliseSeconds(v) {
+  if (v === null || v === undefined || v === '') return 0;
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  // A floor only, against a typo that would kill every worker before it starts.
+  return Math.max(30, n);
+}
+
 export function normaliseOutputTokens(v) {
   if (v === null || v === undefined || v === '') return null;
   const n = Math.floor(Number(v));
@@ -526,7 +547,7 @@ export function createSwarm({
       VALUES (?, ?, ?, ?, ?, ?, 'pending_approval', ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, String(name).trim(), spawnerAgentId, hostId, grant.account_dir, model,
       workers, Math.min(DEFAULTS.max_concurrent, workers), spend, perWorker,
-      Math.max(30, Number(perWorkerSeconds) || DEFAULTS.per_worker_seconds), ipw,
+      normaliseSeconds(perWorkerSeconds), ipw,
       // NULL (the default) means no cap at all: the worker leaves
       // CLAUDE_CODE_MAX_OUTPUT_TOKENS unset and the model answers at whatever
       // length the work needs. A cap bounds nothing that costs money -- past it
@@ -682,7 +703,12 @@ export function admitWorker(swarmId, { idx, prompt = null, sessionName = null })
     }
 
     const id = randomUUID();
-    const deadline = new Date(Date.now() + s.per_worker_seconds * 1000).toISOString();
+    // NULL when the swarm set no deadline. Both reapers skip a NULL deadline, so
+    // such a worker runs until it finishes, its budget stops it, or a human kills
+    // it from the dashboard.
+    const deadline = s.per_worker_seconds > 0
+      ? new Date(Date.now() + s.per_worker_seconds * 1000).toISOString()
+      : null;
     db.prepare(`INSERT INTO swarm_workers (id, swarm_id, idx, state, prompt, session_name, report_token, deadline_at)
                 VALUES (?, ?, ?, 'admitted', ?, ?, ?, ?)`)
       .run(id, swarmId, idx, prompt, sessionName, randomUUID(), deadline);

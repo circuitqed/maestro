@@ -26,6 +26,12 @@
 # so a 50kB answer lands on disk where you can grep it instead of in your context.
 # The manifest also points at each worker's full Claude transcript.
 #
+# --timeout is also optional and has NO default. A worker that runs long burns no
+# extra tokens -- spend is capped by --per-worker -- it occupies one of your
+# concurrency slots, so set a deadline when you know what the work should take and
+# leave it off when you do not. Without one the worker runs until it finishes, its
+# budget stops it, or a human kills it from the dashboard.
+#
 # By default a worker's answer is NOT length-capped -- spawning one already costs
 # ~$0.15, so delegating is only worth it for substantial work. --max-output-tokens
 # caps ONE response if you want answers in smaller pieces; past it the model
@@ -47,7 +53,7 @@ TOKEN_FILE="${MAESTRO_AGENT_TOKEN_FILE:-$HOME/.maestro/agent-token}"
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # Before any credential or identity work: `--help` is the first thing an agent runs
 # to find out what this is, and failing it behind a token check teaches the agent
@@ -250,8 +256,10 @@ if mode == "spawn":
     print("swarm %s" % d["id"])
     print("  name     %s" % d["name"])
     print("  state    %s" % d["state"])
-    print("  batch    %s items -> %s workers x %s items, %ss each"
-          % (d.get("items"), d["maxWorkers"], d["itemsPerWorker"], d["perWorkerSeconds"]))
+    secs = d.get("perWorkerSeconds") or 0
+    print("  batch    %s items -> %s workers x %s items, %s"
+          % (d.get("items"), d["maxWorkers"], d["itemsPerWorker"],
+             ("%ss each" % secs) if secs else "no deadline (set --timeout to add one)"))
     print("  COST     floor %s   ceiling %s   swarm cap %s"
           % (usd(e.get("floorUsd")), usd(e.get("ceilingUsd")), usd(d["maxSpendUsd"])))
     print("           %s per worker before any work is done -- workers start concurrently"

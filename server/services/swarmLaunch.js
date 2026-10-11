@@ -44,6 +44,25 @@ const RUN_ROOT = '/tmp/maestro-swarms';
 // The repo copy is the real one on oracle (/home/projects is bind-mounted into the
 // container at the same path, so this resolves identically on both sides).
 const WORKER_BIN_DEFAULT = '/home/projects/maestro/scripts/maestro-worker';
+// A remote host has no /home/projects checkout. install-agent-cli.sh puts the
+// worker in ~/.local/bin, so that is the path there -- left unexpanded because it
+// is resolved by the remote shell, not here.
+const WORKER_BIN_REMOTE_DEFAULT = '.local/bin/maestro-worker';
+
+// Remote home directories, resolved once per host. The worker path must be
+// ABSOLUTE and single-quoted by the time it reaches the command line -- every
+// interpolation here crosses a shell boundary, so a literal '$HOME' would be
+// passed through verbatim and the launch would fail with "no such file" after the
+// swarm had already been admitted and the money committed.
+const remoteHomes = new Map();
+async function remoteHome(host) {
+  if (remoteHomes.has(host.id)) return remoteHomes.get(host.id);
+  const { stdout } = await execOnHost(host, 'printf %s "$HOME"', { timeout: 20000 });
+  const home = String(stdout || '').trim();
+  if (!home.startsWith('/')) throw fail('NO_HOME', `could not resolve $HOME on ${host.name}`);
+  remoteHomes.set(host.id, home);
+  return home;
+}
 
 // The worker must reach the server over HTTP to report. It runs on the HOST, so
 // container-internal addresses are wrong: 7007 is the published port, matching the
@@ -70,9 +89,24 @@ function fail(code, message) {
   return err;
 }
 
-/** Settings win over the environment: an admin can repoint these without a redeploy. */
-export const workerBin = () =>
-  getSetting('swarm_worker_bin') || process.env.MAESTRO_WORKER_BIN || WORKER_BIN_DEFAULT;
+/**
+ * Where maestro-worker lives ON THE HOST THAT WILL RUN IT.
+ *
+ * Host-dependent, and silently wrong if treated as global: the oracle path is a
+ * repo checkout that does not exist on garage-wsl, so a remote worker launched with
+ * it dies instantly with "no such file" after the swarm has already been admitted
+ * and the money committed.
+ *
+ * Settings win over the environment: an admin can repoint these without a redeploy.
+ */
+export async function workerBin(host = null) {
+  if (!isRemote(host)) {
+    return getSetting('swarm_worker_bin') || process.env.MAESTRO_WORKER_BIN || WORKER_BIN_DEFAULT;
+  }
+  const configured = getSetting('swarm_worker_bin_remote') || process.env.MAESTRO_WORKER_BIN_REMOTE;
+  if (configured && configured.startsWith('/')) return configured;
+  return `${await remoteHome(host)}/${configured || WORKER_BIN_REMOTE_DEFAULT}`;
+}
 
 /**
  * Where a worker should POST its report.
@@ -170,10 +204,13 @@ export async function launchWorker(swarm, worker) {
     }
 
     const args = [
-      q(workerBin()),
+      q(await workerBin(host)),
       '--id', q(worker.id),
       '--budget', q(usd(swarm.per_worker_usd)),
-      '--timeout', q(String(swarm.per_worker_seconds)),
+      // Omitted entirely when the swarm set none: maestro-worker then runs claude
+      // without `timeout`, and the worker lives until it finishes, its budget stops
+      // it, or a human kills it.
+      ...(swarm.per_worker_seconds > 0 ? ['--timeout', q(String(swarm.per_worker_seconds))] : []),
       '--account', q(swarm.account_dir),
       '--report-url', q(maestroUrl(host)),
       '--profile', q(PROFILE),
@@ -222,7 +259,10 @@ export async function launchWorker(swarm, worker) {
 
     await execOnHost(host, cmd);
     setWorkerStateIfLive(worker.id, 'running');
-    logSwarmEvent(swarm.id, 'launched', `${session} · $${usd(swarm.per_worker_usd)} · ${swarm.per_worker_seconds}s · log ${logFile}`, worker.id);
+    logSwarmEvent(swarm.id, 'launched',
+      `${session} · $${usd(swarm.per_worker_usd)} · `
+      + `${swarm.per_worker_seconds > 0 ? `${swarm.per_worker_seconds}s` : 'no deadline'} · log ${logFile}`,
+      worker.id);
     return session;
   } catch (err) {
     // The unlink normally happens inside the pane; if we never got that far the

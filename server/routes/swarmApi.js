@@ -111,11 +111,34 @@ const workerView = (w) => ({
 router.post('/swarms', (req, res) => {
   const b = req.body || {};
 
-  // v1 runs workers on oracle only. A remote SPAWNER is fine (it collects results
-  // over HTTP like everyone else), but a request that explicitly asks for workers
-  // somewhere else is refused rather than silently downgraded to local.
-  if (b.hostId !== undefined && b.hostId !== null && Number(b.hostId) !== 0) {
-    return refuse(res, 'BAD_HOST', 'v1 runs workers on the local host only; drop hostId');
+  // Workers run WHERE THE ORCHESTRATOR RUNS, by default.
+  //
+  // They used to be pinned to oracle, which quietly made them useless for the main
+  // case: em-sim's project lives at /home/dave/dev/em-sim on garage-wsl, and a
+  // worker on oracle cannot read a line of it. It saw only the prompt text, so
+  // "analyse this code" degraded to "reason about this description" with nothing
+  // reporting that the files were missing.
+  //
+  // `hostId: 0` (or null) is the explicit opt-out for work that is genuinely
+  // host-independent, and it is a real choice: a swarm on oracle keeps running when
+  // the spawner's machine reboots, which garage-pc does regularly.
+  let hostId = req.agent.host_id || null;
+  if (b.hostId !== undefined) {
+    const asked = Number(b.hostId);
+    if (b.hostId === null || asked === 0) {
+      hostId = null;                       // explicitly: run on oracle
+    } else if (Number.isInteger(asked) && asked > 0) {
+      if (asked !== req.agent.host_id) {
+        // An agent may place work on its own host or on oracle, nowhere else.
+        // Otherwise one project's lead can spawn billing processes inside another
+        // machine it was never given access to.
+        return refuse(res, 'BAD_HOST',
+          'a swarm runs on your own host (omit hostId) or on the local host (hostId: 0)');
+      }
+      hostId = asked;
+    } else {
+      return refuse(res, 'BAD_HOST', 'hostId must be 0, null, or your own host id');
+    }
   }
 
   if (!Array.isArray(b.items)) return refuse(res, 'BAD_ITEMS', 'items must be an array of strings');
@@ -147,7 +170,7 @@ router.post('/swarms', (req, res) => {
     const swarm = createSwarm({
       name: b.name,
       spawnerAgentId: req.agent.id,
-      hostId: null,
+      hostId,
       items,
       maxWorkers: b.maxWorkers,
       maxSpendUsd: b.maxSpendUsd,

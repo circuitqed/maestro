@@ -64,8 +64,35 @@ let r = await call('POST', '/api/agent/swarms', { body: { name: 'x', items: [] }
 ok(r.status === 400 && r.body.code === 'EMPTY', 'no items => 400 EMPTY', JSON.stringify(r.body));
 r = await call('POST', '/api/agent/swarms', { body: { name: 'x', items: 'one two' } });
 ok(r.status === 400 && r.body.code === 'BAD_ITEMS', 'items must be an array', JSON.stringify(r.body));
+// ---- where the workers run -------------------------------------------------
+// Workers used to be pinned to oracle, which made them useless for the main case:
+// a worker cannot read the project it was asked to analyse if that project is on
+// another machine. They now follow the orchestrator by default.
 r = await call('POST', '/api/agent/swarms', { body: { name: 'x', items: ['a'], hostId: 3 } });
-ok(r.status === 400 && r.body.code === 'BAD_HOST', 'remote swarms are refused, not downgraded');
+ok(r.status === 400 && r.body.code === 'BAD_HOST',
+   "an agent may not place billing work on someone else's host");
+r = await call('POST', '/api/agent/swarms', { body: { name: 'x', items: ['a'], hostId: 'nonsense' } });
+ok(r.status === 400 && r.body.code === 'BAD_HOST', 'a malformed hostId is refused, not coerced');
+
+// The lead fixture has host_id NULL (local), so its swarms land locally either way;
+// assert the inherited value explicitly rather than inferring it from a default.
+r = await call('POST', '/api/agent/swarms', { body: { name: 'inherits', items: ['a'] } });
+ok(r.status === 200 && S.getSwarm(r.body.id).host_id === null,
+   'a local agent gets a local swarm', JSON.stringify(r.body).slice(0, 80));
+
+// Now the case that was broken: an agent that lives on a remote host.
+dbMod.getDb().prepare("INSERT INTO hosts (id,name,ssh_target) VALUES (9,'remote-box','dave@remote-box')").run();
+dbMod.getDb().prepare("INSERT INTO agents (id,name,screen_session,host_id) VALUES (3,'remote-lead','remote-lead',9)").run();
+S.grantSwarm(3, { maxWorkers: 2, maxSpendUsd: 1.0, accountDir: '/home/dave/.claude-accts/stanford-api' });
+r = await call('POST', '/api/agent/swarms', { session: 'remote-lead', body: { name: 'follows', items: ['a'] } });
+ok(r.status === 200 && S.getSwarm(r.body.id).host_id === 9,
+   'a remote agent gets its workers on its OWN host, where its files are',
+   JSON.stringify(r.body).slice(0, 80));
+r = await call('POST', '/api/agent/swarms', { session: 'remote-lead', body: { name: 'optout', items: ['a'], hostId: 0 } });
+ok(r.status === 200 && S.getSwarm(r.body.id).host_id === null,
+   'hostId:0 is the opt-out for host-independent work, which survives the spawner rebooting');
+r = await call('POST', '/api/agent/swarms', { session: 'remote-lead', body: { name: 'own', items: ['a'], hostId: 9 } });
+ok(r.status === 200 && S.getSwarm(r.body.id).host_id === 9, 'naming your own host explicitly is allowed');
 
 // ---- creation: clamped, estimated, pending ----------------------------------
 r = await call('POST', '/api/agent/swarms', {
@@ -94,7 +121,12 @@ ok(r.status === 403 && r.body.code === 'NOT_YOURS', 'another agent cannot read t
 r = await call('POST', `/api/agent/swarms/${A.id}/cancel`, { session: 'other', body: {} });
 ok(r.status === 403, 'another agent cannot cancel it either');
 ok((await call('GET', '/api/agent/swarms', { session: 'other' })).body.length === 0, 'list is scoped to the caller');
-ok((await call('GET', '/api/agent/swarms')).body.length === 1, 'the spawner sees its own swarm');
+// Identity, not arithmetic: this is about scoping, so assert the swarm is THERE
+// rather than that the lead has exactly N -- a count breaks the moment a test above
+// creates another one, which says nothing about scoping.
+const mine = (await call('GET', '/api/agent/swarms')).body;
+ok(mine.some((x) => x.id === A.id) && !mine.some((x) => x.name === 'follows'),
+   'the spawner sees its own swarm and not another agent\'s');
 ok((await call('GET', '/api/agent/swarms/nope')).status === 404, 'unknown swarm => 404');
 
 // ---- worker reports ----------------------------------------------------------

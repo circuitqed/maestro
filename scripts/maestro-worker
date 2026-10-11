@@ -5,7 +5,7 @@
 # Runs standalone -- no server required -- so the economics can be measured and
 # the brakes exercised before any spawning code exists:
 #
-#   maestro-worker --id test1 --budget 0.40 --timeout 480 \
+#   maestro-worker --id test1 --budget 0.40 [--timeout SECS] \
 #     --account /home/dave/.claude-accts/stanford-api --model claude-opus-5-5 \
 #     --out /tmp/w1.json <<< 'What is 2+2? Reply with just the number.'
 #
@@ -16,9 +16,12 @@
 #   2. --max-budget-usd    -- the only brake verified to actually fire against this
 #                             gateway. Requires --print; `claude --help` says so
 #                             outright, which is why workers are headless.
-#   3. timeout --signal=INT -- budget bounds spend, not time. A worker wedged on a
-#                             stalled socket burns no tokens, so brake 2 never fires
-#                             while it holds a concurrency slot forever.
+#   3. --timeout           -- OPTIONAL, and off unless the caller asks. Budget bounds
+#                             spend, not time, so a worker wedged on a stalled socket
+#                             burns no tokens and brake 2 never fires while it holds a
+#                             concurrency slot. That is a real cost, but the remedy is
+#                             the caller naming a deadline it understands -- not a
+#                             default here that is wrong for most jobs.
 #   4. depth env           -- a worker may not spawn workers.
 #
 # There is deliberately NO default cap on output length. Spawning a worker costs
@@ -30,7 +33,7 @@
 # responses arrive in smaller pieces on purpose.
 set -uo pipefail
 
-ID=""; BUDGET="0.40"; TIMEOUT="480"; ACCOUNT=""; MODEL=""; OUT=""
+ID=""; BUDGET="0.40"; TIMEOUT=""; ACCOUNT=""; MODEL=""; OUT=""
 REPORT_URL="${MAESTRO_URL:-}"; TOKEN=""; PROFILE="read-only"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -43,7 +46,7 @@ while [ $# -gt 0 ]; do
     --report-url) REPORT_URL="$2"; shift 2;;
     --report-token) TOKEN="$2"; shift 2;;
     --profile) PROFILE="$2"; shift 2;;
-    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+    -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
     *) echo "unknown flag $1" >&2; exit 2;;
   esac
 done
@@ -90,9 +93,18 @@ RAW="$(mktemp)"; ERRF="$(mktemp)"
 trap 'rm -f "$RAW" "$ERRF"' EXIT
 
 started=$(date +%s)
-# SIGINT, not SIGKILL: claude flushes its JSON result on interrupt, so a timed-out
-# worker still reports partial work and its cost instead of vanishing.
-timeout --signal=INT "$TIMEOUT" \
+# `timeout` is only applied when the caller asked for one. There is no default: a
+# worker that runs long costs no tokens (the budget brake bounds spend), it costs a
+# concurrency slot -- and only the orchestrator that wrote the task knows whether 20
+# seconds or 20 minutes is correct. The 480 that used to be here killed the long
+# jobs and recorded it as the worker's own timeout.
+TIMEOUT_CMD=()
+if [ -n "$TIMEOUT" ] && [ "$TIMEOUT" -gt 0 ] 2>/dev/null; then
+  # SIGINT, not SIGKILL: claude flushes its JSON result on interrupt, so a timed-out
+  # worker still reports partial work and its cost instead of vanishing.
+  TIMEOUT_CMD=(timeout --signal=INT "$TIMEOUT")
+fi
+"${TIMEOUT_CMD[@]}" \
   env CLAUDE_CONFIG_DIR="$ACCOUNT" \
       CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1 \
       CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=2 \
