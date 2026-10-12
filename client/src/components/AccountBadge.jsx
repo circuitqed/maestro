@@ -22,7 +22,14 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [pending, setPending] = useState(false); // changed, not yet restarted
+  // What the RUNNING session was started with. Compared against `current` (what it
+  // is configured to use next) to decide whether a restart is outstanding.
+  //
+  // This used to be a local boolean set when you switched accounts, which meant the
+  // marker was lost on any re-render -- restarting one agent re-fetched the agent
+  // list, remounted the badge, and every other agent's "restart to apply" silently
+  // disappeared while those sessions kept billing the old account.
+  const [active, setActive] = useState(undefined);
   const wrapRef = useRef(null);
   const btnRef = useRef(null);
   const popRef = useRef(null);
@@ -38,6 +45,7 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
       if (agRes.ok) {
         const a = await agRes.json();
         setCurrent((a.config && a.config.claudeConfigDir) || null);
+        setActive((a.config && a.config.activeClaudeConfigDir) || null);
       }
     } catch {
       /* leave the last known state rather than flashing an empty picker */
@@ -89,8 +97,10 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
         body: JSON.stringify({ claudeConfigDir: dir || '' }),
       });
       if (res.ok) {
+        // No local "pending" flag: `current !== active` is now what says a restart
+        // is outstanding, and it survives re-renders, reloads and other agents
+        // being restarted.
         setCurrent(dir || null);
-        setPending(true);
         setOpen(false);
         if (onChanged) onChanged();
       }
@@ -104,12 +114,19 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
     try {
       await fetch(`/api/agents/${agentId}/stop`, { method: 'POST' });
       await fetch(`/api/agents/${agentId}/start`, { method: 'POST' });
-      setPending(false);
+      await load();   // the server now knows what it restarted as; believe it
       setOpen(false);
     } finally {
       setBusy(false);
     }
   };
+
+  // A restart is outstanding when the configured account differs from the one the
+  // live session was started with. Only meaningful while it is running: a stopped
+  // agent will pick up the new account whenever it next starts.
+  // `active === undefined` means the agent predates this tracking -- treat that as
+  // "no claim", because inventing a mismatch would nag on every old agent.
+  const pending = !!running && active !== undefined && (current || null) !== (active || null);
 
   if (provider !== 'claude' || !accounts || accounts.length === 0) return null;
   // Deliberately NOT hidden when the host has only one account. Hiding it seemed

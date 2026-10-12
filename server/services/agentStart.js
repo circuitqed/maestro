@@ -15,7 +15,7 @@
 import fs from 'fs';
 import { randomUUID } from 'crypto';
 
-import { getProject, updateAgentStatus, getAgent, setAgentClaudeSessionId } from './db.js';
+import { getProject, updateAgentStatus, getAgent, setAgentClaudeSessionId, setAgentActiveAccount } from './db.js';
 import { getProvider } from './providers.js';
 import { createSession, startProviderSession } from './tmux.js';
 import { execOnHost, isRemote, shellQuote, isHostUnreachable, describeHostError } from './hosts.js';
@@ -135,6 +135,13 @@ export async function startAgentSession(agent, host, { registerAgent } = {}) {
   // forever. A bare shell is up-but-not-working, which is what 'idle' means.
   const startedStatus = provider.monitorable ? 'running' : 'idle';
   updateAgentStatus(agent.id, startedStatus);
+  // The account this session is really running as. Only meaningful when a session
+  // was actually (re)created -- adopting an existing one leaves whatever account it
+  // was started with in place, so claiming the new one here would be a lie that
+  // hides the very mismatch this records.
+  if (result.created && !result.adopted) {
+    setAgentActiveAccount(agent.id, (agent.config && agent.config.claudeConfigDir) || null);
+  }
   if (provider.monitorable && registerAgent) registerAgent(agent.id, agent.screen_session, host);
 
   const message = result.alreadyRunning || !result.created

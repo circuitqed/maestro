@@ -408,6 +408,29 @@ export function updateAgent(id, { name, workingDir, claudeConfigDir } = {}) {
   return getAgent(id);
 }
 
+/**
+ * Record which Anthropic account a session was actually STARTED with.
+ *
+ * Distinct from config.claudeConfigDir, which is what the agent is configured to
+ * use NEXT time. The two differ exactly when someone switches accounts and has not
+ * restarted yet -- and that gap matters, because the running process still bills
+ * the old account until it is restarted.
+ *
+ * Until this existed the "restart to apply" marker was local React state in
+ * AccountBadge, so it vanished on any re-render -- including the one triggered by
+ * restarting a DIFFERENT agent, which is how several agents could silently be left
+ * running on an account Dave thought he had changed.
+ */
+export function setAgentActiveAccount(id, dir) {
+  const row = getAgent(id);
+  const config = { ...((row && row.config) || {}) };
+  const v = typeof dir === 'string' && dir.trim() ? dir.trim() : null;
+  if (v) config.activeClaudeConfigDir = v;
+  else delete config.activeClaudeConfigDir;
+  db.prepare('UPDATE agents SET config = ? WHERE id = ?').run(JSON.stringify(config), id);
+  return getAgent(id);
+}
+
 export function updateAgentLastSeen(id) {
   const now = new Date().toISOString();
   db.prepare('UPDATE agents SET last_seen_at = ? WHERE id = ?').run(now, id);
