@@ -333,6 +333,26 @@ function Markdown({ children }) {
 // Block components
 // ---------------------------------------------------------------------------
 
+
+/**
+ * A progress update: thinking the model addressed to the reader.
+ *
+ * Shown in the message column, not folded into the thinking drawer, but styled
+ * apart from a finished answer -- it is a status note mid-turn, and a long turn
+ * can emit several. The marker mirrors the bullet the terminal uses for the same
+ * records, so the two views read the same way.
+ */
+function ProgressUpdate({ text }) {
+  return (
+    <div className="flex gap-2 my-1">
+      <span className="flex-shrink-0 mt-[7px] w-1.5 h-1.5 rounded-full bg-sky-400/80" />
+      <div className="min-w-0 flex-1 text-gray-300 border-l-2 border-sky-500/30 pl-2.5">
+        <Markdown>{text}</Markdown>
+      </div>
+    </div>
+  );
+}
+
 function ThinkingBlock({ text }) {
   const [open, setOpen] = useState(false);
   return (
@@ -1981,7 +2001,18 @@ function claudeParts(rec, ctx) {
       if (block.type === 'text') {
         if (block.text && block.text.trim()) msg.push(<Markdown key={key}>{block.text}</Markdown>);
       } else if (block.type === 'thinking') {
-        tool.push(<ThinkingBlock key={key} text={block.thinking} />);
+        // `thinkingDisplay: "updates"` marks a thinking block the model wrote FOR
+        // the user: Claude Code's progress-update feature, which the TUI surfaces
+        // as a visible bullet rather than as reasoning. Collapsing it with ordinary
+        // thinking is why Dave kept seeing status messages in the terminal that
+        // never appeared in chat -- 1,884 of them across these transcripts,
+        // including "Four decisions need your input", which was the whole point of
+        // the message.
+        if (rec.thinkingDisplay === 'updates' && block.thinking && block.thinking.trim()) {
+          msg.push(<ProgressUpdate key={key} text={block.thinking} />);
+        } else {
+          tool.push(<ThinkingBlock key={key} text={block.thinking} />);
+        }
       } else if (block.type === 'tool_use') {
         toolCount += 1;
         if (block.name === 'SendUserFile') {
