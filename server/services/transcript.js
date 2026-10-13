@@ -260,9 +260,30 @@ export async function resolveTranscriptFile(agent, host) {
   }
 
   // 1. Pinned session id: the transcript filename equals the session id.
+  //
+  // The pin goes STALE on its own. Claude forks a new session id on compaction and
+  // on /clear, keeps writing to the new file, and leaves the old one on disk --
+  // existing, findable, and dead. Returning it unconditionally meant chat tailed a
+  // transcript that had stopped growing ten hours earlier while the terminal showed
+  // the live conversation: observed on em-sim-main, pinned b9dcd804 (last written
+  // 00:26) while the session had moved on through bede917c to 7dc5ec60.
+  //
+  // So the pin is a hint, not an answer: if the agent's own directory holds a NEWER
+  // transcript, that is the live one. The Codex branch above already re-pins this
+  // way; this is the same rule for Claude.
   if (agent && agent.claude_session_id && isUuid(agent.claude_session_id)) {
     const pinned = await findPinnedTranscript(host, agent.claude_session_id, agentClaudeHome(agent));
-    if (pinned) return pinned;
+    if (pinned) {
+      const newer = await newerTranscriptInAgentDir(agent, host, pinned);
+      if (!newer) return pinned;
+      const id = transcriptIdFromPath(newer);
+      // Re-pin, so a restart resumes the session the agent is actually in rather
+      // than reviving a compacted-away one.
+      if (id && id !== agent.claude_session_id) {
+        try { setAgentClaudeSessionId(agent.id, id); } catch { /* optimisation only */ }
+      }
+      return newer;
+    }
   }
 
   // 2. Fallback: newest *.jsonl in the project's encoded-cwd folder.
@@ -292,6 +313,49 @@ export async function resolveTranscriptFile(agent, host) {
     }
   }
 
+  return null;
+}
+
+
+const transcriptIdFromPath = (p) => {
+  const m = /([0-9a-fA-F-]{36})\.jsonl$/.exec(String(p || ''));
+  return m ? m[1] : null;
+};
+
+/**
+ * The newest transcript in this agent's own encoded-cwd directory, when it is
+ * strictly newer than `pinned`. Returns null when the pin is already the newest,
+ * which is the common case and costs one `ls`.
+ *
+ * Scoped to the agent's OWN directory on purpose: two agents sharing a cwd and an
+ * account would otherwise steal each other's sessions. Where that is possible the
+ * pin is the only thing that tells them apart, so a file pinned by a sibling is
+ * never adopted.
+ */
+async function newerTranscriptInAgentDir(agent, host, pinned) {
+  const project = agent.project_id ? getProject(agent.project_id) : null;
+  const cwd = resolveAgentWorkingDir(agent, project, host);
+  if (!cwd) return null;
+  const enc = encodeCwd(cwd);
+  if (!enc || !/^[A-Za-z0-9-]+$/.test(enc)) return null;
+  let listing;
+  try {
+    const { stdout } = await execOnHost(
+      host,
+      `ls -t ${claudeHomeExpr(agentClaudeHome(agent))}/projects/${enc}/*.jsonl 2>/dev/null | head -5`
+    );
+    listing = String(stdout || '').split('\n').map((x) => x.trim()).filter(Boolean);
+  } catch {
+    return null;
+  }
+  if (!listing.length) return null;
+  const siblings = new Set(getPinnedSessionIdsOnHost(agent.id, agent.host_id) || []);
+  for (const cand of listing) {          // ls -t: newest first
+    if (cand === pinned) return null;    // the pin is already the newest
+    const id = transcriptIdFromPath(cand);
+    if (id && siblings.has(id)) continue; // belongs to another agent
+    return cand;
+  }
   return null;
 }
 
