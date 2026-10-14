@@ -7,8 +7,28 @@ import ProviderIcon from './ProviderIcon';
  * picker — switching models per agent is routine here, and until now the only way
  * to tell Opus from Fable was to scroll the terminal back to the banner.
  */
-function ModelBadge({ info, className = '', onClick, busy = false }) {
-  if (!info || !info.model) return null;
+const PROVIDER_LABEL = {
+  claude: 'Claude Code',
+  codex: 'OpenAI Codex',
+  antigravity: 'Antigravity',
+  gemini: 'Gemini CLI',
+  aider: 'Aider',
+};
+
+function ModelBadge({ info, className = '', onClick, busy = false, provider = null, configuredModel = null }) {
+  // A model reported by the transcript is the truth, but only claude and codex have
+  // a renderer that can report one. Everything else showed a bare title bar with no
+  // hint of what the agent even is -- an Antigravity agent looked identical to a
+  // broken one. Fall back to what the agent is CONFIGURED as: the model if the agent
+  // row carries one, else the provider's name.
+  const model = (info && info.model) || configuredModel || null;
+  const prov = (info && info.provider) || provider || null;
+  if (!model && !prov) return null;
+  // Only the transcript-derived case can be trusted enough to offer the picker --
+  // clicking would type /model into a provider that may not have that command.
+  const derived = !!(info && info.model);
+  if (!derived) onClick = undefined;
+  info = { ...(info || {}), model: model || PROVIDER_LABEL[prov] || prov, provider: prov };
   // Clickable when the parent gives it something to do — opening the picker from here
   // saves typing /model into the composer, which is the only way it was reachable.
   // While the agent is working, Claude queues keystrokes rather than running a slash

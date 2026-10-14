@@ -237,6 +237,19 @@ export function getProvider(id) {
   return PROVIDERS[id] || PROVIDERS.custom;
 }
 
+/**
+ * Does this provider id actually exist?
+ *
+ * getProvider() falls back to `custom` for anything unknown, which is right when
+ * building a command (an unrecognised agent still gets a shell) and wrong for
+ * validation -- it is never falsy, so `if (!getProvider(x))` rejects nothing. A
+ * typo'd provider would have been stored verbatim and the agent would launch the
+ * custom provider with no customCommand.
+ */
+export function hasProvider(id) {
+  return Object.prototype.hasOwnProperty.call(PROVIDERS, id);
+}
+
 export function getProviderList() {
   return Object.values(PROVIDERS);
 }

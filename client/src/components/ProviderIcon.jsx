@@ -43,14 +43,20 @@ function Glyph({ provider, className }) {
           <ellipse cx="12" cy="12" rx="4" ry="8.5" transform="rotate(120 12 12)" />
         </svg>
       );
-    case 'antigravity':
-      // Antigravity — an upward chevron breaking free of a baseline
-      return (
-        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M12 3l7 8h-4v6h-6v-6H5l7-8z" />
-          <path d="M5 21h14" />
-        </svg>
-      );
+      case 'antigravity':
+        // Antigravity — a body inside a tilted orbital ring.
+        //
+        // Two earlier attempts (an upward chevron over a baseline, then a teardrop
+        // over an arc) both read as "upload" at 16px, because ANY vertical mass
+        // sitting above a horizontal line is the upload/download glyph. This has no
+        // vertical axis to misread: a filled circle inside a tilted ellipse, which
+        // is not used by any other provider here.
+        return (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <ellipse cx="12" cy="12" rx="10" ry="4.6" transform="rotate(-28 12 12)" />
+            <circle cx="12" cy="12" r="3.1" fill="currentColor" stroke="none" />
+          </svg>
+        );
     case 'gemini':
       // Google Gemini — four-point spark star with concave sides
       return (

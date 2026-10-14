@@ -24,7 +24,7 @@ import {
 import { getTmuxSessions, startProviderSession, createSession, killSession, sessionExists, sendText, sendAnswer, sendKeys, capturePane } from '../services/tmux.js';
 import { resetHostBackoff, registerAgent, unregisterAgent } from '../services/agentMonitor.js';
 import { startAgentSession } from '../services/agentStart.js';
-import { getProvider, getProviderList } from '../services/providers.js';
+import { getProvider, getProviderList, hasProvider } from '../services/providers.js';
 import { listAccounts } from '../services/accounts.js';
 import { usageForAgent } from '../services/usage.js';
 import { isRemote, isValidSessionName, execOnHost, shellQuote, sshBaseArgs, remoteWrap, isHostUnreachable, describeHostError } from '../services/hosts.js';
@@ -393,7 +393,14 @@ router.patch('/:id', async (req, res) => {
     }
     if (!checkAgentAccess(req, res, agent)) return;
 
-    const { name, workingDir, claudeConfigDir } = req.body;
+    const { name, workingDir, claudeConfigDir, provider } = req.body;
+    // Provider was creation-only, so a wrong choice meant deleting the agent and
+    // rebuilding it -- or editing the config JSON by hand, which is how this one was
+    // repaired. Validated against the known set so a typo cannot produce an agent
+    // that builds no command at all.
+    if (provider !== undefined && !hasProvider(provider)) {
+      return res.status(400).json({ error: `Unknown provider: ${provider}` });
+    }
     // Which Anthropic account this agent runs as. A PATH, never a credential: a
     // failed start echoes the whole command back in the error response, and the
     // command line is visible to `ps` on the host.
@@ -430,7 +437,7 @@ router.patch('/:id', async (req, res) => {
       }
     }
 
-    const updated = updateAgent(req.params.id, { name, workingDir, claudeConfigDir });
+    const updated = updateAgent(req.params.id, { name, workingDir, claudeConfigDir, provider });
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });

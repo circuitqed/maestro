@@ -6,6 +6,11 @@ const PROVIDERS = [
   { id: 'claude', name: 'Claude' },
   { id: 'codex', name: 'Codex' },
   { id: 'gemini', name: 'Gemini' },
+  // Google's terminal agent (`agy`), distinct from Gemini CLI. Missing from this
+  // list is why an Antigravity agent got created as `gemini`: that was the only
+  // Google-looking option, so it launched the wrong binary and died into an empty
+  // shell, which reads as "the agent won't start" rather than "wrong provider".
+  { id: 'antigravity', name: 'Antigravity' },
   { id: 'aider', name: 'Aider' },
   { id: 'custom', name: 'Custom' },
   { id: 'shell', name: 'Shell' },

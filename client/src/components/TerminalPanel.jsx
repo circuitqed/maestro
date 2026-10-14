@@ -81,6 +81,8 @@ const TerminalPanel = forwardRef(function TerminalPanel(
           <span className="text-white font-medium text-sm truncate min-w-0">{sessionName}</span>
           {mode === 'chat' && <ModelBadge
               info={modelInfo}
+              provider={agentProvider}
+              configuredModel={(agentRow && agentRow.config && agentRow.config.model) || null}
               className="flex-shrink-0"
               onClick={agentBusy ? undefined : openModelPicker}
               busy={agentBusy}

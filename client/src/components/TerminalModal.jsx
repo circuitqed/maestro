@@ -114,6 +114,8 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
             <span className="text-gray-400 text-sm font-mono truncate">{sessionName}</span>
             {mode === 'chat' && <ModelBadge
               info={modelInfo}
+              provider={agentProvider}
+              configuredModel={(agentRow && agentRow.config && agentRow.config.model) || null}
               className="flex-shrink-0"
               onClick={agentBusy ? undefined : openModelPicker}
               busy={agentBusy}
