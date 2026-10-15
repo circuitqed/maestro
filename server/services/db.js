@@ -405,6 +405,16 @@ export function updateAgent(id, { name, workingDir, claudeConfigDir, provider } 
     else delete config.claudeConfigDir;
     db.prepare('UPDATE agents SET config = ? WHERE id = ?').run(JSON.stringify(config), id);
   }
+  // Which CLI this agent runs. Creation-only until now, so a wrong choice meant
+  // deleting and rebuilding the agent -- and picking the wrong one is easy, because
+  // a missing binary just drops the pane into a bare shell rather than erroring.
+  // Merged into config like claudeConfigDir, so changing it cannot discard the
+  // model/flags stored beside it.
+  if (provider !== undefined && typeof provider === 'string' && provider.trim()) {
+    const row = getAgent(id);
+    const config = { ...((row && row.config) || {}), provider: provider.trim() };
+    db.prepare('UPDATE agents SET config = ? WHERE id = ?').run(JSON.stringify(config), id);
+  }
   return getAgent(id);
 }
 
@@ -428,16 +438,6 @@ export function setAgentActiveAccount(id, dir) {
   if (v) config.activeClaudeConfigDir = v;
   else delete config.activeClaudeConfigDir;
   db.prepare('UPDATE agents SET config = ? WHERE id = ?').run(JSON.stringify(config), id);
-  // Which CLI this agent runs. Creation-only until now, so a wrong choice meant
-  // deleting and rebuilding the agent -- and picking the wrong one is easy, because
-  // a missing binary just drops the pane into a bare shell rather than erroring.
-  // Merged into config like claudeConfigDir, so changing it cannot discard the
-  // model/flags stored beside it.
-  if (provider !== undefined && typeof provider === 'string' && provider.trim()) {
-    const row = getAgent(id);
-    const config = { ...((row && row.config) || {}), provider: provider.trim() };
-    db.prepare('UPDATE agents SET config = ? WHERE id = ?').run(JSON.stringify(config), id);
-  }
   return getAgent(id);
 }
 
