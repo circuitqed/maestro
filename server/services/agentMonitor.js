@@ -293,8 +293,19 @@ async function syncHostGroup(host, hostAgents) {
     const exists = sessionNames.has(agent.screen_session);
 
     if (exists) {
+        // A live session and a 'stopped' row contradict each other: stopping an agent
+        // kills its session, so this state can only come from the row being wrong --
+        // a failed recovery, or a crash between killing and writing. Left alone it is
+        // permanent: recoverHostAgents skips 'stopped' as deliberate, and the branch
+        // below only ever writes 'stopped', so nothing undoes it. em-sim-fable sat
+        // like this for a day, running and answering, while the dashboard showed it
+        // stopped and every restart said "Session already running".
+        if (agent.status === 'stopped') {
+          updateAgentStatus(agent.id, 'idle');
+          console.log(`Agent ${agent.name}: marked stopped but its session is live - corrected to idle`);
+        }
       // Register for monitoring if not already (skip non-monitorable providers like shell)
-      if (provider.monitorable && !agentActivity.has(agent.id) && agent.status !== 'stopped') {
+      if (provider.monitorable && !agentActivity.has(agent.id)) {
         registerAgent(agent.id, agent.screen_session, host);
       }
 
