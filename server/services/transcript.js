@@ -259,6 +259,21 @@ export async function resolveTranscriptFile(agent, host) {
     return file;
   }
 
+  // 0. What the live process is actually running. Beats both the pin and mtime,
+  //    and is the only signal that cannot be fooled by a dead file being touched.
+  if (agent && agent.screen_session) {
+    const liveId = await liveSessionId(agent, host);
+    if (liveId) {
+      const f = await findPinnedTranscript(host, liveId, agentClaudeHome(agent));
+      if (f) {
+        if (liveId !== agent.claude_session_id) {
+          try { setAgentClaudeSessionId(agent.id, liveId); } catch { /* optimisation only */ }
+        }
+        return f;
+      }
+    }
+  }
+
   // 1. Pinned session id: the transcript filename equals the session id.
   //
   // The pin goes STALE on its own. Claude forks a new session id on compaction and
@@ -357,6 +372,40 @@ async function newerTranscriptInAgentDir(agent, host, pinned) {
     return cand;
   }
   return null;
+}
+
+
+/**
+ * The session id the agent's LIVE process is actually using.
+ *
+ * This is the only authoritative answer. The pin goes stale on compaction and
+ * /clear, and "newest file by mtime" -- the previous tiebreak -- is wrong whenever
+ * something touches a dead transcript: EmailAssistant's abandoned 62622f73 was
+ * being touched minutes ago while its real session a3ace91e, last written four
+ * minutes earlier, was the one actually in use. Content said 15 days stale; mtime
+ * said freshest.
+ *
+ * Maestro launches claude with --session-id or --resume, so the id is in the pane
+ * process's own argv. Uses `ps` rather than /proc so it works on the mac mini too.
+ * Returns null for anything unexpected; every caller falls back to the pin.
+ */
+async function liveSessionId(agent, host) {
+  const name = agent && agent.screen_session;
+  if (!name || !isValidSessionName(name)) return null;
+  const cmd =
+    `pid=$(tmux list-panes -t ${shellQuote(`=${name}:`)} -F '#{pane_pid}' 2>/dev/null | head -1); ` +
+    '[ -z "$pid" ] && exit 0; ' +
+    'kids=$(pgrep -P "$pid" 2>/dev/null | tr "\n" "," | sed "s/,$//"); ' +
+    '[ -z "$kids" ] && exit 0; ' +
+    'ps -o args= -p "$kids" 2>/dev/null | ' +
+    "grep -oE '(--resume|--session-id)[= ]+[0-9a-fA-F-]{36}' | grep -oE '[0-9a-fA-F-]{36}' | head -1";
+  try {
+    const { stdout } = await execOnHost(host, cmd, { timeout: 15000 });
+    const id = firstLine(stdout);
+    return id && isUuid(id) ? id : null;
+  } catch {
+    return null;  // agent stopped, host unreachable, no ps -- the pin still works
+  }
 }
 
 function firstLine(stdout) {
