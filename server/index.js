@@ -21,9 +21,12 @@ import { startTaskRunner } from './services/taskRunner.js';
 import { ensureAgentApiToken } from './services/agentToken.js';
 import { setupTerminalWS } from './services/terminal.js';
 import { setupTranscriptWS } from './services/transcript.js';
-import { initDb, getUserCount } from './services/db.js';
+import { initDb, getUserCount, getAgents, getHost } from './services/db.js';
 import SQLiteStore from './services/sessionStore.js';
 import { startMonitoring, onStateChange, getAllAgentStates, registerAgent } from './services/agentMonitor.js';
+import { startUpdateWatch } from './services/updateWatch.js';
+import { startAgentSession } from './services/agentStart.js';
+import { observeIdle } from './services/inject.js';
 import { startHarnessWatch } from './services/harnessWatch.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -184,6 +187,11 @@ initDb().then(() => {
       initSwarmTables();
       if (typeof initSwarmItems === 'function') initSwarmItems();
       startSwarmRunner(5000);
+
+      // Agents keep running the build they started with after claude self-updates,
+      // so they drift behind by weeks unless someone restarts them. Restarts resume
+      // the conversation, which is what makes this safe to automate.
+      startUpdateWatch({ getAgents, getHost, startAgentSession, registerAgent, observeIdle });
   });
 }).catch((err) => {
   console.error('Failed to initialize database:', err);
