@@ -259,19 +259,16 @@ export async function resolveTranscriptFile(agent, host) {
     return file;
   }
 
-  // 0. What the live process is actually running. Beats both the pin and mtime,
-  //    and is the only signal that cannot be fooled by a dead file being touched.
-  if (agent && agent.screen_session) {
+  // 0. The id the live process was LAUNCHED with, used only to seed the search when
+  //    the stored pin is missing or points at nothing. It is not an answer on its
+  //    own: argv never changes, so it still names the original session long after
+  //    claude has forked away from it (arxiver, launched 2026-08-12 with --resume
+  //    cebf26c7, writing to 62622f73 since 09-03). Whatever it yields still goes
+  //    through the lineage check below.
+  let seedId = agent && agent.claude_session_id;
+  if (agent && agent.screen_session && !(seedId && isUuid(seedId))) {
     const liveId = await liveSessionId(agent, host);
-    if (liveId) {
-      const f = await findPinnedTranscript(host, liveId, agentClaudeHome(agent));
-      if (f) {
-        if (liveId !== agent.claude_session_id) {
-          try { setAgentClaudeSessionId(agent.id, liveId); } catch { /* optimisation only */ }
-        }
-        return f;
-      }
-    }
+    if (liveId) seedId = liveId;
   }
 
   // 1. Pinned session id: the transcript filename equals the session id.
@@ -286,8 +283,8 @@ export async function resolveTranscriptFile(agent, host) {
   // So the pin is a hint, not an answer: if the agent's own directory holds a NEWER
   // transcript, that is the live one. The Codex branch above already re-pins this
   // way; this is the same rule for Claude.
-  if (agent && agent.claude_session_id && isUuid(agent.claude_session_id)) {
-    const pinned = await findPinnedTranscript(host, agent.claude_session_id, agentClaudeHome(agent));
+  if (agent && seedId && isUuid(seedId)) {
+    const pinned = await findPinnedTranscript(host, seedId, agentClaudeHome(agent));
     if (pinned) {
       const newer = await newerTranscriptInAgentDir(agent, host, pinned);
       if (!newer) return pinned;
@@ -338,74 +335,75 @@ const transcriptIdFromPath = (p) => {
 };
 
 /**
- * The newest transcript in this agent's own encoded-cwd directory, when it is
- * strictly newer than `pinned`. Returns null when the pin is already the newest,
- * which is the common case and costs one `ls`.
+ * The successor to this agent's pinned session, when claude has forked away from it.
  *
- * Scoped to the agent's OWN directory on purpose: two agents sharing a cwd and an
- * account would otherwise steal each other's sessions. Where that is possible the
- * pin is the only thing that tells them apart, so a file pinned by a sibling is
- * never adopted.
+ * claude starts a NEW session id on compaction and /clear, keeps writing there, and
+ * leaves the old file behind. Three signals were tried before this one, and the
+ * first two were wrong in production:
+ *
+ *   mtime  an abandoned transcript kept being touched, so it looked freshest while
+ *          its newest record was 15 days old (EmailAssistant, 62622f73).
+ *   argv   `--resume <id>` is only what the process was LAUNCHED with. arxiver was
+ *          started 2026-08-12 with --resume cebf26c7; that file stopped receiving
+ *          records on 09-03 and everything since went to 62622f73, argv unchanged.
+ *
+ * What does hold is LINEAGE: a forked transcript carries references to the session
+ * it came from (62622f73 mentions cebf26c7 321 times). Selecting on "references my
+ * pinned id AND has newer content" attributes correctly even where several agents
+ * share one directory -- ~/.claude/projects/-home-dave holds a dozen -- which plain
+ * "newest file wins" does not: whichever agent resolved first would steal it.
+ *
+ * Bounded to the five newest files so this stays a single command.
  */
 async function newerTranscriptInAgentDir(agent, host, pinned) {
-  const project = agent.project_id ? getProject(agent.project_id) : null;
-  const cwd = resolveAgentWorkingDir(agent, project, host);
-  if (!cwd) return null;
-  const enc = encodeCwd(cwd);
-  if (!enc || !/^[A-Za-z0-9-]+$/.test(enc)) return null;
-  let listing;
+  const pinnedId = transcriptIdFromPath(pinned) || agent.claude_session_id;
+  if (!pinnedId || !isUuid(pinnedId)) return null;
+  // Anchor on the directory the PINNED transcript is actually in, not on a cwd
+  // derived from the project row. arxiver's project has an empty path, so
+  // resolveAgentWorkingDir returned null and this bailed before looking at
+  // anything -- leaving it on a session abandoned six weeks earlier. The pinned
+  // file's own directory is where that agent's sessions live, by definition, and
+  // needs no configuration to be correct.
+  const dir = pinned.replace(/\/[^/]*$/, '');
+  if (!dir || dir === pinned) return null;
+  // Per candidate: newest record timestamp, whether it descends from the pin, path.
+  let lines;
   try {
     const { stdout } = await execOnHost(
       host,
-      `ls -t ${claudeHomeExpr(agentClaudeHome(agent))}/projects/${enc}/*.jsonl 2>/dev/null | head -5`
+      `for f in $(ls -t ${dir}/*.jsonl 2>/dev/null | head -5); do ` +
+        `t=$(tail -c 200000 "$f" | grep -o '"timestamp":"[^"]*"' | tail -1 | grep -oE '[0-9T:.Z-]{20,}'); ` +
+        `n=$(grep -c ${shellQuote(pinnedId)} "$f" 2>/dev/null || echo 0); ` +
+        `printf '%s|%s|%s\n' "$t" "$n" "$f"; done`,
+      { timeout: 25000 }
     );
-    listing = String(stdout || '').split('\n').map((x) => x.trim()).filter(Boolean);
+    lines = String(stdout || '').split('\n').map((x) => x.trim()).filter(Boolean);
   } catch {
     return null;
   }
-  if (!listing.length) return null;
   const siblings = new Set(getPinnedSessionIdsOnHost(agent.id, agent.host_id) || []);
-  for (const cand of listing) {          // ls -t: newest first
-    if (cand === pinned) return null;    // the pin is already the newest
-    const id = transcriptIdFromPath(cand);
-    if (id && siblings.has(id)) continue; // belongs to another agent
-    return cand;
+  let pinnedTs = null;
+  const candidates = [];
+  for (const line of lines) {
+    const [ts, nRaw, file] = line.split('|');
+    // A blank timestamp means the probe failed to parse that file, not that the
+    // file is old -- skipping silently is how a quoting bug in this very command
+    // (BRE braces eaten by the template literal) made every candidate vanish.
+    if (!ts || !file) continue;
+    if (file === pinned) { pinnedTs = ts; continue; }
+    const id = transcriptIdFromPath(file);
+    if (id && siblings.has(id)) continue;         // another agent's session
+    // Descendants only. A handful of incidental mentions is not lineage: the real
+    // thing cites its parent hundreds of times (321 for arxiver), whereas an
+    // unrelated transcript that happens to name the id does so a few times.
+    if ((parseInt(nRaw, 10) || 0) < 10) continue;
+    candidates.push({ ts, file });
   }
-  return null;
-}
-
-
-/**
- * The session id the agent's LIVE process is actually using.
- *
- * This is the only authoritative answer. The pin goes stale on compaction and
- * /clear, and "newest file by mtime" -- the previous tiebreak -- is wrong whenever
- * something touches a dead transcript: EmailAssistant's abandoned 62622f73 was
- * being touched minutes ago while its real session a3ace91e, last written four
- * minutes earlier, was the one actually in use. Content said 15 days stale; mtime
- * said freshest.
- *
- * Maestro launches claude with --session-id or --resume, so the id is in the pane
- * process's own argv. Uses `ps` rather than /proc so it works on the mac mini too.
- * Returns null for anything unexpected; every caller falls back to the pin.
- */
-async function liveSessionId(agent, host) {
-  const name = agent && agent.screen_session;
-  if (!name || !isValidSessionName(name)) return null;
-  const cmd =
-    `pid=$(tmux list-panes -t ${shellQuote(`=${name}:`)} -F '#{pane_pid}' 2>/dev/null | head -1); ` +
-    '[ -z "$pid" ] && exit 0; ' +
-    'kids=$(pgrep -P "$pid" 2>/dev/null | tr "\n" "," | sed "s/,$//"); ' +
-    '[ -z "$kids" ] && exit 0; ' +
-    'ps -o args= -p "$kids" 2>/dev/null | ' +
-    "grep -oE '(--resume|--session-id)[= ]+[0-9a-fA-F-]{36}' | grep -oE '[0-9a-fA-F-]{36}' | head -1";
-  try {
-    const { stdout } = await execOnHost(host, cmd, { timeout: 15000 });
-    const id = firstLine(stdout);
-    return id && isUuid(id) ? id : null;
-  } catch {
-    return null;  // agent stopped, host unreachable, no ps -- the pin still works
-  }
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => (a.ts < b.ts ? 1 : -1));
+  const best = candidates[0];
+  if (pinnedTs && pinnedTs >= best.ts) return null;   // the pin still has the newest content
+  return best.file;
 }
 
 function firstLine(stdout) {
