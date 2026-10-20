@@ -31,7 +31,13 @@ const SCOPE = 'update'; // its own idle streak, independent of tasks/swarms
 // whatever it had typed but not sent.
 const INTERVAL_MS = 15 * 60 * 1000;
 const VERSION_TTL_MS = 10 * 60 * 1000;
-const IDLE_TICKS = 3;          // ~45 min continuously idle at the interval above
+// Idle is OBSERVED on its own short cadence, separate from the restart check.
+// Tying the two together meant the streak advanced once per 15-minute pass, so an
+// agent had to be idle for 45 uninterrupted minutes AND the process had to survive
+// that long -- the streak is in memory, so every deploy reset it to zero. In a day
+// of rebuilds it never once reached the threshold: 30 agents behind, 0 restarted.
+const OBSERVE_MS = 60 * 1000;
+const IDLE_TICKS = 5;          // 5 consecutive minute-readings of 'idle'          // ~45 min continuously idle at the interval above
 // Restarting the whole fleet at once is its own outage. 30 agents were behind when
 // this shipped (one by 80 versions); trickling them keeps any single bad build from
 // taking everything down together, and keeps the dashboard legible while it happens.
@@ -48,6 +54,7 @@ const installedCache = new Map(); // hostKey -> { at, version }
 const lastRestart = new Map();    // agentId -> timestamp
 const RESTART_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 let timer = null;
+let observeTimer = null;
 let running = false;
 
 const hostKey = (host) => (host ? host.id : 'local');
@@ -166,11 +173,21 @@ export async function checkOnce({ getAgents, getHost, startAgentSession, registe
 }
 
 export function startUpdateWatch(deps, intervalMs = INTERVAL_MS) {
-  if (timer) clearInterval(timer);
+  stopUpdateWatch();
+  // Cheap: one SELECT over the agents table, no host traffic.
+  if (deps && deps.observeIdle) {
+    observeTimer = setInterval(() => {
+      try { deps.observeIdle(SCOPE); } catch { /* never let a reading break the loop */ }
+    }, OBSERVE_MS);
+  }
   const tick = async () => {
     if (running) return;
     running = true;
-    try { await checkOnce(deps); } catch (err) { console.error('[update] tick:', err.message); } finally { running = false; }
+    // The pass must NOT take its own reading -- that would make the streak advance
+    // at the pass rate again, which is the bug this split exists to fix.
+    try { await checkOnce({ ...deps, observeIdle: null }); }
+    catch (err) { console.error('[update] tick:', err.message); }
+    finally { running = false; }
   };
   timer = setInterval(tick, intervalMs);
   return timer;
@@ -178,5 +195,7 @@ export function startUpdateWatch(deps, intervalMs = INTERVAL_MS) {
 
 export function stopUpdateWatch() {
   if (timer) clearInterval(timer);
+  if (observeTimer) clearInterval(observeTimer);
   timer = null;
+  observeTimer = null;
 }
