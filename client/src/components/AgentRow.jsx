@@ -11,7 +11,7 @@ const STATUS_COLORS = {
 };
 
 function AgentRow({ agent, showProject = false }) {
-  const { startAgent, stopAgent, deleteAgent, openAgentView } = useApp();
+  const { startAgent, stopAgent, deleteAgent, openAgentView, toggleAgentFavorite } = useApp();
   const [showMenu, setShowMenu] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -62,6 +62,25 @@ function AgentRow({ agent, showProject = false }) {
   const isRunning = agent.status === 'running' || agent.status === 'idle' || agent.status === 'busy';
   const provider = agent.config?.provider || 'claude';
 
+  const isFav = !!agent.favorite;
+  const Star = (
+    // Always rendered, not hover-only: a control you cannot see is a control nobody
+    // finds. Dim until set, so a list of non-favourites stays quiet.
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); toggleAgentFavorite(agent.id, !isFav); }}
+      title={isFav ? 'Remove from favorites' : 'Pin to favorites'}
+      className={`flex-shrink-0 p-1 rounded transition-colors ${
+        isFav ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-300'
+      }`}
+    >
+      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill={isFav ? 'currentColor' : 'none'}
+           stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round">
+        <path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.7l5.9-.9z" />
+      </svg>
+    </button>
+  );
+
   return (
     <div className="flex items-center gap-3 py-2 px-3 bg-gray-700/50 rounded-lg group">
       {/* Status indicator */}
@@ -109,6 +128,7 @@ function AgentRow({ agent, showProject = false }) {
 
       {/* Actions */}
       <div className="flex items-center gap-2">
+          {Star}
         {/* Start/Stop button */}
         <button
           onClick={isRunning ? handleStop : handleStart}

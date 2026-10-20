@@ -335,6 +335,21 @@ export function AppProvider({ children }) {
     return res.json();
   };
 
+  /** Pin an agent to the top of the list. Optimistic: the row re-sorts instantly. */
+  const toggleAgentFavorite = async (id, favorite) => {
+    setAgents((prev) => prev.map((a) => (a.id === id ? { ...a, favorite: favorite ? 1 : 0 } : a)));
+    try {
+      const res = await fetch(`/api/agents/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ favorite: !!favorite }),
+      });
+      if (!res.ok) throw new Error('failed');
+    } catch {
+      await loadAgents();   // put it back where the server says it belongs
+    }
+  };
+
   const deleteAgent = async (id) => {
     const res = await fetch(`/api/agents/${id}`, { method: 'DELETE' });
 
@@ -686,6 +701,7 @@ export function AppProvider({ children }) {
     startAgent,
     stopAgent,
     deleteAgent,
+    toggleAgentFavorite,
 
     // User management
     loadUsers,

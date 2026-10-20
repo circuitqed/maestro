@@ -353,6 +353,46 @@ function ProgressUpdate({ text }) {
   );
 }
 
+/**
+ * A context compaction, as a marker rather than a message.
+ *
+ * When a session runs out of context, Claude writes the summary back in as a
+ * `user` turn carrying `isCompactSummary` -- so it rendered in the blue "you"
+ * bubble, as if Dave had pasted thousands of words of recap. After a long idle
+ * these are the first thing in the scrollback and they bury the actual
+ * conversation.
+ *
+ * Collapsed by default because the summary is machinery, expandable because it is
+ * occasionally exactly what you want: it is the only record of what the previous
+ * context contained.
+ */
+function CompactionNotice({ text }) {
+  const [open, setOpen] = useState(false);
+  const words = String(text || '').trim().split(/\s+/).length;
+  return (
+    <div className="my-1.5">
+      <div className="flex justify-center">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="inline-flex items-center gap-1.5 text-[11px] text-gray-500 hover:text-gray-300 border border-gray-700 bg-gray-800/60 rounded-full px-3 py-0.5"
+          title="Claude compacted the conversation and fed itself this summary — not sent by you"
+        >
+          <svg className={`w-3 h-3 flex-shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+          <span>Context compacted — summary carried over ({words.toLocaleString()} words)</span>
+        </button>
+      </div>
+      {open && (
+        <div className="mt-1.5 mx-auto max-w-[92%] rounded-lg border border-gray-700 bg-gray-800/40 px-3 py-2 text-xs text-gray-300">
+          <Markdown>{text}</Markdown>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ThinkingBlock({ text }) {
   const [open, setOpen] = useState(false);
   return (
@@ -2034,6 +2074,15 @@ function claudeParts(rec, ctx) {
   }
   if (rec.type === 'user') {
     if (rec.isMeta) return { message: null, tool: null, toolCount: 0 };
+    // The compaction summary is written back as a `user` turn, so without this it
+    // renders in the blue "you" bubble as if Dave had pasted the whole recap.
+    if (rec.isCompactSummary) {
+      const c = rec.message?.content;
+      const text = typeof c === 'string'
+        ? c
+        : (Array.isArray(c) ? c.filter((b) => b && b.type === 'text').map((b) => b.text).join('\n') : '');
+      return { message: <CompactionNotice key={rec.uuid} text={text} />, tool: null, toolCount: 0 };
+    }
     const content = rec.message?.content;
     const hasToolResult = Array.isArray(content) && content.some((b) => b && b.type === 'tool_result');
     if (hasToolResult) return { message: null, tool: renderToolResults(rec, ctx), toolCount: 0 };

@@ -157,6 +157,15 @@ export async function initDb() {
     db.exec('ALTER TABLE agents ADD COLUMN working_dir TEXT');
   } catch (e) { /* Column already exists */ }
 
+  // Pinned to the top of the agent list. A column rather than a config key
+  // because it is filtered and ordered on, and config is an opaque JSON blob.
+  // Must live HERE, not at module scope: `db` is not assigned until initDb runs,
+  // so a top-level ALTER throws into its own catch and the column silently never
+  // appears -- which is exactly what happened on the first attempt.
+  try {
+    db.exec('ALTER TABLE agents ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0');
+  } catch (e) { /* Column already exists */ }
+
   // Seed the local host row (ssh_target NULL => local) on first run
   const hostCount = db.prepare('SELECT COUNT(*) as count FROM hosts').get().count;
   if (hostCount === 0) {
@@ -379,13 +388,14 @@ export function createAgent(projectId, name, screenSession, status = 'stopped', 
   };
 }
 
+
 export function updateAgentStatus(id, status) {
   const now = new Date().toISOString();
   db.prepare('UPDATE agents SET status = ?, last_seen_at = ? WHERE id = ?').run(status, now, id);
   return getAgent(id);
 }
 
-export function updateAgent(id, { name, workingDir, claudeConfigDir, provider } = {}) {
+export function updateAgent(id, { name, workingDir, claudeConfigDir, provider, favorite } = {}) {
   if (typeof name === 'string' && name.trim()) {
     db.prepare('UPDATE agents SET name = ? WHERE id = ?').run(name.trim(), id);
   }
@@ -404,6 +414,9 @@ export function updateAgent(id, { name, workingDir, claudeConfigDir, provider } 
     if (v) config.claudeConfigDir = v;
     else delete config.claudeConfigDir;
     db.prepare('UPDATE agents SET config = ? WHERE id = ?').run(JSON.stringify(config), id);
+  }
+  if (favorite !== undefined) {
+    db.prepare('UPDATE agents SET favorite = ? WHERE id = ?').run(favorite ? 1 : 0, id);
   }
   // Which CLI this agent runs. Creation-only until now, so a wrong choice meant
   // deleting and rebuilding the agent -- and picking the wrong one is easy, because

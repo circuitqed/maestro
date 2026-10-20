@@ -188,9 +188,14 @@ function Dashboard() {
     .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
     .slice(0, 20);
 
-  const activeAgents = agents.filter((a) => bucket(a) === 'active').sort(byRecency);
-  const idleAgents = agents.filter((a) => bucket(a) === 'idle').sort(byRecency);
-  const stoppedAgents = agents.filter((a) => bucket(a) === 'stopped').sort(byRecency);
+  // Pinned agents come out of the normal buckets entirely: showing one both under
+  // Favorites and under Active reads as a duplicate row, and the whole point is
+  // that the few you are working with stop sliding down the list.
+  const favoriteAgents = agents.filter((a) => a.favorite).sort(byRecency);
+  const notFav = (a) => !a.favorite;
+  const activeAgents = agents.filter((a) => notFav(a) && bucket(a) === 'active').sort(byRecency);
+  const idleAgents = agents.filter((a) => notFav(a) && bucket(a) === 'idle').sort(byRecency);
+  const stoppedAgents = agents.filter((a) => notFav(a) && bucket(a) === 'stopped').sort(byRecency);
 
   return (
     <div className="flex-1 overflow-auto p-4 md:p-6">
@@ -378,6 +383,16 @@ function Dashboard() {
               doing, not a peer of it. Orphans -- spawner deleted, or not currently
               active -- fall back to the bottom so nothing is ever hidden. Workers
               themselves never appear here; they are cattle, not agents. */}
+          {/* Favourites first. Status still shows on each row, so a stopped
+              favourite is visible rather than filed away out of sight. */}
+          <Section title="Favorites" count={favoriteAgents.length} variant="active">
+            <div className="space-y-2">
+              {favoriteAgents.map((agent) => (
+                <AgentRow key={agent.id} agent={agent} showProject />
+              ))}
+            </div>
+          </Section>
+          
           <Section title="Active" count={activeAgents.length + activeSwarms.length} variant="active">
             <div className="space-y-2">
               {activeAgents.map((agent) => {

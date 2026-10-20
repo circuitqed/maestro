@@ -393,7 +393,7 @@ router.patch('/:id', async (req, res) => {
     }
     if (!checkAgentAccess(req, res, agent)) return;
 
-    const { name, workingDir, claudeConfigDir, provider } = req.body;
+    const { name, workingDir, claudeConfigDir, provider, favorite } = req.body;
     // Provider was creation-only, so a wrong choice meant deleting the agent and
     // rebuilding it -- or editing the config JSON by hand, which is how this one was
     // repaired. Validated against the known set so a typo cannot produce an agent
@@ -437,7 +437,7 @@ router.patch('/:id', async (req, res) => {
       }
     }
 
-    const updated = updateAgent(req.params.id, { name, workingDir, claudeConfigDir, provider });
+    const updated = updateAgent(req.params.id, { name, workingDir, claudeConfigDir, provider, favorite });
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
