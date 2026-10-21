@@ -29,6 +29,22 @@ function normalizeMath(text) {
 
 const RECONNECT_DELAYS = [500, 1000, 2000, 5000, 10000]; // Exponential backoff
 const CHAT_TAIL_CAP = 500; // matches the server's INITIAL_TAIL_LINES; step size for "load earlier"
+// How long an upload may make zero progress before the chip says so. Long enough
+// that ordinary TCP jitter on a slow uplink does not trip it.
+const UPLOAD_STALL_MS = 20000;
+// Uploads go up in slices, because Cloudflare (which fronts the dashboard) kills any
+// request whose origin has not answered in ~100s, and the origin cannot answer until
+// the last byte arrives. So the cap is not on file size, it is on how much of the
+// user's uplink fits in 100 seconds -- which is why a 25MB attachment died mid-bar
+// while a 30MB one over the LAN was fine.
+//
+// 2MB keeps a slice inside the window down to ~20KB/s. Smaller would be safer still
+// but each slice is a round trip, and for a remote agent one ssh, so this trades a
+// little throughput for a wide margin.
+const UPLOAD_CHUNK_BYTES = 2 * 1024 * 1024;
+// Per-slice, and reset on each success, so a long upload can survive many blips without
+// a budget that runs out halfway.
+const UPLOAD_RETRIES = 4;
 
 // ---------------------------------------------------------------------------
 // Record classification helpers
@@ -2541,6 +2557,8 @@ function ChatView({ agentId, session, onMeta }) {
   // Files attached to the next message: each { id, name, size, status, path?, error? }.
   // Uploaded into the agent's working dir; the sent message references them by path.
   const [attachments, setAttachments] = useState([]);
+  // id -> in-flight XMLHttpRequest, so a chip can actually be cancelled.
+  const uploadXhrs = useRef(new Map());
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef(null);
   // Hidden until the initial history burst settles, so we reveal already pinned
@@ -2820,32 +2838,121 @@ function ChatView({ agentId, session, onMeta }) {
     const files = Array.from(fileList || []);
     if (!files.length) return;
     setSendError(null);
-    for (const file of files) {
-      const id = `${file.name}:${file.size}:${Math.random().toString(36).slice(2, 8)}`;
-      setAttachments((a) => [...a, { id, name: file.name, size: file.size, status: 'uploading', progress: 0, path: null }]);
+
+    // Send one slice and resolve with the server's view of progress. XHR rather than
+    // fetch purely for upload.onprogress, which fetch still cannot report.
+    const putChunk = (file, id, slice, offset, uploadId) => new Promise((resolve, reject) => {
+      const qs = new URLSearchParams({ name: file.name, offset: String(offset), total: String(file.size) });
+      if (uploadId) qs.set('uploadId', uploadId);
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', `/api/agents/${encodeURIComponent(agentId)}/upload?name=${encodeURIComponent(file.name)}`);
+      uploadXhrs.current.set(id, xhr);
+      xhr.open('POST', `/api/agents/${encodeURIComponent(agentId)}/upload?${qs}`);
+      // Send as opaque bytes. Left alone, the browser sets Content-Type from the
+      // File, so dropping a .json file arrives as application/json -- which the
+      // global express.json({limit:'4mb'}) claims before the route runs: the body is
+      // consumed (zero bytes written) under 4MB, and 413'd above it.
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
       xhr.upload.onprogress = (e) => {
         if (!e.lengthComputable) return;
-        const pct = Math.round((e.loaded / e.total) * 100);
-        setAttachments((a) => a.map((x) => (x.id === id && x.status === 'uploading' ? { ...x, progress: pct } : x)));
+        const loaded = offset + e.loaded;
+        setAttachments((a) => a.map((x) => (
+          x.id === id && x.status === 'uploading'
+            ? { ...x, loaded, progress: Math.round((loaded / file.size) * 100), stalled: false }
+            : x
+        )));
       };
       xhr.onload = () => {
         let data = {};
-        try { data = JSON.parse(xhr.responseText); } catch { /* non-JSON */ }
-        if (xhr.status >= 200 && xhr.status < 300) {
-          setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'done', name: data.name || x.name, path: data.path, progress: 100 } : x)));
-        } else {
-          setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'error', error: data.error || `Upload failed (${xhr.status})` } : x)));
-        }
+        try { data = JSON.parse(xhr.responseText); } catch { /* non-JSON (a proxy error page) */ }
+        if (xhr.status >= 200 && xhr.status < 300) return resolve(data);
+        // 409 means our offset disagreed with the server's; it tells us the truth,
+        // so treat it as progress rather than failure.
+        if (xhr.status === 409 && typeof data.received === 'number') return resolve(data);
+        const err = new Error(data.error || `Upload failed (${xhr.status})`);
+        err.fatal = xhr.status === 413 || xhr.status === 400 || xhr.status === 403 || xhr.status === 404;
+        reject(err);
       };
-      xhr.onerror = () => setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'error', error: 'Network error during upload' } : x)));
-      xhr.onabort = () => setAttachments((a) => a.filter((x) => x.id !== id));
-      xhr.send(file);
+      xhr.onerror = () => reject(new Error('Network error during upload'));
+      xhr.onabort = () => { const e = new Error('cancelled'); e.cancelled = true; reject(e); };
+      xhr.send(slice);
+    });
+
+    for (const file of files) {
+      const id = `${file.name}:${file.size}:${Math.random().toString(36).slice(2, 8)}`;
+      setAttachments((a) => [...a, { id, name: file.name, size: file.size, status: 'uploading', progress: 0, loaded: 0, path: null }]);
+
+      // Tens of MB over a home uplink is minutes of transfer, so "slow" is normal and
+      // only silence is a problem. Without this the chip sits at a frozen percentage
+      // and a dead upload looks exactly like a progressing one -- which is how a cut
+      // 25MB .pptx presented: stuck mid-bar, no error, send button disabled.
+      let lastLoaded = -1;
+      let lastAt = Date.now();
+      const watch = setInterval(() => {
+        setAttachments((a) => a.map((x) => {
+          if (x.id !== id || x.status !== 'uploading') return x;
+          if (x.loaded !== lastLoaded) { lastLoaded = x.loaded; lastAt = Date.now(); return x; }
+          return Date.now() - lastAt > UPLOAD_STALL_MS ? { ...x, stalled: true } : x;
+        }));
+      }, 2000);
+
+      (async () => {
+        let offset = 0;
+        let uploadId = null;
+        let attempts = 0;
+        try {
+          while (offset < file.size) {
+            const slice = file.slice(offset, Math.min(offset + UPLOAD_CHUNK_BYTES, file.size));
+            let data;
+            try {
+              data = await putChunk(file, id, slice, offset, uploadId);
+              attempts = 0;
+            } catch (err) {
+              if (err.cancelled) return;                       // chip was removed
+              if (err.fatal || ++attempts > UPLOAD_RETRIES) throw err;
+              // Retry the same offset. The server is append-only and refuses an
+              // out-of-order chunk, so a chunk that half-landed before the drop
+              // comes back as a 409 carrying the real byte count, and the next
+              // pass continues from there -- no duplicated or skipped bytes.
+              setAttachments((a) => a.map((x) => (
+                x.id === id ? { ...x, status: 'uploading', stalled: false, retrying: attempts } : x
+              )));
+              await new Promise((r) => setTimeout(r, 1000 * attempts));
+              continue;
+            }
+            if (data.uploadId) uploadId = data.uploadId;
+            offset = typeof data.received === 'number' ? data.received : offset + slice.size;
+            if (data.complete) {
+              setAttachments((a) => a.map((x) => (
+                x.id === id
+                  ? { ...x, status: 'done', name: data.name || x.name, path: data.path, progress: 100, loaded: file.size, stalled: false, retrying: 0 }
+                  : x
+              )));
+              return;
+            }
+          }
+          // Ran out of file without a `complete` flag: the server disagrees about the
+          // size. Surface it rather than handing the agent a path to a short file.
+          setAttachments((a) => a.map((x) => (
+            x.id === id ? { ...x, status: 'error', error: 'Upload ended early — the server received fewer bytes than the file holds' } : x
+          )));
+        } catch (err) {
+          setAttachments((a) => a.map((x) => (
+            x.id === id ? { ...x, status: 'error', error: err.message || 'Upload failed' } : x
+          )));
+        } finally {
+          clearInterval(watch);
+          uploadXhrs.current.delete(id);
+        }
+      })();
     }
   }, [agentId]);
 
   const removeAttachment = useCallback((id) => {
+    // Dismissing an in-flight chip has to cancel the request too, or the bytes keep
+    // climbing the uplink -- and land in the agent's uploads/ dir -- after the user
+    // has visibly removed it.
+    const xhr = uploadXhrs.current.get(id);
+    if (xhr) { uploadXhrs.current.delete(id); try { xhr.abort(); } catch { /* already done */ } }
     setAttachments((a) => a.filter((x) => x.id !== id));
   }, []);
 
@@ -3288,8 +3395,14 @@ function ChatView({ agentId, session, onMeta }) {
             {attachments.map((a) => (
               <span
                 key={a.id}
-                title={a.status === 'error' ? a.error : (a.path || a.name)}
-                className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs border ${a.status === 'error' ? 'border-red-500/50 bg-red-500/10 text-red-300' : 'border-gray-600 bg-gray-900 text-gray-300'}`}
+                title={a.status === 'error' ? a.error : a.stalled ? 'No data has moved for a while — the connection may have dropped' : (a.path || a.name)}
+                className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs border ${
+                  a.status === 'error'
+                    ? 'border-red-500/50 bg-red-500/10 text-red-300'
+                    : a.stalled
+                      ? 'border-amber-500/50 bg-amber-500/10 text-amber-300'
+                      : 'border-gray-600 bg-gray-900 text-gray-300'
+                }`}
               >
                 {a.status === 'uploading' ? (
                   <svg className="w-3 h-3 animate-spin flex-shrink-0" viewBox="0 0 24 24" fill="none">
@@ -3303,7 +3416,16 @@ function ChatView({ agentId, session, onMeta }) {
                 )}
                 <span className="max-w-[160px] truncate">{a.name}</span>
                 {a.status === 'uploading' && typeof a.progress === 'number' && (
-                  <span className="text-gray-500 tabular-nums">{a.progress}%</span>
+                  <span className={`tabular-nums ${a.stalled ? 'text-amber-300' : 'text-gray-500'}`}>
+                    {a.progress}%
+                    {/* Bytes alongside the percentage: on a multi-minute upload the
+                        percentage barely moves, and seeing MB climb is the only way
+                        to tell it is alive. */}
+                    {a.size > 4 * 1024 * 1024 && (
+                      <> · {(a.loaded / 1048576).toFixed(1)}/{(a.size / 1048576).toFixed(0)} MB</>
+                    )}
+                    {a.retrying ? ` · retry ${a.retrying}` : a.stalled ? ' · stalled' : ''}
+                  </span>
                 )}
                 <button type="button" onClick={() => removeAttachment(a.id)} className="text-gray-500 hover:text-gray-200" title="Remove">
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>

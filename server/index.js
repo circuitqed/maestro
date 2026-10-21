@@ -34,6 +34,22 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const server = createServer(app);
 
+// Node caps the TOTAL duration of a request at 5 minutes (requestTimeout, default
+// 300000) and destroys the socket when it expires -- regardless of whether bytes are
+// still arriving. That is wrong for uploads: chat attachments may be up to
+// MAX_UPLOAD_MB (2048), and on a residential uplink even 30MB does not fit in five
+// minutes. A 25MB .pptx dropped into chat was cut dead at 24,883,913 bytes, which is
+// 83 KB/s for exactly 300s.
+//
+// 0 disables the duration cap. What we actually want is an INACTIVITY cap -- kill
+// connections that stop sending, not ones that are merely slow -- and that is
+// server.timeout, set below. headersTimeout stays at its 60s default, which is the
+// part that protects against a client dribbling headers forever.
+server.requestTimeout = 0;
+// No data at all for 5 minutes => the peer is gone. Applies per socket, and only
+// resets on activity, so a slow-but-progressing upload is never affected.
+server.timeout = 5 * 60 * 1000;
+
 // Session configuration with SQLite store for persistence
 const sessionParser = session({
   store: new SQLiteStore({
