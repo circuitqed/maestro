@@ -3185,12 +3185,25 @@ function ChatView({ agentId, session, onMeta }) {
         </svg>
         Messages only
       </button>
-      {/* Messages */}
-      <div
-        ref={scrollRef}
-        onScroll={handleScroll}
-        className="relative flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden"
-      >
+        {/* Messages. The whole conversation is a drop target, not just the send
+            box: that was a ~40px strip at the bottom, so dropping onto the
+            conversation -- where the cursor naturally goes, and 95% of the panel --
+            did nothing at all, and Chrome just opened the file instead. It read as
+            "large files will not upload"; size was never involved. */}
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          onDragOver={(e) => { e.preventDefault(); if (!dragging) setDragging(true); }}
+          onDragLeave={(e) => { if (e.currentTarget === e.target) setDragging(false); }}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            if (e.dataTransfer && e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
+          }}
+          className={`relative flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden ${
+            dragging ? 'bg-blue-500/5 ring-1 ring-inset ring-blue-500/40' : ''
+          }`}
+          >
         {!ready && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-900 text-sm text-gray-500">
             Loading conversation…
