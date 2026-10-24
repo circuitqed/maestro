@@ -389,6 +389,34 @@ subscription the dollars are API-equivalent value, not a bill.
 **This is measurement, not a budget.** No caps, no thresholds, no "you have N left, so
 stop" — a number handed to an agent becomes a target it optimises against.
 
+### Per-agent identity
+
+Each agent can run under its own Anthropic account. The mechanism is end-to-end:
+
+- `~/.claude` is the default account; alternates are `~/.claude-accts/<name>`, and
+  `accounts.js` **discovers** them from the filesystem rather than any registry.
+- Pin one with the account badge in the terminal/chat panel header (`AccountBadge.jsx`),
+  which PATCHes `claudeConfigDir` on the agent; `providers.js` turns that into
+  `export CLAUDE_CONFIG_DIR=<dir>` in the launch command. A running agent keeps the
+  account it started with — the badge shows an amber dot until restarted.
+- **Accounts are per host.** oracle and garage-wsl carry all three identities; the mac
+  mini and whistler only have the default, so an agent there cannot be pinned to an
+  account nobody has signed in on that machine.
+
+An account's credential file **existing is not the same as it being usable.** Access
+tokens last about an hour and are refreshed only by a Claude process actually using the
+account, so an account nothing has run on goes stale. `listAccounts` therefore reports
+`expiresAt`, `tokenExpired`, `hasRefreshToken` and `usable`, and the picker gates on
+`usable` — not on `loggedIn`, which it used to, and which offered a 13-day-dead token as
+ready. A stale token WITH a refresh token stays selectable and is only flagged, because
+pinning an agent to it is exactly how it gets refreshed; without one it needs a person.
+
+**`claude /login` writes to whichever `CLAUDE_CONFIG_DIR` the shell has.** Logging in
+from a plain pane to refresh an alternate overwrites `~/.claude` instead — it destroyed
+the personal Max credential on garage-wsl and silently moved 16 agents onto a plan that
+was at 98%. Always `CLAUDE_CONFIG_DIR=/path/to/acct claude`, and when re-authing both,
+do the alternate first.
+
 ### Portability notes earned the hard way
 - `python3 -c "$(cat <<'EOF' ... EOF)"` is a **parse error in bash 3.2**, which macOS
   still ships and which `/usr/bin/env bash` resolves to on the mac mini. Write the

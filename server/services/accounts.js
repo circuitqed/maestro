@@ -47,6 +47,27 @@ const GATEWAY_OF = (dir) =>
   `u=$(grep -o '\"ANTHROPIC_BASE_URL\"[[:space:]]*:[[:space:]]*\"[^\"]*\"' ${dir}/settings.json 2>/dev/null ` +
   `| head -1 | sed 's/.*\"\\([^\"]*\\)\"$/\\1/'); g="api:$u"; else g=""; fi`;
 
+// How long the stored OAuth access token is still good for.
+//
+// `.credentials.json` EXISTING is not the same as the account being usable, and that
+// gap bit twice: the work account's token expired on 2026-10-11 and the picker went
+// on offering it as signed in, so an agent pinned to it would authenticate against a
+// dead token. Access tokens last about an hour and are refreshed only by a Claude
+// process actually using the account, so any account nothing has run on lately is
+// stale. Reads the expiry only -- never the token.
+const EXPIRES_OF = (dir) =>
+  `grep -o '"expiresAt"[[:space:]]*:[[:space:]]*[0-9]*' ${dir}/.credentials.json 2>/dev/null ` +
+  `| head -1 | grep -o '[0-9]*$'`;
+
+// Whether a refresh token is present -- which decides whether an expired access
+// token matters. With one, Claude refreshes on start and the account just works, so
+// an expired account must NOT be blocked in the picker: pinning an agent to it is
+// precisely how it gets refreshed. Without one it genuinely needs a person to log in.
+// Tests presence only; the token is never read.
+const HAS_REFRESH_OF = (dir) =>
+  `grep -q '"refreshToken"[[:space:]]*:[[:space:]]*"..*"' ${dir}/.credentials.json 2>/dev/null ` +
+  `&& echo yes || echo no`;
+
 const BEDROCK_OF = (dir) =>
   `if grep -q '"CLAUDE_CODE_USE_BEDROCK"' ${dir}/settings.json 2>/dev/null; then ` +
   `r=$(grep -o '"AWS_REGION"[[:space:]]*:[[:space:]]*"[^"]*"' ${dir}/settings.json 2>/dev/null ` +
@@ -59,7 +80,9 @@ const DISCOVER_SH =
   '[ -f "$HOME/.claude/.credentials.json" ] && c=yes || c=no; ' +
   `${BEDROCK_OF('"$HOME/.claude"')}; ` +
   `${GATEWAY_OF('"$HOME/.claude"')}; ` +
-  'printf \'%s\\t%s\\t%s\\t%s\\t%s\\n\' "$HOME/.claude" "$e" "$c" "$b" "$g"; ' +
+  `x=$(${EXPIRES_OF('"$HOME/.claude"')}); ` +
+  `rt=$(${HAS_REFRESH_OF('"$HOME/.claude"')}); ` +
+  'printf \'%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n\' "$HOME/.claude" "$e" "$c" "$b" "$g" "$x" "$rt"; ' +
   'fi; ' +
   // Alternates, via `find` rather than a glob. A glob that matches nothing is not
   // harmless here: the mac's login shell is zsh, where `nomatch` makes an unmatched
@@ -72,7 +95,9 @@ const DISCOVER_SH =
   '[ -f "$d/.credentials.json" ] && c=yes || c=no; ' +
   `${BEDROCK_OF('"$d"')}; ` +
   `${GATEWAY_OF('"$d"')}; ` +
-  'printf \'%s\\t%s\\t%s\\t%s\\t%s\\n\' "$d" "$e" "$c" "$b" "$g"; ' +
+  `x=$(${EXPIRES_OF('"$d"')}); ` +
+  `rt=$(${HAS_REFRESH_OF('"$d"')}); ` +
+  'printf \'%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n\' "$d" "$e" "$c" "$b" "$g" "$x" "$rt"; ' +
   'done; ' +
   // Always succeed: a missing dir or an unreadable file is a normal answer ("no
   // alternates"), not a failure, and a non-zero exit would throw away the rows
@@ -108,11 +133,14 @@ export async function listAccounts(host) {
       .map((l) => l.trim())
       .filter(Boolean)
       .map((l) => {
-        const [dir, email, creds, bedrock, gateway] = l.split('\t');
+        const [dir, email, creds, bedrock, gateway, expiresRaw, refreshRaw] = l.split('\t');
         const region = bedrock && bedrock.startsWith('bedrock:') ? bedrock.slice(8) : null;
         const isBedrock = !!(bedrock && bedrock.startsWith('bedrock:'));
         const isGateway = !!(gateway && gateway.startsWith('api:'));
         const baseUrl = isGateway ? gateway.slice(4) : null;
+        const expiresAt = Number(expiresRaw) || null;
+        const tokenExpired = Boolean(expiresAt && expiresAt < Date.now());
+        const hasRefreshToken = refreshRaw === 'yes';
         return {
           dir,
           email: email || null,
@@ -122,6 +150,15 @@ export async function listAccounts(host) {
           // Neither Bedrock nor a gateway has a Claude login: AWS or the token
           // supplies the credentials, so .credentials.json is the wrong test.
           loggedIn: isBedrock || isGateway || creds === 'yes',
+          // Expiry of the stored access token. `usable` is what a picker should gate
+          // on -- a credential file that exists but holds an hours-dead token is not
+          // something to offer as ready.
+          expiresAt: expiresAt || null,
+          tokenExpired,
+          hasRefreshToken,
+          // Selectable AND expected to work. An expired access token still counts when
+          // a refresh token is present -- Claude refreshes it on start.
+          usable: isBedrock || isGateway || (creds === 'yes' && (!tokenExpired || hasRefreshToken)),
         };
       })
       .filter((r) => r.dir && r.dir.startsWith('/'));
@@ -148,7 +185,11 @@ export async function listAccounts(host) {
           ? `AWS Bedrock${r.region ? ` · ${r.region}` : ''}`
           : r.kind === 'api'
             ? `API · ${hostOf(r.baseUrl) || 'custom endpoint'}`
-            : r.email || (r.loggedIn ? r.dir : null),
+            : r.tokenExpired
+              // Say which it is. A stale token recovers on first use when a refresh
+              // token is there; without one it needs a person.
+              ? `${r.email || r.dir} · token expired, ${r.hasRefreshToken ? 'refreshes on start' : 'needs login'}`
+              : r.email || (r.loggedIn ? r.dir : null),
     });
   }
   // Default first, then alphabetical: the common case is at the top of the menu.

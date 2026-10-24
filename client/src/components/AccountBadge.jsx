@@ -176,16 +176,25 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
                 <button
                   key={a.dir}
                   type="button"
-                  disabled={busy || (!a.loggedIn && !selected)}
+                  // Gate on `usable`, not `loggedIn`: a credential file can exist and
+                  // hold an hours-dead token. An expired token with a refresh token is
+                  // still usable (Claude refreshes it on start) and must stay
+                  // selectable — pinning an agent to it is how it gets refreshed.
+                  disabled={busy || (!a.usable && !selected)}
                   onClick={() => choose(a.isDefault ? '' : a.dir)}
                   className={`w-full text-left rounded px-2 py-1.5 text-sm flex items-start gap-2 ${
                     selected ? 'bg-gray-700/70 text-white' : 'text-gray-300 hover:bg-gray-800'
-                  } ${!a.loggedIn && !selected ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  } ${!a.usable && !selected ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   <span className="w-3 flex-shrink-0 text-emerald-400">{selected ? '✓' : ''}</span>
                   <span className="min-w-0">
-                    <span className="block truncate">{a.label}</span>
-                    <span className="block text-[11px] text-gray-500 truncate">
+                    <span className="block truncate">
+                      {a.label}
+                      {a.tokenExpired && (
+                        <span className="ml-1.5 text-[10px] text-amber-400">stale</span>
+                      )}
+                    </span>
+                    <span className={`block text-[11px] truncate ${a.tokenExpired ? 'text-amber-500/80' : 'text-gray-500'}`}>
                       {a.detail || (a.loggedIn ? a.dir : 'not signed in — run the login first')}
                     </span>
                   </span>
