@@ -131,6 +131,11 @@ Open http://localhost:3000 for development (Vite dev server with HMR)
 | PATCH | /api/hosts/:id | Update host `name`/`pathPrefix`/`defaultRoot` (admin) |
 | DELETE | /api/hosts/:id | Delete host (admin; not local, not if agents reference it) |
 | POST | /api/hosts/:id/test | Test connectivity (runs `tmux -V`, persists status) |
+| GET | /api/agents/:id/usage | One agent's plan utilization (what `/usage` shows) |
+| GET | /api/usage/plans | Every plan in the fleet, grouped by login identity, with the agents on each |
+| GET | /api/usage/pricing | What this build believes tokens cost, and when that was verified |
+| GET | /api/agent/usage | **Agent-facing**: the caller's own plan utilization |
+| GET | /api/agent/usage/plans | **Agent-facing**: same all-plans view |
 
 ## WebSocket Protocol
 
@@ -331,6 +336,46 @@ All Claude Code agents have Playwright MCP tools available via `~/.claude.json`.
 **Available tools:** `browser_navigate`, `browser_click`, `browser_snapshot`, `browser_take_screenshot`, `browser_type`, `browser_evaluate`, `browser_fill_form`, etc.
 
 **Testing maestro itself:** Requires session cookie injection since login is password-protected. Use `cookie-signature` to sign a session ID with the secret from `server/index.js`.
+
+## Plan Usage (the `/usage` equivalent)
+
+`/usage` is a slash command, so its numbers only exist on the screen of whoever typed
+it: an agent cannot see them, and a human cannot tell which of several plans ran out
+without opening each pane. Three surfaces read the same source
+(`https://api.anthropic.com/api/oauth/usage` for Claude, `rate_limits` in the newest
+rollout for Codex):
+
+- **Agents:** `maestro-usage` (own plan) and `maestro-usage plans` (all of them).
+  Installed by `scripts/install-agent-cli.sh`; identity comes from the tmux session,
+  never a flag.
+- **Dashboard:** *Plan usage* in the header menu (`PlanUsage.jsx`).
+- **Per agent:** the existing badge on an agent row.
+
+**Plans are grouped by login identity, not by host** — and that is the point. One
+subscription signed in on four hosts is ONE plan with ONE five-hour window; the agents
+across all four draw it down together. Keyed by config dir it would read as four plans
+each with its own headroom, which is backwards. Accounts with no readable email fall
+back to `host:dir` so an unidentified login is never silently merged into another plan.
+
+Only an **oauth** account has plan windows. `api` (gateway) and `bedrock` accounts are
+billed per token and report *"no plan window"* rather than an error — the Claude probe's
+own answer for those is "no subscription credential", which reads as a broken login
+when nothing is wrong.
+
+`pricing.js` holds token prices with a verified-on date and a `pricing_overrides`
+settings key. Nothing in a transcript carries a cost, so every dollar figure is
+tokens x that table; an unpriced model reports `null`, never an estimate. On a
+subscription the dollars are API-equivalent value, not a bill.
+
+**This is measurement, not a budget.** No caps, no thresholds, no "you have N left, so
+stop" — a number handed to an agent becomes a target it optimises against.
+
+### Portability notes earned the hard way
+- `python3 -c "$(cat <<'EOF' ... EOF)"` is a **parse error in bash 3.2**, which macOS
+  still ships and which `/usr/bin/env bash` resolves to on the mac mini. Write the
+  script to a temp file with a top-level heredoc instead.
+- Backslash escapes inside f-string expressions need python 3.12+. Use `%`-formatting
+  in anything that has to run fleet-wide.
 
 ## Future Ideas
 - Start/stop tmux sessions from UI

@@ -18,7 +18,7 @@
  * It lives here rather than in one router because swarms and tasks must agree about
  * who the caller is; two copies of this would be two places to get it wrong.
  */
-import { getDb } from '../services/db.js';
+import { getDb, parseAgentConfig } from '../services/db.js';
 
 export function agentTokenOk(req) {
   const expected = getDb().prepare("SELECT value FROM settings WHERE key = 'agent_api_token'").get();
@@ -48,6 +48,8 @@ export function requireAgentIdentity(req, res, next) {
       code: 'AMBIGUOUS_SESSION',
     });
   }
-  req.agent = rows[0];
+  // Parsed, not raw: `config` on a raw row is a JSON string, and every consumer
+  // here reads it as an object (provider, claudeConfigDir).
+  req.agent = parseAgentConfig(rows[0]);
   next();
 }

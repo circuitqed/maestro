@@ -10,6 +10,7 @@ import projectsRoutes from './routes/projects.js';
 import agentsRoutes from './routes/agents.js';
 import connectionRoutes from './routes/connections.js';
 import hostsRoutes from './routes/hosts.js';
+import usageRoutes from './routes/usage.js';
 import agentApiRoutes from './routes/agentApi.js';
 import swarmApiRoutes from './routes/swarmApi.js';
 import swarmReportRoutes from './routes/swarmReport.js';
@@ -85,6 +86,7 @@ app.use('/api/projects', projectsRoutes);
 app.use('/api/agents', agentsRoutes);
 app.use('/api/connections', connectionRoutes);
 app.use('/api/hosts', hostsRoutes);
+app.use('/api/usage', usageRoutes);  // browser-facing plan usage
 
 // Serve static files in production.
 // Content-hashed assets (Vite emits /assets/index-<hash>.js) are safe to cache

@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# maestro-usage — what `/usage` shows, from outside the TUI.
+#
+#   maestro-usage              my plan: the five-hour and seven-day windows
+#   maestro-usage plans        every plan in the fleet, and the agents on each
+#   maestro-usage --json       machine-readable, for either of the above
+#
+# WHY THIS EXISTS
+#   `/usage` is a slash command: its numbers only exist on the screen of whoever
+#   typed it. An agent cannot see them -- so it cannot tell "I am rate limited"
+#   from "I am broken" -- and a human cannot tell which of several plans ran out
+#   without opening each agent's pane in turn.
+#
+# WHAT IT IS NOT
+#   Not a budget and not a quota. It reports and never enforces: no cap, no
+#   threshold, no "you have N left so stop". A number given to an agent becomes a
+#   target it optimises, and the point here is measurement, not steering. Read it,
+#   decide for yourself, carry on.
+#
+# PLANS ARE SHARED
+#   One subscription signed in on three hosts is ONE plan with ONE five-hour
+#   window -- the agents on it draw each other down. `plans` groups by login
+#   identity for exactly that reason; a per-host listing would show one plan as
+#   three, each looking like it had its own headroom.
+set -euo pipefail
+
+BASE="${MAESTRO_URL:-http://localhost:7007}"
+TOKEN_FILE="${MAESTRO_AGENT_TOKEN_FILE:-$HOME/.maestro/agent-token}"
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+
+# Arguments first, so --help works on a host with no token installed.
+JSON=0
+CMD=me
+for a in "$@"; do
+  case "$a" in
+    --json) JSON=1 ;;
+    plans|me) CMD="$a" ;;
+    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) die "unknown argument: $a (try: maestro-usage [me|plans] [--json])" ;;
+  esac
+done
+
+[ -r "$TOKEN_FILE" ] || die "no agent token at $TOKEN_FILE — ask Dave to run scripts/install-agent-cli.sh on this host"
+TOKEN="$(cat "$TOKEN_FILE")"
+
+# Identity comes from the tmux session, never from a flag: the caller must not be
+# able to name itself (same rule as maestro-task and maestro-swarm).
+SESSION="${MAESTRO_SESSION:-}"
+if [ -z "$SESSION" ] && [ -n "${TMUX:-}" ]; then
+  SESSION="$(tmux display-message -p '#S' 2>/dev/null || true)"
+fi
+[ -n "$SESSION" ] || die "cannot tell which agent this is: no MAESTRO_SESSION in the environment and not inside tmux.
+If you are a human at a shell, the dashboard shows the same thing, or set
+MAESTRO_SESSION to the agent you want to ask about."
+
+path=/usage
+[ "$CMD" = plans ] && path=/usage/plans
+OUT="$(curl -sS -X GET "$BASE/api/agent$path" \
+  -H "X-Maestro-Agent-Token: $TOKEN" \
+  -H "X-Maestro-Session: $SESSION" \
+  -H 'Content-Type: application/json')"
+
+if [ "$JSON" = 1 ]; then printf '%s\n' "$OUT"; exit 0; fi
+
+# The renderer goes to a temp file and is run from there, rather than being passed
+# as -c. Two portability traps forced this:
+#   * a single-quoted -c string needs backslash escapes inside f-strings, which only
+#     parse on python 3.12+;
+#   * a heredoc inside command substitution -- $(cat <<EOF ... EOF) -- is a parse
+#     error in bash 3.2, which is what macOS still ships and what /usr/bin/env bash
+#     resolves to on the mac mini. It failed there with "unexpected EOF while
+#     looking for matching quote" while working fine on every Linux host.
+# A plain top-level heredoc into a file is understood by every shell in the fleet.
+PY_TMP="$(mktemp "${TMPDIR:-/tmp}/maestro-usage.XXXXXX")"
+trap 'rm -f "$PY_TMP"' EXIT INT TERM
+cat > "$PY_TMP" <<'PYEOF'
+import json, sys, datetime
+
+d = json.load(sys.stdin)
+if d.get("error"):
+    print("error:", d["error"])
+    raise SystemExit(1)
+
+def when(ts):
+    """A reset time is only useful as a distance from now."""
+    if not ts:
+        return ""
+    try:
+        t = datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except Exception:
+        return " (resets %s)" % ts
+    secs = (t - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+    if secs < 0:
+        return " (reset due)"
+    h, m = int(secs // 3600), int((secs % 3600) // 60)
+    return " (resets in %dh %02dm)" % (h, m) if h else " (resets in %dm)" % m
+
+def bar(pct, width=24):
+    """Utilization is the number that matters, so draw it."""
+    if pct is None:
+        return "  (not reported)"
+    filled = max(0, min(width, int(round(pct / 100.0 * width))))
+    return "[" + "#" * filled + "." * (width - filled) + "] %5.1f%%" % pct
+
+def window(name, w):
+    if not w:
+        print("  %-9s   (not reported)" % name)
+        return
+    print("  %-9s %s%s" % (name, bar(w.get("utilization")), when(w.get("resetsAt"))))
+
+# --- one plan: the caller's own ---
+if "plans" not in d:
+    print("%s on %s   account: %s" % (d.get("agent", "?"), d.get("host", "?"),
+                                      d.get("account") or "default"))
+    if not d.get("ok"):
+        print("  no usage available — %s" % d.get("reason", "unknown"))
+        raise SystemExit(0)
+    if d.get("provider") == "codex":
+        p = d.get("primary") or {}
+        s = d.get("secondary") or {}
+        print("  %-9s %s  window %sm" % ("primary", bar(p.get("utilization")), p.get("windowMinutes")))
+        if s:
+            print("  %-9s %s  window %sm" % ("secondary", bar(s.get("utilization")), s.get("windowMinutes")))
+    else:
+        window("5-hour", d.get("fiveHour"))
+        window("7-day", d.get("sevenDay"))
+        if d.get("extraEnabled"):
+            print("  extra usage credits: enabled")
+    print("  as of %s" % d.get("checkedAt", "?"))
+    raise SystemExit(0)
+
+# --- every plan in the fleet ---
+plans = d.get("plans") or []
+if not plans:
+    print("no accounts found")
+    raise SystemExit(0)
+
+for p in plans:
+    ident = p.get("email") or p.get("identity")
+    hosts = ", ".join(sorted(set(h["host"] for h in (p.get("signedInOn") or []))))
+    print("")
+    print("%s   [%s]   signed in on: %s" % (ident, p.get("kind"), hosts or "-"))
+    if p.get("detail") and p.get("detail") != ident:
+        print("  %s" % p["detail"])
+    if p.get("ok"):
+        window("5-hour", p.get("fiveHour"))
+        window("7-day", p.get("sevenDay"))
+        if p.get("extraEnabled"):
+            print("  extra usage credits: enabled")
+        if p.get("disagreement"):
+            print("  ! hosts reported different utilization — showing the freshest")
+    else:
+        print("  no plan window — %s" % p.get("reason", "unknown"))
+    ags = p.get("agents") or []
+    if ags:
+        # Who is drawing on this plan, busiest first.
+        order = {"running": 0, "busy": 0, "idle": 1, "stopped": 2}
+        ags.sort(key=lambda a: (order.get(a.get("status"), 3), a.get("name") or ""))
+        shown = ", ".join("%s(%s)" % (a["name"], a.get("status", "?")) for a in ags[:10])
+        more = " +%d more" % (len(ags) - 10) if len(ags) > 10 else ""
+        print("  agents (%d): %s%s" % (len(ags), shown, more))
+    else:
+        print("  agents: none pinned to this account")
+
+if d.get("hostsUnreachable"):
+    print("")
+    print("! unreachable, so their accounts are missing: %s" % ", ".join(d["hostsUnreachable"]))
+print("")
+print("as of %s" % d.get("checkedAt", "?"))
+PYEOF
+printf '%s' "$OUT" | python3 "$PY_TMP"

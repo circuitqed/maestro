@@ -7,8 +7,10 @@
  * other routers mounted at /api/agent; see middleware/agentIdentity.js.
  */
 import { Router } from 'express';
-import { getDb, getAgent } from '../services/db.js';
+import { getDb, getAgent, getHost } from '../services/db.js';
 import { requireAgentIdentity } from '../middleware/agentIdentity.js';
+import { usageForAgent } from '../services/usage.js';
+import { planUsage, accountKindFor } from '../services/planUsage.js';
 import {
   submitTask, getTask, acknowledgeTask, finishTask, cancelTask,
   inboxFor, outboxFor, listDelegates, config,
@@ -82,5 +84,51 @@ router.post('/tasks/:id/cancel', (req, res) => {
 
 router.get('/inbox', (req, res) => res.json(inboxFor(req.agent.id)));
 router.get('/outbox', (req, res) => res.json(outboxFor(req.agent.id)));
+
+// --- Plan usage: the `/usage` equivalent, reachable from outside the TUI ---------
+//
+// `/usage` is a slash command, so the numbers it draws are only available to a human
+// looking at that pane. An agent deciding whether to start a long job, or asking why
+// it just got rate-limited, has no way to see them. These two routes are that view:
+// `/usage` for the caller's own plan, `/usage/plans` for every plan in the fleet.
+//
+// Deliberately read-only and deliberately not a budget. Dave's standing position is
+// that a number handed to an agent becomes a target it optimises, so this reports
+// and never enforces: no caps, no "you have N left, stop", no advice.
+router.get('/usage', async (req, res) => {
+  const host = req.agent.host_id ? getHost(req.agent.host_id) : null;
+  const configDir = (req.agent.config || {}).claudeConfigDir || '';
+  // Copied, not used in place: usageForAccount returns the very object it cached,
+  // shared by every agent on that account, and the reason is rewritten below.
+  const usage = { ...(await usageForAgent(req.agent, host)) };
+
+  // Say WHY there is no window when there is none. The probe answers "no
+  // subscription credential" for a gateway account, which reads as a broken login
+  // -- but an API or Bedrock account is billed per token and simply has no plan to
+  // report. Only on the failure path, so the normal answer costs nothing extra.
+  if (!usage.ok) {
+    const account = await accountKindFor(host, configDir);
+    if (account && account.kind !== 'oauth') {
+      usage.reason = `${account.kind} account — billed per token, no plan window`;
+      usage.kind = account.kind;
+      usage.detail = account.detail || null;
+    }
+  }
+
+  res.json({
+    agent: req.agent.name,
+    account: configDir || 'default',
+    host: host ? host.name : 'local',
+    ...usage,
+  });
+});
+
+router.get('/usage/plans', async (req, res) => {
+  try {
+    res.json(await planUsage({ includeAgents: req.query.agents !== '0' }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 export default router;

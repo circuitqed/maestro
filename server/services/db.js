@@ -317,7 +317,12 @@ export function getProjectHostPaths(projectId) {
 }
 
 // Agents
-function parseAgentConfig(row) {
+// Exported so the agent-facing middleware can hand routes the same shape every
+// other lookup does. It used to pass the raw row, whose `config` is still a JSON
+// STRING -- and `(row.config || {}).claudeConfigDir` on a string is undefined, so
+// every agent silently resolved to the DEFAULT account and was shown the wrong
+// plan's usage. Idempotent: safe on an already-parsed row.
+export function parseAgentConfig(row) {
   if (!row) return row;
   try {
     row.config = typeof row.config === 'string' ? JSON.parse(row.config) : (row.config || {});

@@ -108,12 +108,19 @@ else:
 const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 /**
+ * Usage for one ACCOUNT on one host — the unit the answer actually depends on.
+ *
+ * This is the `/usage` equivalent: the same five-hour and seven-day windows that
+ * slash command renders, read from the same endpoint. Exported in its own right
+ * because a plan is not a property of an agent: one subscription can be signed in
+ * on several hosts and drive a dozen agents, and all of them share one limit.
+ *
+ * @param {object|null} host   null => local
+ * @param {string} configDir   '' => the default account (~/.claude)
  * @returns {Promise<object>} always an object; `ok:false` with a reason rather than
- * a throw, because a usage indicator must never be able to break the view it is in.
+ *   a throw, because a usage indicator must never break the view it sits in.
  */
-export async function usageForAgent(agent, host) {
-  if (!agent) return { ok: false, reason: 'no agent' };
-  const provider = (agent.config && agent.config.provider) || 'claude';
+export async function usageForAccount(host, configDir = '', provider = 'claude') {
   if (provider !== 'claude' && provider !== 'codex') {
     return { ok: false, reason: `no usage source for ${provider}` };
   }
@@ -121,9 +128,7 @@ export async function usageForAgent(agent, host) {
     return { ok: false, reason: 'usage probing disabled' };
   }
 
-  // Keyed by what actually determines the answer: the ACCOUNT on a HOST, not the
-  // agent. Six Claude agents sharing one account share one probe.
-  const configDir = (agent.config && agent.config.claudeConfigDir) || '';
+  // Six Claude agents sharing one account share one probe.
   const key = `${provider}:${host ? host.id : 'local'}:${configDir}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.value;
@@ -144,6 +149,14 @@ export async function usageForAgent(agent, host) {
   value.checkedAt = new Date().toISOString();
   cache.set(key, { at: Date.now(), value });
   return value;
+}
+
+/** The plan behind a given agent. Thin wrapper: the account is what matters. */
+export async function usageForAgent(agent, host) {
+  if (!agent) return { ok: false, reason: 'no agent' };
+  const provider = (agent.config && agent.config.provider) || 'claude';
+  const configDir = (agent.config && agent.config.claudeConfigDir) || '';
+  return usageForAccount(host, configDir, provider);
 }
 
 /** Drop cached usage, e.g. after an account switch. */

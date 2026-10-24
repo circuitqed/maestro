@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import UserManagement from './UserManagement';
 import ChangePassword from './ChangePassword';
 import HostManagement from './HostManagement';
+import PlanUsage from './PlanUsage';
 
 function Header() {
   const { logout, user, projects, agents, soundEnabled, toggleSound, requestPermission } = useApp();
@@ -10,6 +11,7 @@ function Header() {
   const [showUserManagement, setShowUserManagement] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showHostManagement, setShowHostManagement] = useState(false);
+  const [showPlanUsage, setShowPlanUsage] = useState(false);
 
   const runningAgents = agents.filter((a) =>
     a.status === 'running' || a.status === 'busy'
@@ -123,6 +125,19 @@ function Header() {
                       Manage Users
                     </button>
                   )}
+                  <button
+                    onClick={() => {
+                      setShowPlanUsage(true);
+                      setShowMenu(false);
+                    }}
+                    className="w-full px-4 py-2 text-left text-gray-300 hover:bg-gray-700 transition-colors flex items-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                            d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                    </svg>
+                    Plan usage
+                  </button>
                   {user?.role === 'admin' && (
                     <button
                       onClick={() => {
@@ -165,6 +180,9 @@ function Header() {
         <UserManagement onClose={() => setShowUserManagement(false)} />
       )}
 
+      {showPlanUsage && (
+        <PlanUsage onClose={() => setShowPlanUsage(false)} />
+      )}
       {showHostManagement && (
         <HostManagement onClose={() => setShowHostManagement(false)} />
       )}
