@@ -24,13 +24,37 @@ const TTL_MS = 90 * 1000;
 const cache = new Map(); // key -> { at, value }
 
 const CLAUDE_PROBE = `
-import json, os, sys, urllib.request
+import json, os, sys, time, urllib.request
 cfg = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else os.path.expanduser("~/.claude")
 path = os.path.join(cfg, ".credentials.json")
 try:
-    tok = json.load(open(path))["claudeAiOauth"]["accessToken"]
+    oauth = json.load(open(path))["claudeAiOauth"]
+    tok = oauth["accessToken"]
 except Exception:
     print(json.dumps({"ok": False, "reason": "no subscription credential"})); raise SystemExit
+
+# Check expiry BEFORE spending a round trip, and more importantly before reporting a
+# bare 401 that reads as "this account is broken".
+#
+# Access tokens last about an hour and are refreshed by the Claude process using them.
+# This probe only READS the file -- it deliberately does not perform the refresh, which
+# would race the running agent's own refresh and could invalidate a working login. So
+# any account that nothing has run on lately has a stale token here, and the API answers
+# 401 even though the account is perfectly good and would refresh on first use. The work
+# account sat at "HTTP Error 401: Unauthorized" for this reason with a token 13 days
+# past expiry, which was indistinguishable from a revoked login.
+exp = oauth.get("expiresAt")
+if exp and exp / 1000.0 < time.time():
+    days = (time.time() - exp / 1000.0) / 86400.0
+    print(json.dumps({"ok": False, "tokenExpired": True,
+                      "hasRefreshToken": bool(oauth.get("refreshToken")),
+                      "subscriptionType": oauth.get("subscriptionType"),
+                      "reason": ("access token expired %.1f days ago; Maestro does not refresh it, "
+                                 "so usage is unreadable until something runs on this account" % days)
+                                if oauth.get("refreshToken") else
+                                ("access token expired %.1f days ago and there is no refresh token "
+                                 "— this account needs a fresh login" % days)}))
+    raise SystemExit
 req = urllib.request.Request(
     "https://api.anthropic.com/api/oauth/usage",
     headers={"authorization": "Bearer " + tok,
