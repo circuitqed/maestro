@@ -11,6 +11,7 @@ import { getDb, getAgent, getHost } from '../services/db.js';
 import { requireAgentIdentity } from '../middleware/agentIdentity.js';
 import { usageForAgent } from '../services/usage.js';
 import { planUsage, accountKindFor } from '../services/planUsage.js';
+import { gatewayUsage } from '../services/gatewayUsage.js';
 import {
   submitTask, getTask, acknowledgeTask, finishTask, cancelTask,
   inboxFor, outboxFor, listDelegates, config,
@@ -108,7 +109,15 @@ router.get('/usage', async (req, res) => {
   // report. Only on the failure path, so the normal answer costs nothing extra.
   if (!usage.ok) {
     const account = await accountKindFor(host, configDir);
-    if (account && account.kind !== 'oauth') {
+    if (account && account.kind === 'api' && account.baseUrl) {
+      // A gateway account has no plan window, but it does have a monthly cap and a
+      // running spend -- the same question in dollars. Costs a ~$0.000025 probe, so
+      // it is only reached when there was no plan window to report anyway.
+      const g = await gatewayUsage(host, account.dir, account.baseUrl);
+      if (g.ok) Object.assign(usage, g);
+      else { usage.reason = g.reason; usage.kind = account.kind; }
+      usage.detail = account.detail || null;
+    } else if (account && account.kind !== 'oauth') {
       usage.reason = `${account.kind} account — billed per token, no plan window`;
       usage.kind = account.kind;
       usage.detail = account.detail || null;

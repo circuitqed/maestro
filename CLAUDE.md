@@ -357,10 +357,29 @@ across all four draw it down together. Keyed by config dir it would read as four
 each with its own headroom, which is backwards. Accounts with no readable email fall
 back to `host:dir` so an unidentified login is never silently merged into another plan.
 
-Only an **oauth** account has plan windows. `api` (gateway) and `bedrock` accounts are
-billed per token and report *"no plan window"* rather than an error — the Claude probe's
-own answer for those is "no subscription credential", which reads as a broken login
-when nothing is wrong.
+An **oauth** account has plan windows. An **api** (gateway) account has a budget
+instead — the same question in dollars — via `gatewayUsage.js`:
+
+- The Stanford gateway is **LiteLLM**, which reports the key's budget only in RESPONSE
+  HEADERS (`x-litellm-key-max-budget`, `x-litellm-key-spend`). `/key/info` would also
+  carry `budget_reset_at` but this key is restricted to `llm_api_routes` and is refused.
+- **The probe therefore costs money** — those headers need a billed call, and the free
+  allowed routes (`/v1/models`, `/v1/messages/count_tokens`) return 200 with no budget
+  headers. One probe is ~$0.000025; TTL is 5 min (vs 90s for the free Claude probe), so
+  ~$0.22/month no matter how many agents ask. `usage_probe_disabled=1` turns it off.
+- The key cannot use cheap models (`claude-haiku-*` → 403 `key_model_access_denied`,
+  and a 403 has no headers either). Allowed: `claude-opus-5-5`, `gpt-6-astra`, `gpt-6-sol`.
+- **The reset day is not exposed anywhere**, so it is *learned*: spend only rises within
+  a cycle, so a reading lower than the last proves a reset happened in between. Until
+  one is seen it reports "reset day not yet observed" rather than assuming the 1st —
+  a guessed date is indistinguishable from a known one when it matters. History lives in
+  the `gateway_budget_state` setting.
+- **api accounts group by a fingerprint of the key** (sha256, first 12 chars, computed
+  host-side so the token never travels), for the same reason oauth groups by email: one
+  key installed on two hosts is ONE cap. Listed per host it showed two $5,000 budgets,
+  implying $4,790 of headroom where there was $2,394.
+
+A **bedrock** account still reports "no usage source".
 
 `pricing.js` holds token prices with a verified-on date and a `pricing_overrides`
 settings key. Nothing in a transcript carries a cost, so every dollar figure is

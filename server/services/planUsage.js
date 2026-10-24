@@ -21,6 +21,7 @@
 import { getAgents, getHosts } from './db.js';
 import { listAccounts } from './accounts.js';
 import { usageForAccount } from './usage.js';
+import { gatewayUsage } from './gatewayUsage.js';
 
 /** Normalise a config dir for comparison: agents store '' for the default account. */
 const dirKey = (dir) => String(dir || '').replace(/\/+$/, '');
@@ -88,10 +89,19 @@ export async function planUsage({ includeAgents = true } = {}) {
       const probeHost = host.ssh_target ? host : null;
       probes.push(
         (async () => {
-          const usage =
-            account.kind === 'oauth' && account.loggedIn
+          let usage;
+          if (account.kind === 'oauth') {
+            usage = account.loggedIn
               ? await usageForAccount(probeHost, account.isDefault ? '' : account.dir, 'claude')
-              : { ok: false, reason: account.kind === 'oauth' ? 'not signed in' : `${account.kind} account — billed per token, no plan window` };
+              : { ok: false, reason: 'not signed in' };
+          } else if (account.kind === 'api' && account.baseUrl) {
+            // A gateway account has no plan window but it does have a budget, which
+            // is the same question in different units: a monthly cap, what has been
+            // spent against it, and when it turns over.
+            usage = await gatewayUsage(probeHost, account.dir, account.baseUrl);
+          } else {
+            usage = { ok: false, reason: `${account.kind} account — no usage source` };
+          }
           return { host, account, usage };
         })()
       );
@@ -102,18 +112,31 @@ export async function planUsage({ includeAgents = true } = {}) {
   // Fold (host, account) rows into one row per identity.
   const byIdentity = new Map();
   for (const { host, account, usage } of probed) {
-    const identity = account.email || `${host.name}:${dirKey(account.dir)}`;
+    // Identity, in order of how well it pins down the actual billing entity:
+    //   oauth -> the login email;
+    //   api   -> a fingerprint of the KEY, because one key installed on two hosts is
+    //            one monthly cap. Listed per host it showed as two $5,000 budgets,
+    //            implying $4,790 of headroom where there was $2,394 -- the same
+    //            mistake as keying a subscription by config dir;
+    //   else  -> host:dir, so an unidentifiable account is never merged into another.
+    const identity = account.email
+      || (usage && usage.keyFingerprint ? `api:${usage.keyFingerprint}` : `${host.name}:${dirKey(account.dir)}`);
     let plan = byIdentity.get(identity);
     if (!plan) {
       plan = {
         identity,
         email: account.email || null,
+        name: account.email
+          || (account.kind === 'api'
+            ? `${account.label} · ${String(account.baseUrl || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '')}`
+            : null),
         kind: account.kind,
         label: account.label,
         detail: account.detail || null,
         signedInOn: [],
         fiveHour: null,
         sevenDay: null,
+        budget: null,
         extraEnabled: false,
         ok: false,
         reason: null,
@@ -124,10 +147,29 @@ export async function planUsage({ includeAgents = true } = {}) {
     }
     plan.signedInOn.push({ host: host.name, dir: account.dir, loggedIn: account.loggedIn });
 
+    // A gateway budget is measured in dollars rather than a percentage of a window,
+    // so it lands in its own fields. Same shape of question, different units.
+    if (usage && usage.ok && usage.kind === 'gateway') {
+      plan.ok = true;
+      plan.budget = {
+        cap: usage.cap,
+        spend: usage.spend,
+        remaining: usage.remaining,
+        utilization: usage.utilization,
+        overBudget: Boolean(usage.overBudget),
+        resetsObserved: usage.resetsObserved,
+        lastResetAt: usage.lastResetAt,
+        resetDayOfMonth: usage.resetDayOfMonth,
+        firstSeenAt: usage.firstSeenAt,
+      };
+      plan.checkedAt = usage.checkedAt || null;
+      plan.reason = null;
+    }
+
     // Several hosts report the same plan. Keep the FRESHEST reading, and record when
     // they disagree -- a stale probe on one host would otherwise quietly win and
     // understate a plan that is actually close to its limit.
-    if (usage && usage.ok) {
+    if (usage && usage.ok && usage.kind !== 'gateway') {
       const fresher = !plan.checkedAt || String(usage.checkedAt) > String(plan.checkedAt);
       if (plan.ok && plan.fiveHour && usage.fiveHour
           && plan.fiveHour.utilization !== usage.fiveHour.utilization) {
@@ -159,12 +201,18 @@ export async function planUsage({ includeAgents = true } = {}) {
     }
   }
 
+  // Busiest first: that is the one about to stop someone's work. A subscription's
+  // five-hour window and a gateway's share of its cap are different units but the
+  // same question, so both feed the ranking -- otherwise a gateway at 52% sorts
+  // below a subscription sitting at 2%.
+  const pressure = (p) => {
+    if (p.fiveHour && typeof p.fiveHour.utilization === 'number') return p.fiveHour.utilization;
+    if (p.budget && typeof p.budget.utilization === 'number') return p.budget.utilization;
+    return -1;
+  };
   const plans = [...byIdentity.values()].sort((a, b) => {
-    // Busiest plan first: that is the one about to stop someone's work.
-    const ua = a.fiveHour ? a.fiveHour.utilization : -1;
-    const ub = b.fiveHour ? b.fiveHour.utilization : -1;
-    if (ua !== ub) return ub - ua;
-    return String(a.identity).localeCompare(String(b.identity));
+    const d = pressure(b) - pressure(a);
+    return d !== 0 ? d : String(a.identity).localeCompare(String(b.identity));
   });
 
   return {

@@ -50,6 +50,53 @@ function Window({ label, w }) {
   );
 }
 
+const money = (v) =>
+  v === null || v === undefined
+    ? '—'
+    : v.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
+
+/**
+ * A gateway account has no plan window but it does have a cap, so the same question
+ * gets answered in dollars.
+ *
+ * The reset day is not something the gateway reports — the endpoint that would carry
+ * it is barred for this key — so it is learned by watching spend fall, and says so
+ * until it has been seen. A guessed "1st of the month" would be indistinguishable
+ * from a known one at the moment it matters.
+ */
+function Budget({ b }) {
+  const pct = typeof b.utilization === 'number' ? b.utilization : null;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-2 text-xs">
+        <span className="w-12 flex-shrink-0 text-gray-400">budget</span>
+        <div className="flex-1 h-2 rounded bg-gray-700 overflow-hidden">
+          {pct !== null && (
+            <div className={`h-full ${tone(pct)}`} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
+          )}
+        </div>
+        <span className="w-12 flex-shrink-0 text-right tabular-nums text-gray-300">
+          {pct === null ? '—' : `${pct.toFixed(1)}%`}
+        </span>
+        <span className="w-32 flex-shrink-0 text-gray-500 tabular-nums">
+          {money(b.spend)} / {money(b.cap)}
+        </span>
+      </div>
+      <div className="text-xs text-gray-400 pl-14">
+        {b.overBudget
+          ? <span className="text-red-300">Over cap — requests are being refused</span>
+          : <>{money(b.remaining)} remaining</>}
+        {' · '}
+        {b.resetDayOfMonth
+          ? `resets on day ${b.resetDayOfMonth} of the month`
+          : b.resetsObserved
+            ? `last reset ${String(b.lastResetAt).slice(0, 10)}`
+            : 'reset day not yet observed'}
+      </div>
+    </div>
+  );
+}
+
 const STATUS_TONE = {
   running: 'text-blue-300',
   busy: 'text-blue-300',
@@ -122,7 +169,7 @@ export default function PlanUsage({ onClose }) {
                 <div key={p.identity} className="border border-gray-700 rounded p-3 bg-gray-900/40">
                   <div className="flex items-baseline justify-between gap-2 mb-2">
                     <div className="min-w-0">
-                      <span className="text-sm text-white truncate">{p.email || p.identity}</span>
+                      <span className="text-sm text-white truncate">{p.name || p.email || p.identity}</span>
                       <span className="ml-2 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-gray-700 text-gray-300">
                         {p.kind}
                       </span>
@@ -130,7 +177,9 @@ export default function PlanUsage({ onClose }) {
                     <span className="text-xs text-gray-500 flex-shrink-0">{hosts.join(', ')}</span>
                   </div>
 
-                  {p.ok ? (
+                  {p.ok && p.budget ? (
+                    <Budget b={p.budget} />
+                  ) : p.ok ? (
                     <div className="space-y-1">
                       <Window label="5-hour" w={p.fiveHour} />
                       <Window label="7-day" w={p.sevenDay} />

@@ -103,6 +103,26 @@ def bar(pct, width=24):
     filled = max(0, min(width, int(round(pct / 100.0 * width))))
     return "[" + "#" * filled + "." * (width - filled) + "] %5.1f%%" % pct
 
+def money(v):
+    return "-" if v is None else "$%s" % format(round(v, 2), ",.2f")
+
+def budget(b):
+    """A gateway cap is the same question as a plan window, in dollars."""
+    cap, spend = b.get("cap"), b.get("spend")
+    print("  %-9s %s  %s of %s" % ("budget", bar(b.get("utilization")), money(spend), money(cap)))
+    print("  %-9s %s remaining%s" % ("", money(b.get("remaining")),
+                                     "  (OVER CAP — requests are being refused)" if b.get("overBudget") else ""))
+    n = b.get("resetsObserved") or 0
+    if b.get("resetDayOfMonth"):
+        print("  %-9s resets on day %s of the month (observed %d time%s)"
+              % ("", b["resetDayOfMonth"], n, "" if n == 1 else "s"))
+    elif n:
+        print("  %-9s last reset %s; day of month not yet consistent" % ("", (b.get("lastResetAt") or "?")[:10]))
+    else:
+        # The gateway does not expose a reset date and the endpoint that would is
+        # barred for this key, so it is learned by watching spend fall.
+        print("  %-9s reset day unknown — will be recorded the first time spend drops" % "")
+
 def window(name, w):
     if not w:
         print("  %-9s   (not reported)" % name)
@@ -116,7 +136,9 @@ if "plans" not in d:
     if not d.get("ok"):
         print("  no usage available — %s" % d.get("reason", "unknown"))
         raise SystemExit(0)
-    if d.get("provider") == "codex":
+    if d.get("kind") == "gateway":
+        budget(d)
+    elif d.get("provider") == "codex":
         p = d.get("primary") or {}
         s = d.get("secondary") or {}
         print("  %-9s %s  window %sm" % ("primary", bar(p.get("utilization")), p.get("windowMinutes")))
@@ -137,13 +159,15 @@ if not plans:
     raise SystemExit(0)
 
 for p in plans:
-    ident = p.get("email") or p.get("identity")
+    ident = p.get("email") or p.get("name") or p.get("identity")
     hosts = ", ".join(sorted(set(h["host"] for h in (p.get("signedInOn") or []))))
     print("")
     print("%s   [%s]   signed in on: %s" % (ident, p.get("kind"), hosts or "-"))
     if p.get("detail") and p.get("detail") != ident:
         print("  %s" % p["detail"])
-    if p.get("ok"):
+    if p.get("ok") and p.get("budget"):
+        budget(p["budget"])
+    elif p.get("ok"):
         window("5-hour", p.get("fiveHour"))
         window("7-day", p.get("sevenDay"))
         if p.get("extraEnabled"):
