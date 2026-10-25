@@ -2,12 +2,17 @@ import React, { useState } from 'react';
 import { hasChatView } from '../lib/providerCaps';
 import { useApp } from '../context/AppContext';
 import ProviderIcon from './ProviderIcon';
+import { agentState, sinceLabel } from '../lib/agentState';
 
 const STATUS_COLORS = {
   running: 'bg-blue-500',
   busy: 'bg-blue-500',
   idle: 'bg-green-500',
   stopped: 'bg-gray-500',
+  // Amber, hollow and still: deliberately not green, because the whole point is
+  // that we do NOT know this agent is fine.
+  unresponsive: 'bg-amber-500',
+  unknown: 'bg-gray-500',
 };
 
 function AgentRow({ agent, showProject = false }) {
@@ -59,7 +64,10 @@ function AgentRow({ agent, showProject = false }) {
     }
   };
 
-  const isRunning = agent.status === 'running' || agent.status === 'idle' || agent.status === 'busy';
+  const st = agentState(agent);
+  // Only pulse when we can actually see it. A pulsing dot on an agent whose host is
+  // unreachable is the exact false reassurance this state exists to remove.
+  const isRunning = !st.stale && ['running', 'idle', 'busy'].includes(agent.status);
   const provider = agent.config?.provider || 'claude';
 
   const isFav = !!agent.favorite;
@@ -85,10 +93,15 @@ function AgentRow({ agent, showProject = false }) {
     <div className="flex items-center gap-3 py-2 px-3 bg-gray-700/50 rounded-lg group">
       {/* Status indicator */}
       <span
-        className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${STATUS_COLORS[agent.status]} ${
+        className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${STATUS_COLORS[st.state] || 'bg-gray-500'} ${
           isRunning ? 'animate-pulse' : ''
         }`}
-        title={agent.status}
+        title={
+          st.stale
+            ? `Unresponsive — ${agent.host_name || 'its host'} is not answering.`
+              + ` Last seen ${sinceLabel(agent.last_seen_at) || 'unknown'}, then ${st.lastKnown}.`
+            : agent.status
+        }
       />
 
       {/* Agent info */}
@@ -102,6 +115,14 @@ function AgentRow({ agent, showProject = false }) {
         <div className="font-medium text-white text-sm flex items-center gap-1.5 min-w-0">
           <ProviderIcon provider={provider} className="w-3.5 h-3.5 flex-shrink-0" />
           <span className="truncate">{agent.name}</span>
+          {st.stale && (
+            <span
+              className="flex-shrink-0 text-[10px] uppercase tracking-wide px-1 py-0.5 rounded bg-amber-500/15 text-amber-300"
+              title={`${agent.host_name || 'Host'} is not answering — this is the last state we could see`}
+            >
+              unresponsive
+            </span>
+          )}
         </div>
         {(agent.screen_session || (showProject && agent.project_name)) && (
           <div className="text-xs text-gray-500 truncate">

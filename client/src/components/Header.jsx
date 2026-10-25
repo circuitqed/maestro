@@ -4,6 +4,7 @@ import UserManagement from './UserManagement';
 import ChangePassword from './ChangePassword';
 import HostManagement from './HostManagement';
 import PlanUsage from './PlanUsage';
+import { isUnresponsive } from '../lib/agentState';
 
 function Header() {
   const { logout, user, projects, agents, soundEnabled, toggleSound, requestPermission } = useApp();
@@ -13,10 +14,13 @@ function Header() {
   const [showHostManagement, setShowHostManagement] = useState(false);
   const [showPlanUsage, setShowPlanUsage] = useState(false);
 
-  const runningAgents = agents.filter((a) =>
-    a.status === 'running' || a.status === 'busy'
-  ).length;
-  const idleAgents = agents.filter((a) => a.status === 'idle').length;
+  // Counted on the DERIVED state. "(35 ready)" was counting agents on a host that
+  // had stopped answering hours earlier -- the headline number was the most
+  // confidently wrong thing on the page.
+  const live = agents.filter((a) => !isUnresponsive(a));
+  const runningAgents = live.filter((a) => a.status === 'running' || a.status === 'busy').length;
+  const idleAgents = live.filter((a) => a.status === 'idle').length;
+  const unresponsiveAgents = agents.length - live.length;
 
   return (
     <>
@@ -33,6 +37,11 @@ function Header() {
               )}
               {idleAgents > 0 && (
                 <span className="text-green-400">({idleAgents} ready)</span>
+              )}
+              {unresponsiveAgents > 0 && (
+                <span className="text-amber-400" title="Their host is not answering, so their state is unknown">
+                  ({unresponsiveAgents} unresponsive)
+                </span>
               )}
             </span>
           </div>

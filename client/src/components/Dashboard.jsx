@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import ProjectCard from './ProjectCard';
 import AgentRow from './AgentRow';
+import { isUnresponsive } from '../lib/agentState';
 import AddAgentForm from './AddAgentForm';
 import SwarmRow from './SwarmRow';
 import SwarmApprovalCard from './SwarmApprovalCard';
@@ -102,6 +103,10 @@ function Dashboard() {
   };
   const lastActivity = (a) => Math.max(tsOf(a.last_seen_at), tsOf(a.last_user_at));
   const bucket = (a) => {
+    // Its host is not answering, so every other signal about it is stale. It must
+    // not land in "Ready" -- that section is collapsed by default, which is how
+    // eight dead agents came to be filed under a heading claiming they were fine.
+    if (isUnresponsive(a)) return 'unresponsive';
     const s = liveStatus(a);
     if (s === 'stopped') return 'stopped';
     if (s === 'busy' || s === 'running') return 'active';
@@ -196,6 +201,7 @@ function Dashboard() {
   const activeAgents = agents.filter((a) => notFav(a) && bucket(a) === 'active').sort(byRecency);
   const idleAgents = agents.filter((a) => notFav(a) && bucket(a) === 'idle').sort(byRecency);
   const stoppedAgents = agents.filter((a) => notFav(a) && bucket(a) === 'stopped').sort(byRecency);
+  const unresponsiveAgents = agents.filter((a) => notFav(a) && bucket(a) === 'unresponsive').sort(byRecency);
 
   return (
     <div className="flex-1 overflow-auto p-4 md:p-6">
@@ -424,6 +430,18 @@ function Dashboard() {
             </Section>
           )}
 
+
+          {/* Unresponsive: host not answering, so the state shown is only the last
+              one we could observe. Deliberately NOT collapsible-by-default. */}
+          {unresponsiveAgents.length > 0 && (
+            <Section title="Unresponsive" count={unresponsiveAgents.length} variant="active">
+              <div className="space-y-2">
+                {unresponsiveAgents.map((agent) => (
+                  <AgentRow key={agent.id} agent={agent} showProject />
+                ))}
+              </div>
+            </Section>
+          )}
 
           {/* Idle Agents */}
           <Section title="Ready" count={idleAgents.length} variant="idle" defaultCollapsed={activeAgents.length > 0}>

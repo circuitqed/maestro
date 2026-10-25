@@ -308,7 +308,7 @@ export function deleteProjectHostPath(projectId, hostId) {
 export function getProjectHostPaths(projectId) {
   return db.prepare(`
     SELECT php.project_id, php.host_id, php.path,
-           h.name AS host_name, h.ssh_target AS host_ssh_target
+           h.name AS host_name, h.ssh_target AS host_ssh_target, h.status AS host_status
     FROM project_host_paths php
     INNER JOIN hosts h ON php.host_id = h.id
     WHERE php.project_id = ?
@@ -339,7 +339,7 @@ export function parseAgentConfig(row) {
 export function getAgents() {
   return db.prepare(`
     SELECT a.*, p.name as project_name, p.color as project_color,
-           h.name AS host_name, h.ssh_target AS host_ssh_target, h.path_prefix AS host_path_prefix
+           h.name AS host_name, h.ssh_target AS host_ssh_target, h.status AS host_status, h.path_prefix AS host_path_prefix
     FROM agents a
     LEFT JOIN projects p ON a.project_id = p.id
     LEFT JOIN hosts h ON a.host_id = h.id
@@ -350,7 +350,7 @@ export function getAgents() {
 export function getAgent(id) {
   return parseAgentConfig(db.prepare(`
     SELECT a.*, p.name as project_name, p.color as project_color,
-           h.name AS host_name, h.ssh_target AS host_ssh_target, h.path_prefix AS host_path_prefix
+           h.name AS host_name, h.ssh_target AS host_ssh_target, h.status AS host_status, h.path_prefix AS host_path_prefix
     FROM agents a
     LEFT JOIN projects p ON a.project_id = p.id
     LEFT JOIN hosts h ON a.host_id = h.id
@@ -360,7 +360,7 @@ export function getAgent(id) {
 
 export function getAgentsByProject(projectId) {
   return db.prepare(`
-    SELECT a.*, h.name AS host_name, h.ssh_target AS host_ssh_target, h.path_prefix AS host_path_prefix
+    SELECT a.*, h.name AS host_name, h.ssh_target AS host_ssh_target, h.status AS host_status, h.path_prefix AS host_path_prefix
     FROM agents a
     LEFT JOIN hosts h ON a.host_id = h.id
     WHERE a.project_id = ?
@@ -587,7 +587,7 @@ export function getProjectsForUser(userId) {
 export function getAgentsForUser(userId) {
   return db.prepare(`
     SELECT a.*, p.name as project_name, p.color as project_color,
-           h.name AS host_name, h.ssh_target AS host_ssh_target, h.path_prefix AS host_path_prefix
+           h.name AS host_name, h.ssh_target AS host_ssh_target, h.status AS host_status, h.path_prefix AS host_path_prefix
     FROM agents a
     LEFT JOIN projects p ON a.project_id = p.id
     LEFT JOIN hosts h ON a.host_id = h.id

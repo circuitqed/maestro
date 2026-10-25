@@ -389,6 +389,34 @@ subscription the dollars are API-equivalent value, not a bill.
 **This is measurement, not a budget.** No caps, no thresholds, no "you have N left, so
 stop" — a number handed to an agent becomes a target it optimises against.
 
+### Agent state vs. what we can observe
+
+`agents.status` is the last state the monitor managed to OBSERVE, which is not the
+same as what is true now. When a host stops answering, the monitor deliberately
+leaves its agents alone — a sleeping Mac mini must not flip its still-running agents
+to `stopped` — so rows keep reading `idle` indefinitely.
+
+That is right for the data and wrong for the display. After garage-wsl's VM restarted,
+eight agents showed a confident green `idle` with no tmux sessions at all, the header
+counted them in "(35 ready)", and they sat inside a collapsed section titled **Ready**.
+A stale green state is worse than no state: it cannot be told apart from a true one.
+
+So **`unresponsive` is derived, never stored** (`client/src/lib/agentState.js`):
+the agent query joins `hosts.status AS host_status`, and an agent whose host is
+`offline` while its last-known status was live renders as `unresponsive`, keeping the
+last-known value as secondary ("was idle, last seen 3h ago"). A deliberately
+`stopped` agent is NOT unresponsive — we aren't failing to observe it, it's just off.
+
+Three surfaces consume it and must stay in agreement:
+- `AgentRow` — amber dot, no pulse, an `unresponsive` badge, and a tooltip naming the host
+- `Header` — counts are computed on the derived state; unresponsive reported separately
+- `Dashboard` — `bucket()` routes them to their own **Unresponsive** section, above
+  Ready and never collapsed by default
+
+Watch out: a guard like `if ("agentState" not in src)` matches the unrelated
+`agentStates` map in Dashboard.jsx, and a missing import still passes esbuild
+(an undefined identifier is just a global reference) and fails only at runtime.
+
 ### Per-agent identity
 
 Each agent can run under its own Anthropic account. The mechanism is end-to-end:
