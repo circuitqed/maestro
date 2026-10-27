@@ -389,6 +389,30 @@ subscription the dollars are API-equivalent value, not a bill.
 **This is measurement, not a budget.** No caps, no thresholds, no "you have N left, so
 stop" — a number handed to an agent becomes a target it optimises against.
 
+### Hosts tab
+
+A third dashboard view beside Projects and Agents (`HostsView.jsx`), because the
+machine is the axis the other two cannot show: when something breaks it is usually
+per HOST — a box that stopped answering, a disk filling, a plan pinned to one
+machine — and answering "what is on garage-wsl right now?" meant reading the host
+column of an 88-row agent list.
+
+One card per host: status dot (the local host is online by definition — the server
+runs on it, so `hosts.status` is meaningless there), ssh target, default root, agent
+counts, its shells listed inline, and other agents behind a `<details>` so a busy
+host stays legible.
+
+**`+ Shell` creates a shell agent on that host and opens it.** Deliberately with
+**no `projectId`** — a host shell is a utility, not project work, and forcing one
+into a project misfiles it in every other view. The name is suffixed per host
+(`lithium-shell`, `lithium-shell-2`); the server independently de-dupes the tmux
+*session* name against sessions already on the host, so a new shell can never adopt
+a stranger's session.
+
+There is no global add button on this tab: a shell belongs to a specific machine, so
+the control lives on the card. The Projects/Agents add button used to be a two-way
+ternary, which would otherwise have shown "+ Add Agent" here.
+
 ### Per-agent Gemini / Antigravity accounts
 
 Same capability as per-agent Claude identity, built differently because **agy has no

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import ProjectCard from './ProjectCard';
 import AgentRow from './AgentRow';
+import HostsView from './HostsView';
 import { isUnresponsive } from '../lib/agentState';
 import AddAgentForm from './AddAgentForm';
 import SwarmRow from './SwarmRow';
@@ -228,9 +229,19 @@ function Dashboard() {
           >
             Agents
           </button>
+          <button
+            onClick={() => setView('hosts')}
+            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+              view === 'hosts'
+                ? 'bg-primary-600 text-white'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            Hosts
+          </button>
         </div>
 
-        {view === 'projects' ? (
+        {view === 'projects' && (
           <button
             onClick={() => setShowAddProject(!showAddProject)}
             className="px-3 py-1.5 bg-primary-600 hover:bg-primary-700 text-white text-sm
@@ -238,7 +249,8 @@ function Dashboard() {
           >
             + Add Project
           </button>
-        ) : (
+        )}
+        {view === 'agents' && (
           <button
             onClick={() => setShowAddAgent(!showAddAgent)}
             className="px-3 py-1.5 bg-primary-600 hover:bg-primary-700 text-white text-sm
@@ -247,6 +259,8 @@ function Dashboard() {
             + Add Agent
           </button>
         )}
+        {/* Hosts has no global add button: a shell belongs to a specific machine,
+            so the control lives on that host's card. */}
       </div>
 
       {/* Add Project Form */}
@@ -468,6 +482,8 @@ function Dashboard() {
           )}
         </div>
       )}
+
+      {view === 'hosts' && <HostsView />}
     </div>
   );
 }
