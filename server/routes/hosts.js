@@ -3,6 +3,7 @@ import { resetHostBackoff } from '../services/agentMonitor.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { getHosts, getHost, createHost, updateHost, deleteHost, countAgentsOnHost } from '../services/db.js';
 import { testHost } from '../services/hosts.js';
+import { receiveUpload } from '../services/upload.js';
 
 const router = Router();
 
@@ -92,6 +93,41 @@ router.delete('/:id', requireAdmin, (req, res) => {
 });
 
 // Test connectivity (runs `tmux -V` on the host, persists status)
+// Send a file to a host, landing in <default_root>/inbox.
+//
+// This is the "send files to Maestro" path, and oracle being a host is what makes
+// it one mechanism rather than two: an upload to the local host lands on the
+// machine Maestro runs on. Same resumable chunking as the chat attachment route
+// (services/upload.js) -- which matters because the dashboard is reached through a
+// Cloudflare tunnel that kills any request whose origin has not answered in ~100s.
+//
+// `inbox` rather than `uploads`: a file sent to a MACHINE is a different thing from
+// an attachment on an agent's conversation, and sharing the directory name would
+// make the two indistinguishable on disk.
+router.post('/:id/upload', async (req, res) => {
+  try {
+    const host = getHost(req.params.id);
+    if (!host) return res.status(404).json({ error: 'Host not found' });
+
+    // The local host has no default_root (nothing set it), so fall back to the
+    // server's own home -- an absolute path either way, never a relative one.
+    const base = (host.default_root && host.default_root.trim())
+      || process.env.MAESTRO_HOST_INBOX
+      || `${process.env.HOME || '/home/dave'}`;
+    if (!base.startsWith('/')) {
+      return res.status(400).json({ error: `Host ${host.name} has no absolute default root to upload into` });
+    }
+
+    await receiveUpload(req, res, {
+      host: host.ssh_target ? host : null,
+      baseDir: base,
+      subdir: 'inbox',
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/:id/test', async (req, res) => {
   try {
     const host = getHost(req.params.id);

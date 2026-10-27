@@ -134,6 +134,7 @@ Open http://localhost:3000 for development (Vite dev server with HMR)
 | GET | /api/agents/:id/usage | One agent's plan utilization (what `/usage` shows) |
 | GET | /api/usage/plans | Every plan in the fleet, grouped by login identity, with the agents on each |
 | GET | /api/usage/pricing | What this build believes tokens cost, and when that was verified |
+| POST | /api/hosts/:id/upload | Send a file to a host, into `<default_root>/inbox` |
 | GET | /api/agent/usage | **Agent-facing**: the caller's own plan utilization |
 | GET | /api/agent/usage/plans | **Agent-facing**: same all-plans view |
 
@@ -388,6 +389,28 @@ subscription the dollars are API-equivalent value, not a bill.
 
 **This is measurement, not a budget.** No caps, no thresholds, no "you have N left, so
 stop" — a number handed to an agent becomes a target it optimises against.
+
+### Sending files to a host
+
+`POST /api/hosts/:id/upload` lands a file in `<default_root>/inbox` on that machine,
+with a drop zone and a **Send file** control on each Hosts-tab card.
+
+**oracle being a host is what makes this one mechanism instead of two:** an upload to
+the local host lands on the machine Maestro runs on, so "send a file to Maestro" and
+"send a file to garage-wsl" are the same route. The local host has no `default_root`,
+so it falls back to `$HOME` (override with `MAESTRO_HOST_INBOX`).
+
+`inbox`, not `uploads`: a file sent to a MACHINE is a different thing from an
+attachment on an agent's conversation, and sharing the directory name would make them
+indistinguishable on disk.
+
+The chunked/resumable receiver now lives in **`services/upload.js`** and is shared by
+both the chat-attachment and host routes — previously it was 175 lines inline in
+`routes/agents.js`, of which only the first ten were agent-specific. Everything it
+protects against is documented at the top of that file; the short version is that
+Cloudflare kills any request whose origin has not answered in ~100s, a cut connection
+closes a write stream identically to a finished one, and over SSH the bytes in flight
+when a pipe dies never landed. Do not reimplement it per route.
 
 ### Hosts tab
 

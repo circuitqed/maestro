@@ -18,6 +18,37 @@ import ProviderIcon from './ProviderIcon';
  * view.
  */
 
+// Chunked like the chat uploader, and for the same reason: Cloudflare kills any
+// request whose origin has not answered in ~100s, so a single-shot upload is capped
+// by whatever fits in 100s of the uplink -- not by file size.
+const CHUNK = 2 * 1024 * 1024;
+
+async function uploadToHost(hostId, file, onProgress) {
+  let offset = 0;
+  let uploadId = null;
+  while (offset < file.size) {
+    const slice = file.slice(offset, Math.min(offset + CHUNK, file.size));
+    const qs = new URLSearchParams({ name: file.name, offset: String(offset), total: String(file.size) });
+    if (uploadId) qs.set('uploadId', uploadId);
+    const res = await fetch(`/api/hosts/${hostId}/upload?${qs}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: slice,
+    });
+    const data = await res.json().catch(() => ({}));
+    // 409 means our offset disagreed with the server's; it tells us the truth, so
+    // treat it as progress rather than failure.
+    if (!res.ok && !(res.status === 409 && typeof data.received === 'number')) {
+      throw new Error(data.error || `Upload failed (${res.status})`);
+    }
+    if (data.uploadId) uploadId = data.uploadId;
+    offset = typeof data.received === 'number' ? data.received : offset + slice.size;
+    if (onProgress) onProgress(offset, file.size);
+    if (data.complete) return data;
+  }
+  throw new Error('Upload ended early — the server received fewer bytes than the file holds');
+}
+
 const STATUS = {
   online: { dot: 'bg-emerald-500', text: 'text-emerald-300', label: 'online' },
   offline: { dot: 'bg-red-500', text: 'text-red-300', label: 'offline' },
@@ -28,6 +59,9 @@ function HostCard({ host, agents, onAddShell, onTest, busy }) {
   const [adding, setAdding] = useState(false);
   const [testing, setTesting] = useState(false);
   const [err, setErr] = useState(null);
+  const [drag, setDrag] = useState(false);
+  const [sending, setSending] = useState(null); // {name, pct} while uploading
+  const [sent, setSent] = useState(null);
 
   // The local host has no ssh_target and is reachable by definition — the server is
   // running on it — so it never carries a meaningful status.
@@ -50,6 +84,24 @@ function HostCard({ host, agents, onAddShell, onTest, busy }) {
     }
   };
 
+  const send = async (files) => {
+    const list = Array.from(files || []);
+    if (!list.length) return;
+    setErr(null); setSent(null);
+    try {
+      for (const f of list) {
+        setSending({ name: f.name, pct: 0 });
+        const r = await uploadToHost(host.id, f, (done, tot) =>
+          setSending({ name: f.name, pct: Math.round((done / tot) * 100) }));
+        setSent(r.absPath || r.path);
+      }
+    } catch (e) {
+      setErr(e.message || 'Upload failed');
+    } finally {
+      setSending(null);
+    }
+  };
+
   const test = async () => {
     setTesting(true);
     setErr(null);
@@ -63,7 +115,14 @@ function HostCard({ host, agents, onAddShell, onTest, busy }) {
   };
 
   return (
-    <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
+    <div
+      onDragOver={(e) => { e.preventDefault(); if (!drag) setDrag(true); }}
+      onDragLeave={(e) => { if (e.currentTarget === e.target) setDrag(false); }}
+      onDrop={(e) => { e.preventDefault(); setDrag(false); send(e.dataTransfer?.files); }}
+      className={`bg-gray-800 border rounded-lg p-4 transition-colors ${
+        drag ? 'border-sky-500 bg-sky-500/5' : 'border-gray-700'
+      }`}
+    >
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -87,6 +146,18 @@ function HostCard({ host, agents, onAddShell, onTest, busy }) {
               {testing ? 'Testing…' : 'Test'}
             </button>
           )}
+          <label
+            title={`Send a file to ${host.name}`}
+            className="text-xs px-2 py-1 rounded border border-gray-600 text-gray-300 hover:bg-gray-700 cursor-pointer"
+          >
+            Send file
+            <input
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => { send(e.target.files); e.target.value = ''; }}
+            />
+          </label>
           <button
             type="button"
             onClick={add}
@@ -103,6 +174,15 @@ function HostCard({ host, agents, onAddShell, onTest, busy }) {
         <div className="mb-2 text-xs text-red-300 bg-red-500/10 border border-red-500/40 rounded px-2 py-1">
           {err}
         </div>
+      )}
+
+      {sending && (
+        <div className="mb-2 text-xs text-sky-300 tabular-nums">
+          sending {sending.name} — {sending.pct}%
+        </div>
+      )}
+      {sent && !sending && (
+        <div className="mb-2 text-xs text-emerald-300 break-all">landed at {sent}</div>
       )}
 
       <div className="flex items-center gap-3 text-xs text-gray-400 mb-2">

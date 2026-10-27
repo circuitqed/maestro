@@ -33,6 +33,7 @@ import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js'
 import { appendAgentLane } from '../services/scaffold.js';
 import { resolveAgentWorkingDir, ensureDirOnHost } from '../services/projectPaths.js';
 import { pinnedTranscriptExists, codexRolloutExists } from '../services/transcript.js';
+import { receiveUpload } from '../services/upload.js';
 import { resolveTranscriptFile, readTranscriptTail } from '../services/transcript.js';
 
 const router = Router();
@@ -193,17 +194,6 @@ async function hostIsFile(host, p) {
   }
 }
 
-async function hostIsDir(host, p) {
-  try {
-    if (isRemote(host)) {
-      const { stdout } = await execOnHost(host, `test -d ${shellQuote(p)} && echo y`);
-      return String(stdout).trim() === 'y';
-    }
-    return fs.statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-}
 
 // List agents (scoped to user's accessible projects)
 router.get('/', (req, res) => {
@@ -594,221 +584,27 @@ router.post('/:id/input', async (req, res) => {
   }
 });
 
-// Chat file attachments are stored under this dir inside the agent's own working dir
-// (which is per-project, so uploads never leak across projects) so the agent can read
-// them by path; the chat then references the returned relative path.
-const UPLOAD_SUBDIR = 'uploads';
-// Generous by default (attachments can be zips/datasets); override with MAESTRO_MAX_UPLOAD_MB.
-const MAX_UPLOAD_MB = Number(process.env.MAESTRO_MAX_UPLOAD_MB) || 2048;
-const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
-
-// Chunked uploads in progress: uploadId -> where the bytes are going and how many
-// have landed. Needed because the dashboard is reached through a Cloudflare tunnel,
-// and Cloudflare kills any request whose origin has not responded within ~100
-// seconds (HTTP 524) -- the origin here cannot respond until the whole body arrives,
-// so a single-request upload is capped at whatever fits in 100s of the user's uplink.
-// Measured: a 40MB upload at 100KB/s died at 13,893,632 bytes after 137s. Splitting
-// the file means every request finishes well inside that window no matter how big
-// the file or how slow the link.
-//
-// The map only holds the bookkeeping; the bytes go straight to the agent's host.
-const inflightUploads = new Map();
-const UPLOAD_TTL_MS = 60 * 60 * 1000;
-
-/** Drop abandoned upload sessions so a closed browser tab cannot pin entries forever. */
-function sweepInflightUploads() {
-  const now = Date.now();
-  for (const [id, st] of inflightUploads) {
-    if (now - st.at > UPLOAD_TTL_MS) inflightUploads.delete(id);
-  }
-}
-
-// Sanitize a client filename to a safe basename: no path separators/traversal, a tight
-// charset, no leading dot (avoid hidden/".." names). Preserves the extension.
-function safeUploadName(name) {
-  let n = path.posix.basename(String(name || '').replace(/\\/g, '/')).trim();
-  n = n.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^\.+/, '');
-  if (!n) n = 'file';
-  return n.slice(0, 120);
-}
-
-// Upload one file into the agent's working dir (<wd>/uploads/<name>) so a chat
-// message can reference it for the agent to read. The body is the raw file bytes
-// (express.json skips non-JSON content types); streamed to disk locally or piped over
-// SSH (`cat >`) remotely — never fully buffered. Returns the working-dir-relative path.
+// Upload a chat attachment into the agent's working dir, so a message can
+// reference it by path. The chunked/resumable machinery lives in services/upload.js
+// and is shared with the per-host uploader; this route only resolves WHERE.
 router.post('/:id/upload', async (req, res) => {
-  let responded = false;
-  const done = (code, body) => { if (!responded) { responded = true; res.status(code).json(body); } };
   try {
     const agent = getAgent(req.params.id);
-    if (!agent) return done(404, { error: 'Agent not found' });
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
     if (!checkAgentAccess(req, res, agent)) return;
 
     const host = agent.host_id ? getHost(agent.host_id) : null;
-    if (agent.host_id && !host) return done(400, { error: 'Unknown host' });
+    if (agent.host_id && !host) return res.status(400).json({ error: 'Unknown host' });
 
     const project = agent.project_id ? getProject(agent.project_id) : null;
     const workingDir = resolveAgentWorkingDir(agent, project, host);
-    if (!workingDir) return done(400, { error: 'No working directory for this agent' });
+    if (!workingDir) return res.status(400).json({ error: 'No working directory for this agent' });
 
-    // `total` is the whole file; Content-Length is just this chunk. They are equal for
-    // a single-shot upload, which is still what small files do.
-    const expected = Number(req.headers['content-length'] || 0);
-    const total = Number(req.query.total || 0) || expected;
-    const offset = Number(req.query.offset || 0);
-    if (total > MAX_UPLOAD_BYTES || expected > MAX_UPLOAD_BYTES) {
-      return done(413, { error: `File exceeds the ${MAX_UPLOAD_MB} MB upload limit` });
-    }
-
-    // A continuation is identified by its uploadId, NOT by having offset > 0. Keying
-    // off the offset meant a retry of the FIRST slice looked like a brand-new upload:
-    // it opened a second session, hit the name-collision rename, and wrote the rest
-    // of the file to `name-a1b2c3d4.ext` while leaving the first attempt's bytes
-    // orphaned under the original name.
-    const resuming = Boolean(req.query.uploadId);
-    let state;
-    if (resuming) {
-      // Everything about the destination was decided by the first chunk.
-      sweepInflightUploads();
-      state = inflightUploads.get(String(req.query.uploadId));
-      if (!state) return done(410, { error: 'Upload session expired — drop the file again to restart it' });
-      if (state.agentId !== agent.id) return done(400, { error: 'Upload session belongs to another agent' });
-      // Append-only and strictly in order: a retried or reordered chunk must not be
-      // written twice. The client resumes from `received`, which we return every time.
-      if (state.received !== offset) {
-        return done(409, { error: 'Out-of-order chunk', received: state.received });
-      }
-    } else if (offset > 0) {
-      return done(400, { error: 'Resuming an upload requires its uploadId' });
-    } else {
-      const name = safeUploadName(req.query.name);
-      const wd = workingDir.replace(/\/+$/, '');
-      const dir = `${wd}/${UPLOAD_SUBDIR}`;
-      // Only self-manage a .gitignore when WE first create the uploads dir, so a project
-      // that already keeps a tracked uploads/ of its own is never clobbered.
-      const dirPreexisted = await hostIsDir(host, dir);
-      await ensureDirOnHost(host, dir);
-      if (!dirPreexisted) {
-        // Keep chat attachments out of the user's git history (agents run `git add .`).
-        try {
-          await execOnHost(host, `printf '*\\n' > ${shellQuote(`${dir}/.gitignore`)}`);
-        } catch {
-          /* non-fatal */
-        }
-      }
-
-      // Don't clobber an existing upload with the same name.
-      let finalName = name;
-      if (await hostIsFile(host, `${dir}/${finalName}`)) {
-        const dot = name.lastIndexOf('.');
-        const stem = dot > 0 ? name.slice(0, dot) : name;
-        const ext = dot > 0 ? name.slice(dot) : '';
-        finalName = `${stem}-${randomUUID().slice(0, 8)}${ext}`;
-      }
-      state = {
-        agentId: agent.id,
-        finalName,
-        relPath: `${UPLOAD_SUBDIR}/${finalName}`,
-        absPath: `${dir}/${finalName}`,
-        total,
-        received: 0,
-        at: Date.now(),
-      };
-    }
-
-    const { absPath, relPath, finalName } = state;
-    const uploadId = resuming ? String(req.query.uploadId) : randomUUID();
-
-    // Enforce the cap even when Content-Length is absent/lying.
-    let received = 0;
-    let aborted = false;
-    req.on('data', (chunk) => {
-      received += chunk.length;
-      if (!aborted && state.received + received > MAX_UPLOAD_BYTES) { aborted = true; req.destroy(); }
-    });
-
-    const discardPartial = async () => {
-      try {
-        if (isRemote(host)) await execOnHost(host, `rm -f ${shellQuote(absPath)}`);
-        else await fsp.unlink(absPath);
-      } catch { /* never mask the real error with a cleanup failure */ }
-    };
-
-    // Decide the outcome from the BYTE COUNT, not just from the sink closing cleanly.
-    //
-    // A dropped connection closes the write stream exactly like a finished one does,
-    // so this used to answer 200 with a truncated file on disk -- the chat marked the
-    // attachment done and handed the agent a corrupt path. A 25MB .pptx landed as
-    // 24,883,913 bytes of a valid-looking .pptx that no longer opened.
-    //
-    // A short chunk is not fatal here, it is just progress: we report how many bytes
-    // actually landed and the client continues from there. That is what makes this
-    // resumable instead of all-or-nothing.
-    // What the destination actually holds. Only consulted when a slice did not land
-    // cleanly, so the happy path pays nothing for it.
-    const actualSize = async () => {
-      try {
-        if (isRemote(host)) {
-          const { stdout } = await execOnHost(host, `wc -c < ${shellQuote(absPath)} 2>/dev/null || echo 0`);
-          return Number(String(stdout).trim()) || 0;
-        }
-        return (await fsp.stat(absPath)).size;
-      } catch {
-        return 0;
-      }
-    };
-
-    const settle = async (sinkCode) => {
-      if (aborted) {
-        inflightUploads.delete(uploadId);
-        await discardPartial();
-        return done(413, { error: `File exceeds the ${MAX_UPLOAD_MB} MB upload limit` });
-      }
-      // Trust the byte counter only for a slice that arrived whole. Otherwise ask the
-      // destination: over SSH the bytes still in the pipe when it died never landed,
-      // and resuming from a count that is too high would silently skip them, leaving
-      // a file that is the right length and quietly corrupt.
-      const clean = !sinkCode && (!expected || received === expected);
-      state.received = clean ? state.received + received : await actualSize();
-      state.at = Date.now();
-      if (sinkCode) {
-        inflightUploads.set(uploadId, state);
-        return done(502, { error: `Upload failed (ssh ${sinkCode})`, received: state.received });
-      }
-      if (state.received >= state.total) {
-        inflightUploads.delete(uploadId);
-        return done(200, { name: finalName, path: relPath, absPath, received: state.received, complete: true });
-      }
-      inflightUploads.set(uploadId, state);
-      return done(200, { uploadId, name: finalName, path: relPath, received: state.received, complete: false });
-    };
-
-    if (isRemote(host)) {
-      const child = spawn(
-        'ssh',
-        // Append for every chunk after the first; `>` would truncate what already landed.
-        [...sshBaseArgs(host), host.ssh_target, remoteWrap(host, `cat ${offset > 0 ? '>>' : '>'} ${shellQuote(absPath)}`)],
-        { stdio: ['pipe', 'ignore', 'pipe'] }
-      );
-      let stderr = '';
-      child.stderr.on('data', (d) => { stderr += d.toString(); });
-      child.on('error', (e) => done(502, { error: `Upload failed: ${e.message}` }));
-      child.on('close', (code) => {
-        if (code && code !== 0) return done(502, { error: `Upload failed (ssh ${code}): ${stderr.trim()}` });
-        settle(0);
-      });
-      child.stdin.on('error', () => { /* EPIPE if ssh dies first */ });
-      req.on('error', () => { try { child.kill('SIGTERM'); } catch { /* gone */ } });
-      req.pipe(child.stdin);
-    } else {
-      const ws = fs.createWriteStream(absPath, offset > 0 ? { flags: 'a' } : undefined);
-      ws.on('error', (e) => done(500, { error: `Upload failed: ${e.message}` }));
-      ws.on('close', () => { settle(0); });
-      req.on('error', () => ws.destroy());
-      req.pipe(ws);
-    }
+    // Under the agent's own working dir (per-project), so attachments never leak
+    // across projects and the agent can read them by relative path.
+    await receiveUpload(req, res, { host, baseDir: workingDir, subdir: 'uploads' });
   } catch (err) {
-    done(500, { error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
