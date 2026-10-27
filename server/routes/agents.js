@@ -26,6 +26,7 @@ import { resetHostBackoff, registerAgent, unregisterAgent } from '../services/ag
 import { startAgentSession } from '../services/agentStart.js';
 import { getProvider, getProviderList, hasProvider } from '../services/providers.js';
 import { listAccounts } from '../services/accounts.js';
+import { listGeminiAccounts } from '../services/geminiAccounts.js';
 import { usageForAgent } from '../services/usage.js';
 import { isRemote, isValidSessionName, execOnHost, shellQuote, sshBaseArgs, remoteWrap, isHostUnreachable, describeHostError } from '../services/hosts.js';
 import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js';
@@ -239,12 +240,19 @@ router.get('/providers', (req, res) => {
 // Which Anthropic accounts are signed in on a host, for the account picker.
 // Discovered from the filesystem each call rather than stored, so it cannot drift
 // from reality when someone logs in or out at a terminal.
+// Accounts signed in on a host. `provider` selects which harness's accounts --
+// Anthropic config dirs for claude, agy HOMEs for antigravity. Both return the same
+// shape so one picker drives both; defaults to claude for existing callers.
 router.get('/accounts', async (req, res) => {
   try {
     let host = null;
     if (req.query.hostId !== undefined && req.query.hostId !== '') {
       host = getHost(req.query.hostId);
       if (!host) return res.status(400).json({ error: 'Unknown host' });
+    }
+    const provider = String(req.query.provider || 'claude');
+    if (provider === 'antigravity' || provider === 'gemini') {
+      return res.json(await listGeminiAccounts(host));
     }
     res.json(await listAccounts(host));
   } catch (err) {
@@ -393,7 +401,7 @@ router.patch('/:id', async (req, res) => {
     }
     if (!checkAgentAccess(req, res, agent)) return;
 
-    const { name, workingDir, claudeConfigDir, provider, favorite } = req.body;
+    const { name, workingDir, claudeConfigDir, agyHome, provider, favorite } = req.body;
     // Provider was creation-only, so a wrong choice meant deleting the agent and
     // rebuilding it -- or editing the config JSON by hand, which is how this one was
     // repaired. Validated against the known set so a typo cannot produce an agent
@@ -410,6 +418,17 @@ router.patch('/:id', async (req, res) => {
       }
       if (claudeConfigDir.trim() && !isValidProjectPath(claudeConfigDir)) {
         return res.status(400).json({ error: 'claudeConfigDir must be an absolute path' });
+      }
+    }
+    // Which Google account an Antigravity agent runs as. This is a whole HOME
+    // rather than a config dir because agy has no config-dir knob; same rule
+    // applies -- a path, never a credential.
+    if (agyHome !== undefined) {
+      if (typeof agyHome !== 'string') {
+        return res.status(400).json({ error: 'agyHome must be a string' });
+      }
+      if (agyHome.trim() && !isValidProjectPath(agyHome)) {
+        return res.status(400).json({ error: 'agyHome must be an absolute path' });
       }
     }
     if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
@@ -437,7 +456,7 @@ router.patch('/:id', async (req, res) => {
       }
     }
 
-    const updated = updateAgent(req.params.id, { name, workingDir, claudeConfigDir, provider, favorite });
+    const updated = updateAgent(req.params.id, { name, workingDir, claudeConfigDir, agyHome, provider, favorite });
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });

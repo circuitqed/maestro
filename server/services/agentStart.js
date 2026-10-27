@@ -140,7 +140,16 @@ export async function startAgentSession(agent, host, { registerAgent } = {}) {
   // was started with in place, so claiming the new one here would be a lie that
   // hides the very mismatch this records.
   if (result.created && !result.adopted) {
-    setAgentActiveAccount(agent.id, (agent.config && agent.config.claudeConfigDir) || null);
+    // Each harness isolates accounts differently -- Claude by config dir, agy by a
+    // whole HOME -- so record whichever field this provider actually uses. Without
+    // the antigravity case the badge could never tell that a Gemini account change
+    // was still waiting on a restart.
+    const cfg = agent.config || {};
+    if (cfg.provider === 'antigravity') {
+      setAgentActiveAccount(agent.id, cfg.agyHome || null, 'activeAgyHome');
+    } else {
+      setAgentActiveAccount(agent.id, cfg.claudeConfigDir || null);
+    }
   }
   if (provider.monitorable && registerAgent) registerAgent(agent.id, agent.screen_session, host);
 

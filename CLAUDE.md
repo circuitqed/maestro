@@ -389,6 +389,38 @@ subscription the dollars are API-equivalent value, not a bill.
 **This is measurement, not a budget.** No caps, no thresholds, no "you have N left, so
 stop" — a number handed to an agent becomes a target it optimises against.
 
+### Per-agent Gemini / Antigravity accounts
+
+Same capability as per-agent Claude identity, built differently because **agy has no
+config-dir knob**. It keeps exactly one credential at
+`$HOME/.gemini/antigravity-cli/antigravity-oauth-token`, with no `--config-dir`, no
+`--account` and no `login` subcommand. Both plausible env vars were tested against
+agy 1.4.7 and **neither works**: `ANTIGRAVITY_CONFIG_REL_DIR` relocates nothing, and
+`AGY_ACCOUNT` is ignored (a bogus value still authenticated). Overriding **`HOME`**
+does work — agy builds a fresh profile there and reports "Please sign in".
+
+So an alternate account is a whole alternate home: `~/.agy-accts/<name>`, created by
+`scripts/add-gemini-account.sh <name> [ssh-target]`. Because `HOME` moves everything,
+that script repairs what would otherwise break in ways that look unrelated:
+
+- `.ssh`, `.gitconfig`, `.config/git`, `.local/bin` are **symlinked back** to the real
+  home, so the agent can still push to git and there is one copy of your keys
+- `PATH` is forced back to the real `~/.local/bin` in the launch command — `bash -l`
+  sources the new home's profile, which doesn't exist, so otherwise `agy` itself
+  stops resolving
+- `.gemini` is deliberately **not** shared (that's the point), and neither are
+  `.claude`/`.codex` — an agent on this account shouldn't inherit another harness's login
+
+Identity comes from the token file's `id_token_email` plus `auth_method`
+(`consumer` vs a Workspace/EDU login — the distinction between a personal and an
+institutional quota). `services/geminiAccounts.js` discovers accounts and returns the
+**same shape as `accounts.js`**, so one picker drives both: `AccountBadge` keys off an
+`ACCOUNT_SHAPE` table (`claudeConfigDir` vs `agyHome`) rather than having a second copy.
+
+`GET /api/agents/accounts?provider=antigravity`, `PATCH {agyHome}`, and
+`setAgentActiveAccount(id, dir, field)` records `activeAgyHome` on start so the
+"restart to apply" marker works for Gemini too.
+
 ### Agent state vs. what we can observe
 
 `agents.status` is the last state the monitor managed to OBSERVE, which is not the

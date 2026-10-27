@@ -16,7 +16,17 @@ import { createPortal } from 'react-dom';
  * a running agent keeps the identity it started with -- hence the explicit restart
  * offer rather than pretending the change took effect immediately.
  */
+// What "account" means for each harness. Claude relocates just its config dir
+// (CLAUDE_CONFIG_DIR); agy has no such knob, so an account is a whole HOME — see
+// services/geminiAccounts.js. Keeping the difference in one table lets the rest of
+// this component stay provider-agnostic instead of growing a second copy.
+const ACCOUNT_SHAPE = {
+  claude: { field: 'claudeConfigDir', activeField: 'activeClaudeConfigDir', label: 'Anthropic account' },
+  antigravity: { field: 'agyHome', activeField: 'activeAgyHome', label: 'Google account' },
+};
+
 function AccountBadge({ agentId, hostId, provider = 'claude', running = false, onChanged }) {
+  const shape = ACCOUNT_SHAPE[provider];
   const [accounts, setAccounts] = useState(null);
   const [current, setCurrent] = useState(undefined); // undefined = unknown, null = default
   const [open, setOpen] = useState(false);
@@ -36,21 +46,24 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
 
   const load = useCallback(async () => {
     try {
-      const qs = hostId ? `?hostId=${encodeURIComponent(hostId)}` : '';
+      if (!shape) return;
+      const params = new URLSearchParams();
+      if (hostId) params.set('hostId', String(hostId));
+      params.set('provider', provider);
       const [accRes, agRes] = await Promise.all([
-        fetch(`/api/agents/accounts${qs}`),
+        fetch(`/api/agents/accounts?${params}`),
         fetch(`/api/agents/${agentId}`),
       ]);
       if (accRes.ok) setAccounts(await accRes.json());
       if (agRes.ok) {
         const a = await agRes.json();
-        setCurrent((a.config && a.config.claudeConfigDir) || null);
-        setActive((a.config && a.config.activeClaudeConfigDir) || null);
+        setCurrent((a.config && a.config[shape.field]) || null);
+        setActive((a.config && a.config[shape.activeField]) || null);
       }
     } catch {
       /* leave the last known state rather than flashing an empty picker */
     }
-  }, [agentId, hostId]);
+  }, [agentId, hostId, provider, shape]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -94,7 +107,7 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
       const res = await fetch(`/api/agents/${agentId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ claudeConfigDir: dir || '' }),
+        body: JSON.stringify({ [shape.field]: dir || '' }),
       });
       if (res.ok) {
         // No local "pending" flag: `current !== active` is now what says a restart
@@ -128,7 +141,7 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
   // "no claim", because inventing a mismatch would nag on every old agent.
   const pending = !!running && active !== undefined && (current || null) !== (active || null);
 
-  if (provider !== 'claude' || !accounts || accounts.length === 0) return null;
+  if (!shape || !accounts || accounts.length === 0) return null;
   // Deliberately NOT hidden when the host has only one account. Hiding it seemed
   // tidy -- a picker with one option is noise -- but it makes the feature vanish
   // exactly when someone goes looking for it: accounts are per host, so an agent on
@@ -147,7 +160,7 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
         type="button"
         onClick={() => setOpen((v) => !v)}
         title={
-          `Anthropic account: ${label}${mine && mine.detail ? ` (${mine.detail})` : ''}` +
+          `${shape.label}: ${label}${mine && mine.detail ? ` (${mine.detail})` : ''}` +
           (pending ? ' — restart to apply' : '') + '\nClick to switch'
         }
         className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors ${
@@ -169,7 +182,7 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
       {open && pos && createPortal(
         <div ref={popRef} style={{ position: 'fixed', top: pos.top, left: pos.left, width: pos.width, zIndex: 60 }}>
           <div className="rounded-lg border border-gray-700 bg-gray-900 shadow-xl p-1.5">
-            <div className="px-2 py-1 text-[11px] uppercase tracking-wide text-gray-500">Anthropic account</div>
+            <div className="px-2 py-1 text-[11px] uppercase tracking-wide text-gray-500">{shape.label}</div>
             {accounts.map((a) => {
               const selected = (a.isDefault && !current) || a.dir === current;
               return (

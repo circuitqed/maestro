@@ -400,7 +400,7 @@ export function updateAgentStatus(id, status) {
   return getAgent(id);
 }
 
-export function updateAgent(id, { name, workingDir, claudeConfigDir, provider, favorite } = {}) {
+export function updateAgent(id, { name, workingDir, claudeConfigDir, agyHome, provider, favorite } = {}) {
   if (typeof name === 'string' && name.trim()) {
     db.prepare('UPDATE agents SET name = ? WHERE id = ?').run(name.trim(), id);
   }
@@ -418,6 +418,17 @@ export function updateAgent(id, { name, workingDir, claudeConfigDir, provider, f
     const v = typeof claudeConfigDir === 'string' && claudeConfigDir.trim() ? claudeConfigDir.trim() : null;
     if (v) config.claudeConfigDir = v;
     else delete config.claudeConfigDir;
+    db.prepare('UPDATE agents SET config = ? WHERE id = ?').run(JSON.stringify(config), id);
+  }
+  // Which Google account an Antigravity agent runs as. agy has no config-dir knob,
+  // so this is a whole HOME (see providers.agyHome). Merged, not replaced, for the
+  // same reason as claudeConfigDir. '' clears it (back to the default account).
+  if (agyHome !== undefined) {
+    const row = getAgent(id);
+    const config = { ...((row && row.config) || {}) };
+    const v = typeof agyHome === 'string' && agyHome.trim() ? agyHome.trim() : null;
+    if (v) config.agyHome = v;
+    else delete config.agyHome;
     db.prepare('UPDATE agents SET config = ? WHERE id = ?').run(JSON.stringify(config), id);
   }
   if (favorite !== undefined) {
@@ -449,12 +460,12 @@ export function updateAgent(id, { name, workingDir, claudeConfigDir, provider, f
  * restarting a DIFFERENT agent, which is how several agents could silently be left
  * running on an account Dave thought he had changed.
  */
-export function setAgentActiveAccount(id, dir) {
+export function setAgentActiveAccount(id, dir, field = 'activeClaudeConfigDir') {
   const row = getAgent(id);
   const config = { ...((row && row.config) || {}) };
   const v = typeof dir === 'string' && dir.trim() ? dir.trim() : null;
-  if (v) config.activeClaudeConfigDir = v;
-  else delete config.activeClaudeConfigDir;
+  if (v) config[field] = v;
+  else delete config[field];
   db.prepare('UPDATE agents SET config = ? WHERE id = ?').run(JSON.stringify(config), id);
   return getAgent(id);
 }

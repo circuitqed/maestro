@@ -41,6 +41,30 @@ export function claudeConfigDir(config) {
 }
 
 /**
+ * The HOME an Antigravity agent should run under, or null for the default account.
+ *
+ * Same contract as claudeConfigDir -- a PATH only, never a token, and it THROWS on a
+ * bad value rather than falling back. Reverting silently to the default would run the
+ * agent as the wrong Google account, which is both wrong and invisible.
+ *
+ * Unlike CLAUDE_CONFIG_DIR this is a whole home directory, because agy has no
+ * config-dir knob (see the antigravity buildCommand). Expect it to point at
+ * ~/.agy-accts/<name>, scaffolded by scripts/add-gemini-account.sh.
+ */
+export function agyHome(config) {
+  const raw = config && config.agyHome;
+  if (raw === undefined || raw === null || raw === '') return null;
+  const dir = String(raw).trim();
+  if (!dir.startsWith('/')) {
+    throw new Error(
+      `agyHome must be an absolute path (got ${JSON.stringify(raw)}).`
+    );
+  }
+  if (/[\r\n]/.test(dir)) throw new Error('agyHome must not contain newlines');
+  return dir;
+}
+
+/**
  * The Codex config home an agent should run under, or null for the default.
  *
  * CODEX_HOME is Codex's equivalent of CLAUDE_CONFIG_DIR: it relocates config.toml,
@@ -178,7 +202,29 @@ const PROVIDERS = {
       const resume = config.agyResume ? '--continue ' : '';
       const model = config.model ? `--model ${quoteForBashLc(config.model)} ` : '';
       const effort = config.effort ? `--effort ${quoteForBashLc(config.effort)} ` : '';
-      return `bash -lc '${binary} ${resume}${model}${effort}${flags}; exec bash'`;
+
+      // Per-account isolation, and it has to be done the blunt way: agy keeps ONE
+      // credential at $HOME/.gemini/antigravity-cli/antigravity-oauth-token and
+      // offers no --config-dir or --account. Both plausible env vars were tested on
+      // 1.4.7 and neither works -- ANTIGRAVITY_CONFIG_REL_DIR relocates nothing,
+      // and AGY_ACCOUNT is ignored (a bogus value still authenticated). Overriding
+      // HOME does work: agy then builds a fresh profile there and correctly says
+      // "Please sign in".
+      //
+      // But HOME moves EVERYTHING, so two things must be repaired or the agent
+      // breaks in ways that look unrelated to accounts:
+      //   PATH  -- `bash -l` sources the new HOME's profile, which does not exist,
+      //            so ~/.local/bin drops off and `agy` itself stops resolving.
+      //   git/ssh -- scaffoldAgyHome symlinks .ssh/.gitconfig back to the real home,
+      //            otherwise an agent can no longer push.
+      // The real home is captured before HOME is reassigned, so PATH points at the
+      // actual binaries rather than the account dir.
+      const home = agyHome(config);
+      const envPrefix = home
+        ? `export AGY_REAL_HOME="$HOME"; export HOME=${quoteForBashLc(home)}; `
+          + 'export PATH="$AGY_REAL_HOME/.local/bin:$PATH"; '
+        : '';
+      return `bash -lc '${envPrefix}${binary} ${resume}${model}${effort}${flags}; exec bash'`;
     },
   },
   gemini: {
