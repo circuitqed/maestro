@@ -397,10 +397,14 @@ per HOST — a box that stopped answering, a disk filling, a plan pinned to one
 machine — and answering "what is on garage-wsl right now?" meant reading the host
 column of an 88-row agent list.
 
-One card per host: status dot (the local host is online by definition — the server
-runs on it, so `hosts.status` is meaningless there), ssh target, default root, agent
-counts, its shells listed inline, and other agents behind a `<details>` so a busy
-host stays legible.
+One card per host in a single-column `space-y-4` stack, matching Projects. Two
+columns halved the width available to the inline shell rows, which carry a session
+name, host label and action buttons and so truncate badly.
+
+Each card: status dot (the local host is online by definition — the server runs on
+it, so `hosts.status` is meaningless there), ssh target, default root, agent counts,
+its shells listed inline, and other agents behind a `<details>` so a busy host stays
+legible.
 
 **`+ Shell` creates a shell agent on that host and opens it.** Deliberately with
 **no `projectId`** — a host shell is a utility, not project work, and forcing one

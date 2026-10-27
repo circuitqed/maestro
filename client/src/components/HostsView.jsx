@@ -197,7 +197,10 @@ export default function HostsView() {
   );
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+    // Single column, matching the Projects view's `space-y-4` stack. Two columns
+    // halved the width available to the inline shell rows, which carry a session
+    // name, a host label and action buttons and so truncate badly.
+    <div className="space-y-4">
       {ordered.map((h) => (
         <HostCard
           key={h.id}
