@@ -400,6 +400,25 @@ the local host lands on the machine Maestro runs on, so "send a file to Maestro"
 "send a file to garage-wsl" are the same route. The local host has no `default_root`,
 so it falls back to `$HOME` (override with `MAESTRO_HOST_INBOX`).
 
+From a command line: **`maestro-send FILE [--to HOST]`** (`--list` shows targets).
+With no `--to` it goes to the local host — "send this to Maestro" being the obvious
+reading. It chunks at 2 MB and resumes from the server's byte count.
+
+It works from **outside the fleet** — no tailnet, no installed token — against the
+public URL, which is the case `scp` cannot cover:
+
+```
+MAESTRO_URL=https://maestro.lazybrains.com MAESTRO_TOKEN=... maestro-send f --to lithium
+```
+
+For that, `POST /api/hosts/:id/upload` and `GET /api/hosts` both accept the shared
+agent token as well as a session, since a CLI has no browser session and has to
+resolve a host NAME to an id before it can upload.
+
+**Prefer `scp` when you can reach the target**: this route goes client → Maestro →
+ssh → host, so bytes cross the wire twice. Its reason to exist is reaching a host you
+cannot: no key there, a firewall between, or only Maestro is routable.
+
 `inbox`, not `uploads`: a file sent to a MACHINE is a different thing from an
 attachment on an agent's conversation, and sharing the directory name would make them
 indistinguishable on disk.

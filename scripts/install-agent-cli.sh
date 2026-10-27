@@ -14,7 +14,7 @@ TOKEN="$(sqlite3 "$REPO/data/maestro.db" "select value from settings where key='
 # maestro-worker ships with the rest even though it is not for agents to run: the
 # swarm runner invokes it by path on the host, and a host missing it fails one
 # worker at a time, silently, after the money is already committed.
-TOOLS=(maestro-task maestro-swarm maestro-worker maestro-usage)
+TOOLS=(maestro-task maestro-swarm maestro-worker maestro-usage maestro-send)
 
 if [ -z "$TARGET" ]; then
   mkdir -p "$HOME/.local/bin" "$HOME/.maestro"

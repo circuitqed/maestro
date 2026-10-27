@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { resetHostBackoff } from '../services/agentMonitor.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
+import { agentTokenOk } from '../middleware/agentIdentity.js';
 import { getHosts, getHost, createHost, updateHost, deleteHost, countAgentsOnHost } from '../services/db.js';
 import { testHost } from '../services/hosts.js';
 import { receiveUpload } from '../services/upload.js';
@@ -8,6 +9,23 @@ import { receiveUpload } from '../services/upload.js';
 const router = Router();
 
 // Apply auth middleware to all routes
+// Sending a file to a host is the one route here that a COMMAND LINE needs, and a
+// CLI has no browser session. So it is mounted ahead of requireAuth and accepts the
+// shared agent token instead -- the same token the agent CLIs already carry at
+// ~/.maestro/agent-token. A session still works, so the dashboard is unaffected.
+router.post('/:id/upload', async (req, res) => {
+  if (agentTokenOk(req)) return hostUpload(req, res);
+  return requireAuth(req, res, () => hostUpload(req, res));
+});
+
+// The list is readable with the token too, because a CLI has to turn a host NAME
+// into an id before it can upload, and making it guess ids would be worse. Read-only
+// and no more revealing than the agent API the same token already unlocks.
+router.get('/', (req, res, next) => {
+  if (agentTokenOk(req)) return res.json(getHosts());
+  return next();
+});
+
 router.use(requireAuth);
 
 const NAME_RE = /^[\w .-]{1,64}$/;
@@ -104,7 +122,7 @@ router.delete('/:id', requireAdmin, (req, res) => {
 // `inbox` rather than `uploads`: a file sent to a MACHINE is a different thing from
 // an attachment on an agent's conversation, and sharing the directory name would
 // make the two indistinguishable on disk.
-router.post('/:id/upload', async (req, res) => {
+async function hostUpload(req, res) {
   try {
     const host = getHost(req.params.id);
     if (!host) return res.status(404).json({ error: 'Host not found' });
@@ -126,7 +144,7 @@ router.post('/:id/upload', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}
 
 router.post('/:id/test', async (req, res) => {
   try {

@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# maestro-send — put a file on a machine in the fleet, from one command.
+#
+#   maestro-send report.pdf                 # -> Maestro's own host (oracle)
+#   maestro-send data.h5 --to lithium       # -> that host's inbox
+#   maestro-send *.csv --to garage-wsl
+#   maestro-send --list                     # which hosts can be targeted
+#
+# Files land in <host default_root>/inbox, or $HOME/inbox on the local host.
+#
+# WHEN NOT TO USE THIS
+#   If you can already ssh to the target, `scp file host:dev/inbox/` is simpler and
+#   roughly twice as fast -- this route goes you -> Maestro -> ssh -> host, so large
+#   files cross the wire twice. The reason to use it anyway is when you CANNOT reach
+#   the target directly: no key on that machine, a firewall in the way, or you only
+#   know how to reach Maestro.
+#
+# Uploads in 2MB chunks and resumes from the server's byte count, so a dropped
+# connection costs one chunk rather than the whole file -- and so a slow link cannot
+# trip Cloudflare's ~100s limit on a single request.
+set -euo pipefail
+
+BASE="${MAESTRO_URL:-http://localhost:7007}"
+TOKEN_FILE="${MAESTRO_AGENT_TOKEN_FILE:-$HOME/.maestro/agent-token}"
+CHUNK=$((2 * 1024 * 1024))
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+
+TO=""
+LIST=0
+FILES=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --to) TO="${2:-}"; shift 2 ;;
+    --to=*) TO="${1#--to=}"; shift ;;
+    --list) LIST=1; shift ;;
+    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*) die "unknown option: $1" ;;
+    *) FILES+=("$1"); shift ;;
+  esac
+done
+
+# Token from the environment first, so this works from a machine OUTSIDE the fleet
+# (no tailnet, no installed token file) against the public URL:
+#   MAESTRO_URL=https://maestro.lazybrains.com MAESTRO_TOKEN=... maestro-send f --to lithium
+if [ -n "${MAESTRO_TOKEN:-}" ]; then
+  TOKEN="$MAESTRO_TOKEN"
+elif [ -r "$TOKEN_FILE" ]; then
+  TOKEN="$(cat "$TOKEN_FILE")"
+else
+  die "no token: set MAESTRO_TOKEN, or run scripts/install-agent-cli.sh on this host"
+fi
+auth=(-H "X-Maestro-Agent-Token: $TOKEN")
+
+hosts_json() {
+  local out
+  out="$(curl -sS "${auth[@]}" "$BASE/api/hosts")" || die "cannot reach $BASE"
+  # A non-list reply means auth failed or the URL is wrong; say which rather than
+  # letting the caller trip over a traceback on an error object.
+  case "$out" in
+    \[*) printf '%s' "$out" ;;
+    *) die "unexpected reply from $BASE/api/hosts: ${out:0:160}
+(bad MAESTRO_TOKEN, or MAESTRO_URL pointing somewhere that is not Maestro?)" ;;
+  esac
+}
+
+if [ "$LIST" = 1 ]; then
+  hosts_json | python3 -c '
+import json, sys
+for h in json.load(sys.stdin):
+    where = h.get("default_root") or "$HOME"
+    print("  %-14s %-26s -> %s/inbox" % (h["name"], h.get("ssh_target") or "(local, = Maestro)", where))
+'
+  exit 0
+fi
+
+[ "${#FILES[@]}" -gt 0 ] || die "nothing to send. usage: maestro-send FILE... [--to HOST]   (--list to see hosts)"
+
+# Resolve the host NAME to an id. Defaulting to the local host is deliberate: with
+# no --to, "send this file to Maestro" is the obvious reading, and the local host is
+# the machine Maestro runs on.
+HOST_ID="$(hosts_json | TO="$TO" python3 -c '
+import json, os, sys
+want = (os.environ.get("TO") or "").strip().lower()
+hosts = json.load(sys.stdin)
+if not want:
+    local = [h for h in hosts if not h.get("ssh_target")]
+    if not local: sys.exit("no local host registered; pass --to")
+    print(local[0]["id"]); raise SystemExit
+m = [h for h in hosts if h["name"].lower() == want]
+if not m:
+    sys.exit("unknown host %r. known: %s" % (want, ", ".join(h["name"] for h in hosts)))
+print(m[0]["id"])
+')"
+
+for f in "${FILES[@]}"; do
+  [ -f "$f" ] || die "not a file: $f"
+  name="$(basename "$f")"
+  size="$(wc -c < "$f" | tr -d ' ')"
+  offset=0
+  upload_id=""
+  printf '%s -> %s ' "$name" "${TO:-maestro}"
+
+  while [ "$offset" -lt "$size" ]; do
+    tmp="$(mktemp)"
+    # dd with a block size and skip in BLOCKS, not bytes: bs=1 on a multi-megabyte
+    # slice is thousands of one-byte reads and takes minutes.
+    dd if="$f" of="$tmp" bs=65536 skip=$((offset / 65536)) count=$((CHUNK / 65536)) status=none
+    qs="name=$(printf '%s' "$name" | sed 's/ /%20/g')&offset=$offset&total=$size"
+    [ -n "$upload_id" ] && qs="$qs&uploadId=$upload_id"
+    resp="$(curl -sS "${auth[@]}" -X POST "$BASE/api/hosts/$HOST_ID/upload?$qs" \
+            -H 'Content-Type: application/octet-stream' --data-binary @"$tmp")"
+    rm -f "$tmp"
+
+    read -r new_offset new_id complete err <<<"$(printf '%s' "$resp" | python3 -c '
+import json, sys
+try: d = json.load(sys.stdin)
+except Exception: print("-1 - - unparseable-response"); raise SystemExit
+print(d.get("received", -1), d.get("uploadId") or "-", d.get("complete") or "-",
+      (d.get("error") or "-").replace(" ", "_"))
+')"
+    [ "$new_offset" = "-1" ] && { printf '\n'; die "failed: ${err//_/ }"; }
+    [ "$new_id" != "-" ] && upload_id="$new_id"
+    offset="$new_offset"
+    printf '.'
+    [ "$complete" = "True" ] && break
+  done
+  printf ' ok (%s bytes)\n' "$size"
+done
