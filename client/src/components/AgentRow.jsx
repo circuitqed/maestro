@@ -150,18 +150,21 @@ function AgentRow({ agent, showProject = false }) {
       {/* Actions */}
       <div className="flex items-center gap-2">
           {Star}
-        {/* Start/Stop button */}
-        <button
-          onClick={isRunning ? handleStop : handleStart}
-          disabled={loading || !agent.screen_session}
-          className={`px-3 py-1 text-xs font-medium rounded transition-colors disabled:opacity-50 ${
-            isRunning
-              ? 'bg-red-600/20 text-red-400 hover:bg-red-600/30'
-              : 'bg-green-600/20 text-green-400 hover:bg-green-600/30'
-          }`}
-        >
-          {loading ? '...' : isRunning ? 'Stop' : 'Start'}
-        </button>
+        {/* Start only. Stop lives in the ⋯ menu: it used to be the same button in
+            the same place, directly beside the chat and terminal icons, so the
+            click that opens an agent and the click that kills its session landed a
+            few pixels apart. Starting is harmless and worth one click; stopping
+            discards whatever is unsent in the composer and interrupts a turn. */}
+        {!isRunning && (
+          <button
+            onClick={handleStart}
+            disabled={loading || !agent.screen_session}
+            className="px-3 py-1 text-xs font-medium rounded transition-colors disabled:opacity-50
+                       bg-green-600/20 text-green-400 hover:bg-green-600/30"
+          >
+            {loading ? '...' : 'Start'}
+          </button>
+        )}
 
         {/* Chat button (Claude agents only) */}
         {agent.screen_session && hasChatView(provider) && (
@@ -195,6 +198,7 @@ function AgentRow({ agent, showProject = false }) {
         <div className="relative">
           <button
             onClick={() => setShowMenu(!showMenu)}
+            title={isRunning ? 'More — stop, delete' : 'More — delete'}
             className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded transition-colors"
           >
             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
@@ -207,7 +211,17 @@ function AgentRow({ agent, showProject = false }) {
           {showMenu && (
             <>
               <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
-              <div className="absolute right-0 top-full mt-1 w-32 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-20 py-1">
+              <div className="absolute right-0 top-full mt-1 w-36 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-20 py-1">
+                {isRunning && (
+                  <button
+                    onClick={() => { setShowMenu(false); handleStop(); }}
+                    disabled={loading || !agent.screen_session}
+                    className="w-full px-3 py-2 text-left text-sm text-amber-300 hover:bg-gray-700 disabled:opacity-50"
+                  >
+                    {loading ? 'Stopping…' : 'Stop'}
+                  </button>
+                )}
+                {isRunning && <div className="my-1 border-t border-gray-700" />}
                 <button
                   onClick={() => {
                     setShowMenu(false);

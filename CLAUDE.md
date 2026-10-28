@@ -491,6 +491,20 @@ institutional quota). `services/geminiAccounts.js` discovers accounts and return
 `setAgentActiveAccount(id, dir, field)` records `activeAgyHome` on start so the
 "restart to apply" marker works for Gemini too.
 
+### Destructive controls are behind the ⋯ menu
+
+`Start` is inline on an agent row; **`Stop` is not**. They used to be the same
+button in the same place, which put the click that kills a session a few pixels from
+the chat and terminal icons you reach for constantly — so it got hit by accident.
+
+The asymmetry is deliberate: starting an agent is harmless and worth one click,
+while stopping one discards whatever is unsent in its composer and interrupts a turn
+mid-flight. A running row therefore shows **no** destructive control at all; Stop and
+Delete both live in the menu, and the ⋯ tooltip names what is inside it.
+
+Note `AgentCard.jsx` has its own copy of the old combined Start/Stop button but is
+**imported nowhere** — dead since the row layout replaced it. Fix `AgentRow.jsx`.
+
 ### Agent state vs. what we can observe
 
 `agents.status` is the last state the monitor managed to OBSERVE, which is not the
