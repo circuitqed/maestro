@@ -11,6 +11,7 @@ import agentsRoutes from './routes/agents.js';
 import connectionRoutes from './routes/connections.js';
 import hostsRoutes from './routes/hosts.js';
 import usageRoutes from './routes/usage.js';
+import accountLoginRoutes from './routes/accountLogin.js';
 import agentApiRoutes from './routes/agentApi.js';
 import swarmApiRoutes from './routes/swarmApi.js';
 import swarmReportRoutes from './routes/swarmReport.js';
@@ -87,6 +88,7 @@ app.use('/api/agents', agentsRoutes);
 app.use('/api/connections', connectionRoutes);
 app.use('/api/hosts', hostsRoutes);
 app.use('/api/usage', usageRoutes);  // browser-facing plan usage
+app.use('/api/accounts', accountLoginRoutes);  // sign an extra Anthropic account in on a host
 
 // Serve static files in production.
 // Content-hashed assets (Vite emits /assets/index-<hash>.js) are safe to cache

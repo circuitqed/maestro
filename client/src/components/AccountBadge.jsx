@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import AccountLoginCard from './AccountLoginCard';
+import { useApp } from '../context/AppContext';
 
 /**
  * Which Anthropic account this agent runs as, and a way to change it.
@@ -25,11 +27,24 @@ const ACCOUNT_SHAPE = {
   antigravity: { field: 'agyHome', activeField: 'activeAgyHome', label: 'Google account' },
 };
 
-function AccountBadge({ agentId, hostId, provider = 'claude', running = false, onChanged }) {
+function AccountBadge({ agentId, hostId, hostName, provider = 'claude', running = false, onChanged }) {
   const shape = ACCOUNT_SHAPE[provider];
   const [accounts, setAccounts] = useState(null);
   const [current, setCurrent] = useState(undefined); // undefined = unknown, null = default
   const [open, setOpen] = useState(false);
+  // Whether the inline "sign in another account" card is showing. Widens the popover,
+  // because the card carries a URL and an input and is unusable at menu width.
+  const [adding, setAdding] = useState(false);
+  // Resolved here rather than threaded through TerminalPanel and TerminalModal, which
+  // both render this badge and neither of which currently reads `hosts`. A null hostId
+  // means the local host, found by its missing ssh_target rather than a hardcoded id.
+  const { hosts } = useApp();
+  const resolvedHostName =
+    hostName
+    || (hostId
+      ? (hosts || []).find((h) => h.id === hostId)?.name
+      : (hosts || []).find((h) => !h.ssh_target)?.name)
+    || 'this host';
   const [pos, setPos] = useState(null);
   const [busy, setBusy] = useState(false);
   // What the RUNNING session was started with. Compared against `current` (what it
@@ -74,10 +89,10 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
     const el = btnRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    const width = Math.min(340, window.innerWidth - 16);
+    const width = Math.min(adding ? 440 : 340, window.innerWidth - 16);
     const left = Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8));
     setPos({ top: r.bottom + 4, left, width });
-  }, []);
+  }, [adding]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -89,6 +104,11 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
       window.removeEventListener('scroll', place, true);
     };
   }, [open, place]);
+
+  // Closing the picker abandons an unstarted login, so reopening lands on the menu
+  // rather than halfway through a form. A login already in progress is unaffected —
+  // it lives in a tmux session on the host, and reopening re-attaches to it.
+  useEffect(() => { if (!open) setAdding(false); }, [open]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -214,10 +234,39 @@ function AccountBadge({ agentId, hostId, provider = 'claude', running = false, o
                 </button>
               );
             })}
-            {accounts.length < 2 && !pending && (
-              <div className="mt-1 border-t border-gray-700 pt-1.5 px-2 pb-1 text-[11px] text-gray-500">
-                Only this account is signed in on this host. Accounts are per machine —
-                sign another in here to be able to switch.
+            {/*
+              Adding an account used to be a sentence telling you to go and do it
+              somewhere else, which is the one place it should not be done: at a
+              terminal, `claude /login` writes to whatever CLAUDE_CONFIG_DIR the
+              shell has, so adding a second account overwrites the first. The card
+              has the dir set for it, so the safe route is now the easy one.
+            */}
+            {!pending && !adding && (
+              <div className="mt-1 border-t border-gray-700 pt-1.5 px-1 pb-0.5">
+                {accounts.length < 2 && (
+                  <div className="px-1 pb-1 text-[11px] text-gray-500">
+                    Only this account is signed in here. A plan is shared across machines,
+                    but its credential is per machine.
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setAdding(true)}
+                  className="w-full text-left rounded px-2 py-1.5 text-xs text-sky-300 hover:bg-gray-800"
+                >
+                  + Sign in another account…
+                </button>
+              </div>
+            )}
+            {adding && (
+              <div className="mt-1 border-t border-gray-700 pt-1.5 px-1 pb-1">
+                <AccountLoginCard
+                  hostId={hostId}
+                  hostName={resolvedHostName}
+                  takenNames={accounts.filter((a) => !a.isDefault).map((a) => a.label)}
+                  onCancel={() => setAdding(false)}
+                  onDone={() => { load(); }}
+                />
               </div>
             )}
             {pending && (
