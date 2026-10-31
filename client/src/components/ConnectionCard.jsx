@@ -124,11 +124,23 @@ function ConnectionCard({ id, label, hint, onConnected, hostId = null, hideWhenC
         </div>
         {hint && <div className="text-xs text-amber-200/70 mb-2">{hint}</div>}
 
+        {/*
+          A reason the login CANNOT succeed yet (an untrusted host key) is worth more
+          than an enabled button: clicking it would open a session that fails the same
+          way every time, with the failure buried in pane text.
+        */}
+        {status.reason && (
+          <div className="mb-2 text-xs text-red-300 bg-red-500/10 border border-red-500/40 rounded px-2 py-1">
+            {status.reason}
+          </div>
+        )}
+
         {!loginRunning && (
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || !!status.needsHostKey}
             onClick={connect}
+            title={status.needsHostKey ? 'Resolve the host key first' : undefined}
             className="rounded bg-amber-600/80 hover:bg-amber-600 text-white text-sm px-3 py-1 disabled:opacity-50"
           >
             {busy ? 'Starting…' : `Connect to ${label}`}

@@ -72,6 +72,22 @@ export async function connectionStatus(conn, host = null) {
     if (/permission denied|authentication failed|too many authentication/i.test(out)) {
       return { connected: false, available: true };
     }
+    // This host has never verified Sherlock's host key, so no login can succeed from
+    // it yet. Must be tested BEFORE isHostUnreachable: we run `ssh sherlock` INSIDE
+    // `ssh <host>`, and a failure of the inner ssh exits 255 on the outer one too, so
+    // by exit code alone it is indistinguishable from the host being asleep. That
+    // misread hid the badge entirely on zlmc and reported hostDown for a machine that
+    // was perfectly up — no button, and the blame on the wrong box.
+    if (/host key verification failed|no matching host key|remote host identification has changed/i.test(out)) {
+      return {
+        connected: false,
+        available: true,
+        needsHostKey: true,
+        reason: `${conn.host}'s host key is not trusted on this machine yet, so a login cannot `
+              + `complete. Add it there (compare the fingerprint against a host that already `
+              + `trusts it) and try again.`,
+      };
+    }
     // The HOST itself is down (not Sherlock) — not a Sherlock problem to report.
     if (isHostUnreachable(err)) return { connected: false, available: false, hostDown: true };
     return { connected: false, available: true };
