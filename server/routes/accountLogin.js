@@ -9,7 +9,9 @@ import { listAccounts } from '../services/accounts.js';
 import {
   beginAccountLogin, accountLoginPane, accountLoginInput, accountLoginKeys,
   accountLoginStatus, cancelAccountLogin, finishAccountLogin, isValidAccountName,
+  listActiveLogins,
 } from '../services/accountLogin.js';
+import { addApiKeyAccount } from '../services/apiKeyAccount.js';
 
 const router = express.Router();
 
@@ -69,6 +71,48 @@ router.post('/login', async (req, res) => {
       });
     }
     res.json({ success: true, ...(await beginAccountLogin(h.host, name)) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Add a gateway (API-token) account. The token arrives in the body and is handed
+ * straight to the service, which delivers it to the host on stdin — it is never put
+ * in a command line, never logged, never stored in the database, and the response
+ * below deliberately contains no part of it.
+ */
+router.post('/api-key', async (req, res) => {
+  const h = resolveHost(req, res);
+  if (!h) return;
+  const name = resolveName(req, res);
+  if (!name) return;
+  const { baseUrl, key, codexModel } = req.body || {};
+  try {
+    const existing = (await listAccounts(h.host)).find((a) => a.dir.endsWith(`/.claude-accts/${name}`));
+    if (existing && existing.kind === 'oauth' && existing.loggedIn) {
+      return res.status(409).json({
+        error: `"${name}" is a signed-in subscription account${existing.email ? ` (${existing.email})` : ''}. ` +
+               `Writing a gateway token there would shadow it — pick another name.`,
+      });
+    }
+    res.json(await addApiKeyAccount(h.host, { name, baseUrl, key, codexModel }));
+  } catch (err) {
+    // err.message is built from the gateway's own reply and never includes the token.
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/**
+ * Logins already in progress on this host. The UI calls this when the picker opens so
+ * it can reopen the card on a login that is mid-flight, instead of leaving a live
+ * session unreachable after the inevitable click away to the browser.
+ */
+router.get('/login/active', async (req, res) => {
+  const h = resolveHost(req, res);
+  if (!h) return;
+  try {
+    res.json({ names: await listActiveLogins(h.host) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -41,7 +41,7 @@
  *    created at 1000 columns and the whole URL lands on one line.
  */
 import { execOnHost, shellQuote } from './hosts.js';
-import { sessionExists, killSession, sendText, sendKeys, ensureTmuxServer } from './tmux.js';
+import { sessionExists, killSession, sendText, sendKeys, ensureTmuxServer, getTmuxSessions } from './tmux.js';
 import { listAccounts } from './accounts.js';
 
 // The name becomes a directory, a tmux session name and part of a shell command.
@@ -144,6 +144,24 @@ export async function beginAccountLogin(host, name) {
     `-e MAESTRO_SESSION=${shellQuote(session)} ${shellQuote(command)}`;
   await execOnHost(host, tmuxCmd, { timeout: 30000 });
   return { started: true, dir };
+}
+
+/**
+ * Logins currently in progress on this host, by account name.
+ *
+ * Exists so the UI can RE-ATTACH. The login requires leaving the page to authorize in
+ * a browser, and the picker closes on any outside click — so the card was guaranteed
+ * to be dismissed mid-flow, stranding a live session with no way back to its code
+ * prompt. The session is the real state; the card is just a view of it, and this is
+ * what lets the view be rebuilt.
+ */
+export async function listActiveLogins(host) {
+  const sessions = await getTmuxSessions(host).catch(() => []);
+  return sessions
+    .map((s) => s.name)
+    .filter((n) => n.startsWith('acct-login-'))
+    .map((n) => n.slice('acct-login-'.length))
+    .filter((n) => isValidAccountName(n));
 }
 
 /**

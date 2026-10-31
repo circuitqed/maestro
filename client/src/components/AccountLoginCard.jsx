@@ -41,9 +41,19 @@ function extractOptions(lines) {
   return out.slice(0, 5);
 }
 
-function AccountLoginCard({ hostId = null, hostName = 'this host', onDone, onCancel, takenNames = [] }) {
-  const [name, setName] = useState('work');
-  const [phase, setPhase] = useState('name'); // name | running | done
+// The gateway most of this fleet uses. Prefilled because typing it is the only hard
+// part of the token flow, and getting it subtly wrong fails as "rejected token".
+const DEFAULT_BASE_URL = 'https://aiapi-prod.stanford.edu';
+
+function AccountLoginCard({ hostId = null, hostName = 'this host', onDone, onCancel, takenNames = [], resumeName = null }) {
+  // `resumeName` means a login is already running on the host for that account: pick
+  // it up where it was left rather than offering to start a new one.
+  const [name, setName] = useState(resumeName || 'work');
+  const [kind, setKind] = useState('oauth'); // oauth | token
+  const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
+  const [token, setToken] = useState('');
+  const [models, setModels] = useState(null);
+  const [phase, setPhase] = useState(resumeName ? 'running' : 'name'); // name | running | done
   const [pane, setPane] = useState('');
   const [status, setStatus] = useState(null);
   const [answer, setAnswer] = useState('');
@@ -108,6 +118,25 @@ function AccountLoginCard({ hostId = null, hostName = 'this host', onDone, onCan
     setPhase('running');
   });
 
+  // The token path has nothing interactive about it: one request that validates the
+  // key against the endpoint and only stores it if the gateway accepts it. The token
+  // is cleared from state the moment it is sent, and no response carries it back.
+  const saveToken = () => {
+    const value = token;
+    setToken('');
+    return act(async () => {
+      const r = await api('/api-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseUrl: baseUrl.replace(/\/+$/, ''), key: value }),
+      });
+      setModels(r.models || []);
+      setStatus({ email: r.detail || baseUrl, signedIn: true });
+      setPhase('done');
+      if (onDone) onDone(r);
+    });
+  };
+
   const send = () => {
     const value = answer;
     setAnswer('');
@@ -158,6 +187,62 @@ function AccountLoginCard({ hostId = null, hostName = 'this host', onDone, onCan
         <div className="text-[11px] text-gray-600 mt-1">
           Becomes <span className="font-mono">~/.claude-accts/{name || '<name>'}</span>
         </div>
+
+        <div className="mt-2 flex gap-1">
+          {[
+            { id: 'oauth', label: 'Subscription' },
+            { id: 'token', label: 'API token' },
+          ].map((k) => (
+            <button
+              key={k.id}
+              type="button"
+              onClick={() => setKind(k.id)}
+              className={`flex-1 rounded px-2 py-1 text-[11px] border ${
+                kind === k.id
+                  ? 'border-sky-500/70 bg-sky-500/15 text-sky-200'
+                  : 'border-gray-700 text-gray-400 hover:bg-gray-800'
+              }`}
+            >
+              {k.label}
+            </button>
+          ))}
+        </div>
+        <div className="text-[11px] text-gray-600 mt-1">
+          {kind === 'oauth'
+            ? 'Pro, Max, Team or Enterprise — opens a browser to authorize.'
+            : 'A gateway endpoint and bearer token, e.g. the Stanford AI API Gateway.'}
+        </div>
+
+        {kind === 'token' && (
+          <div className="mt-2 space-y-1.5">
+            <div>
+              <label className="block text-[11px] text-gray-400 mb-1">Base URL</label>
+              <input
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                placeholder="https://gateway.example.edu"
+                className="w-full rounded bg-gray-900 border border-gray-700 px-2 py-1 text-xs text-gray-100 font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-gray-400 mb-1">Token</label>
+              {/* Write-only: sent and cleared, never read back, never echoed. */}
+              <input
+                type="password"
+                autoComplete="off"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="sk-…"
+                className="w-full rounded bg-gray-900 border border-gray-700 px-2 py-1 text-xs text-gray-100 font-mono"
+              />
+            </div>
+            <div className="text-[11px] text-gray-600">
+              Checked against the endpoint before it is stored, from {hostName} — so a
+              token the gateway refuses is never written. It is kept out of every command
+              line, log and the database; the only copies are the two 600 files it lives in.
+            </div>
+          </div>
+        )}
         {!nameValid && name && (
           <div className="text-[11px] text-amber-400 mt-1">
             Lowercase letters, numbers, dot, dash or underscore.
@@ -171,11 +256,13 @@ function AccountLoginCard({ hostId = null, hostName = 'this host', onDone, onCan
         <div className="flex gap-2 mt-2">
           <button
             type="button"
-            disabled={busy || !nameValid || nameTaken}
-            onClick={start}
+            disabled={busy || !nameValid || nameTaken || (kind === 'token' && (!token || !/^https:\/\//.test(baseUrl)))}
+            onClick={kind === 'token' ? saveToken : start}
             className="rounded bg-sky-600/80 hover:bg-sky-600 text-white text-xs px-2.5 py-1 disabled:opacity-50"
           >
-            {busy ? 'Starting…' : 'Start login'}
+            {busy
+              ? (kind === 'token' ? 'Checking…' : 'Starting…')
+              : (kind === 'token' ? 'Check & save' : 'Start login')}
           </button>
           <button type="button" onClick={onCancel} className="text-xs text-gray-400 hover:text-gray-200 px-1">
             Cancel
@@ -190,12 +277,21 @@ function AccountLoginCard({ hostId = null, hostName = 'this host', onDone, onCan
     return (
       <div className="rounded border border-emerald-500/50 bg-emerald-950/20 p-2.5">
         <div className="text-xs text-emerald-200">
-          Signed in as <span className="text-white">{status?.email || name}</span> on {hostName}.
+          {models ? 'Token accepted' : 'Signed in'} as{' '}
+          <span className="text-white">{status?.email || name}</span> on {hostName}.
         </div>
         <div className="text-[11px] text-emerald-300/70 mt-1">
           Available as <span className="font-mono">{name}</span> in this picker. Pin an agent to it,
           then restart that agent for it to take effect.
         </div>
+        {/* The model list is the useful part of a gateway key: this one refuses haiku,
+            and finding that out from a 403 mid-task is worse than reading it here. */}
+        {models && models.length > 0 && (
+          <div className="text-[11px] text-emerald-300/60 mt-1.5">
+            <div className="text-emerald-300/80">Models this token may use:</div>
+            <div className="font-mono break-words">{models.join(', ')}</div>
+          </div>
+        )}
       </div>
     );
   }

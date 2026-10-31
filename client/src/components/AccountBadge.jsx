@@ -105,10 +105,40 @@ function AccountBadge({ agentId, hostId, hostName, provider = 'claude', running 
     };
   }, [open, place]);
 
-  // Closing the picker abandons an unstarted login, so reopening lands on the menu
-  // rather than halfway through a form. A login already in progress is unaffected —
-  // it lives in a tmux session on the host, and reopening re-attaches to it.
-  useEffect(() => { if (!open) setAdding(false); }, [open]);
+  // Whether a login is mid-flight on the host, by account name. Checked whenever the
+  // picker opens.
+  const [resumeName, setResumeName] = useState(null);
+
+  /*
+   * The card must NOT be torn down when the picker closes.
+   *
+   * It used to be: `if (!open) setAdding(false)`, reasoned as "reopening shouldn't
+   * land halfway through a form". That was wrong, and badly so — authorizing means
+   * leaving the page for a browser, so an outside click is a REQUIRED step of this
+   * flow, not an incidental one. The popover closed, the card was destroyed, and the
+   * code came back to a picker with no box to paste it into while a live login sat
+   * waiting on the host. One real login was lost that way.
+   *
+   * So the card is sticky, and on open we ask the host whether a login is actually
+   * running and reopen straight onto it. The tmux session is the real state; the card
+   * is a view of it, and a view has to be rebuildable.
+   */
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const params = new URLSearchParams();
+    if (hostId) params.set('hostId', String(hostId));
+    fetch(`/api/accounts/login/active?${params}`)
+      .then((r) => (r.ok ? r.json() : { names: [] }))
+      .then((d) => {
+        if (cancelled) return;
+        const live = (d.names || [])[0] || null;
+        setResumeName(live);
+        if (live) setAdding(true);
+      })
+      .catch(() => { /* no resume offered; the menu still works */ });
+    return () => { cancelled = true; };
+  }, [open, hostId]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -261,11 +291,15 @@ function AccountBadge({ agentId, hostId, hostName, provider = 'claude', running 
             {adding && (
               <div className="mt-1 border-t border-gray-700 pt-1.5 px-1 pb-1">
                 <AccountLoginCard
+                  // Remount when the resumed login changes, so the card re-initialises
+                  // into its running phase rather than keeping a stale initial state.
+                  key={resumeName || 'new'}
                   hostId={hostId}
                   hostName={resolvedHostName}
+                  resumeName={resumeName}
                   takenNames={accounts.filter((a) => !a.isDefault).map((a) => a.label)}
-                  onCancel={() => setAdding(false)}
-                  onDone={() => { load(); }}
+                  onCancel={() => { setAdding(false); setResumeName(null); }}
+                  onDone={() => { setResumeName(null); load(); }}
                 />
               </div>
             )}
