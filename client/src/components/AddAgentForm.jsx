@@ -60,7 +60,8 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
   const isRemoteHost = !!selectedHost?.ssh_target;
 
   // When a project + remote host are selected, load the project's existing
-  // working directory for that host to prefill the field.
+  // working directory for that host. Null means "no project selected, or no path
+  // recorded for this host" — the prefill effect below decides what to show.
   useEffect(() => {
     let cancelled = false;
     setExistingHostPath(null);
@@ -69,22 +70,34 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
       .then((paths) => {
         if (cancelled) return;
         const entry = paths.find((p) => p.hostId === Number(effectiveHostId));
-        const existing = entry?.path || null;
-        setExistingHostPath(existing);
-        if (!workingDirEdited) {
-          // Prefer the project's already-configured path; otherwise fall back to
-          // the host's default root joined with the agent-name slug.
-          setWorkingDir(existing || defaultWorkingDir(selectedHost, name));
-        }
+        setExistingHostPath(entry?.path || null);
       })
       .catch(() => {
-        // Non-fatal: leave the field empty so the user can type a path.
+        // Non-fatal: the prefill below still falls back to the host default.
       });
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveProjectId, effectiveHostId, isRemoteHost]);
+
+  // Prefill the working directory: the project's recorded path for this host if
+  // there is one, else <host default_root>/<agent-name slug>.
+  //
+  // Deliberately NOT folded into the lookup above, which bails out early when no
+  // project is selected. That left a project-less agent on a remote host with an
+  // empty field and a "no working directory set" warning even when the host had a
+  // default root — a host shell created from the Hosts tab worked only because it
+  // passes default_root directly and never goes through this form.
+  //
+  // It also has to react to `name`, since the slug is half the suggestion:
+  // choosing the host before typing a name computed an empty slug (which
+  // defaultWorkingDir returns '' for) and nothing ever recomputed it.
+  useEffect(() => {
+    if (workingDirEdited || !isRemoteHost) return;
+    setWorkingDir(existingHostPath || defaultWorkingDir(selectedHost, name));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [existingHostPath, effectiveHostId, isRemoteHost, name, workingDirEdited]);
 
   // Smart default: when the project already has agents, pre-select the first
   // provider it doesn't have yet (Claude → Codex → Gemini → Aider) so "add another
@@ -238,14 +251,25 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
             className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-white
                        focus:outline-none focus:ring-1 focus:ring-primary-500 font-mono text-xs"
           />
-          {!existingHostPath && !workingDir.trim() ? (
+          {/*
+            Only warn when nothing can supply a path. A host WITH a default root
+            needs no warning — the field fills itself as soon as the agent has a
+            name, so warning there just told the user something was wrong when it
+            wasn't.
+          */}
+          {!existingHostPath && !workingDir.trim() && !selectedHost?.default_root ? (
             <p className="text-xs text-amber-400/80 mt-1">
-              No working directory set for {selectedHost?.name}; the agent won&apos;t start until one is set.
+              No working directory set for {selectedHost?.name}, and that host has no default
+              directory; the agent won&apos;t start until one is set.
             </p>
           ) : (
             <p className="text-xs text-gray-500 mt-1">
               This agent only. Leave blank to use the project&apos;s directory
-              {existingHostPath ? ` (${existingHostPath})` : ''}.
+              {existingHostPath
+                ? ` (${existingHostPath})`
+                : selectedHost?.default_root
+                  ? `, or ${selectedHost.default_root}/<name> on ${selectedHost.name}`
+                  : ''}.
             </p>
           )}
         </div>
