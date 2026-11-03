@@ -127,8 +127,23 @@ const PROVIDERS = {
       // `claude` again by hand) must inherit the same account rather than silently
       // falling back to the default one.
       const cfgDir = claudeConfigDir(config);
-      const envPrefix = cfgDir ? `export CLAUDE_CONFIG_DIR=${quoteForBashLc(cfgDir)}; ` : '';
-      return `bash -lc '${envPrefix}${binary} ${nameFlag}${sessionFlag}${flags}; exec bash'`;
+      let envPrefix = cfgDir ? `export CLAUDE_CONFIG_DIR=${quoteForBashLc(cfgDir)}; ` : '';
+      // A pinned model. --model alone is not enough for a non-Anthropic model behind
+      // the gateway (DeepSeek): Claude Code still sends background work (titles,
+      // summaries) to its haiku alias and subagents to sonnet/opus, so a "DeepSeek
+      // agent" quietly ran part of every turn on Claude at Claude prices -- the very
+      // thing the trial is meant to measure against. modelEverywhere points every
+      // alias at the pinned model too. Off for Claude models, where routing a haiku
+      // background call to opus would be the waste.
+      const model = config.model ? String(config.model).replace(/[\r\n]/g, ' ').trim() : '';
+      const modelFlag = model ? `--model ${quoteForBashLc(model)} ` : '';
+      if (model && config.modelEverywhere) {
+        const q = quoteForBashLc(model);
+        envPrefix += ['ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL',
+          'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL']
+          .map((v) => `export ${v}=${q}; `).join('');
+      }
+      return `bash -lc '${envPrefix}${binary} ${nameFlag}${sessionFlag}${modelFlag}${flags}; exec bash'`;
     },
   },
   codex: {

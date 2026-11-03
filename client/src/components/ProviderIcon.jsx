@@ -5,6 +5,7 @@ import React from 'react';
 const PROVIDER_META = {
   claude: { label: 'Claude Code', color: 'text-orange-400' },
   codex: { label: 'OpenAI Codex', color: 'text-emerald-400' },
+  deepseek: { label: 'Claude Code · DeepSeek', color: 'text-blue-400' },
   gemini: { label: 'Gemini CLI', color: 'text-sky-400' },
   aider: { label: 'Aider', color: 'text-amber-400' },
   custom: { label: 'Custom', color: 'text-fuchsia-400' },
@@ -57,6 +58,16 @@ function Glyph({ provider, className }) {
             <circle cx="12" cy="12" r="3.1" fill="currentColor" stroke="none" />
           </svg>
         );
+    case 'deepseek':
+      // DeepSeek — a whale's tail fluke over a waterline (their mark is a whale)
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 15V9" />
+          <path d="M12 9c-1.5-3-5-4.5-8-4 1 3 4 5 8 4z" />
+          <path d="M12 9c1.5-3 5-4.5 8-4-1 3-4 5-8 4z" />
+          <path d="M3 19c1.5-1.3 3-1.3 4.5 0s3 1.3 4.5 0 3-1.3 4.5 0 3 1.3 4.5 0" />
+        </svg>
+      );
     case 'gemini':
       // Google Gemini — four-point spark star with concave sides
       return (

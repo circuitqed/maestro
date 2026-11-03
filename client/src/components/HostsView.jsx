@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import AgentRow from './AgentRow';
 import ProviderIcon from './ProviderIcon';
+import { iconProvider } from '../lib/providerCaps';
 
 /**
  * The fleet by machine, rather than by project or by agent.
@@ -205,7 +206,7 @@ function HostCard({ host, agents, onAddShell, onTest, busy }) {
           <div className="mt-1.5 space-y-1">
             {others.map((a) => (
               <div key={a.id} className="flex items-center gap-2 text-xs text-gray-400 px-2 py-1">
-                <ProviderIcon provider={a.config?.provider || 'claude'} className="w-3 h-3 flex-shrink-0" />
+                <ProviderIcon provider={iconProvider(a.config)} className="w-3 h-3 flex-shrink-0" />
                 <span className="truncate">{a.name}</span>
                 <span className="text-gray-600">{a.status}</span>
               </div>

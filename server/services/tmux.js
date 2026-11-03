@@ -290,11 +290,15 @@ export async function sendText(sessionName, text, host = null, { verify = true }
   // unchanged. Bias is deliberate — if the tail is moving for any reason (a spinner
   // while the agent works) we conclude "landed" and submit, i.e. behave as before.
   // Only a completely static tail means the paste truly went nowhere.
+  //
+  // Blank lines are dropped first. A freshly started TUI draws at the TOP of a tall
+  // pane, so the bottom 12 rows were all empty: the fingerprint never moved, every
+  // send to a new agent was judged undelivered, pasted twice and never submitted.
   const readTail = async () => {
     try {
       const { stdout } = await execOnHost(
         host,
-        `tmux capture-pane -p -t ${s} | tail -12 | cksum`
+        `tmux capture-pane -p -t ${s} | grep -v '^[[:space:]]*$' | tail -12 | cksum`
       );
       return String(stdout).trim() || null;
     } catch {

@@ -12,9 +12,18 @@ const PROVIDERS = [
   // shell, which reads as "the agent won't start" rather than "wrong provider".
   { id: 'antigravity', name: 'Antigravity' },
   { id: 'aider', name: 'Aider' },
+  // Not a separate provider: Claude Code pinned to DeepSeek through a Stanford
+  // gateway key. Saved as provider `claude` (see DEEPSEEK below).
+  { id: 'deepseek', name: 'DeepSeek' },
   { id: 'custom', name: 'Custom' },
   { id: 'shell', name: 'Shell' },
 ];
+
+// DeepSeek V4.1 Flash, as Stanford's AI API Gateway names it. The exact spaced name
+// is the only one accepted -- the kebab-case form is rejected -- and /v1/models does
+// not list it even for keys that can call it, so it cannot be discovered, only known.
+// Only some gateway keys carry it (slab-emsim does, stanford-api does not).
+const DEEPSEEK = { model: 'DeepSeek V4.1 Flash 1017', preferredAccount: 'slab-emsim' };
 
 function sanitizeSessionName(name) {
   return name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
@@ -46,6 +55,9 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
   const [customCommand, setCustomCommand] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  // Gateway accounts on the selected host, for the DeepSeek preset (null = loading)
+  const [apiAccounts, setApiAccounts] = useState(null);
+  const [apiAccountDir, setApiAccountDir] = useState('');
 
   const hideProviderSelector = type === 'shell';
 
@@ -123,6 +135,27 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveProjectId, agents]);
 
+  // DeepSeek runs on a gateway API key, and accounts are per host, so the choice has
+  // to be re-read whenever the host changes.
+  useEffect(() => {
+    if (provider !== 'deepseek') return;
+    let cancelled = false;
+    setApiAccounts(null);
+    const params = new URLSearchParams();
+    if (effectiveHostId != null) params.set('hostId', String(effectiveHostId));
+    fetch(`/api/agents/accounts?${params}`)
+      .then((r) => (r.ok ? r.json() : []))
+      .catch(() => [])
+      .then((list) => {
+        if (cancelled) return;
+        const api = (Array.isArray(list) ? list : []).filter((a) => a.kind === 'api');
+        setApiAccounts(api);
+        const preferred = api.find((a) => a.dir.endsWith(`/${DEEPSEEK.preferredAccount}`));
+        setApiAccountDir((preferred || api[0])?.dir || '');
+      });
+    return () => { cancelled = true; };
+  }, [provider, effectiveHostId]);
+
   const handleNameChange = (value) => {
     setName(value);
     if (!sessionEdited) {
@@ -147,6 +180,13 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
 
     try {
       const config = { provider };
+      if (provider === 'deepseek') {
+        if (!apiAccountDir) throw new Error('Pick a gateway account that has DeepSeek.');
+        config.provider = 'claude';
+        config.model = DEEPSEEK.model;
+        config.modelEverywhere = true;
+        config.claudeConfigDir = apiAccountDir;
+      }
       if (flags) config.flags = flags;
       if (model && provider === 'aider') config.model = model;
       if (customCommand && provider === 'custom') config.customCommand = customCommand;
@@ -309,6 +349,37 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
                        focus:outline-none focus:ring-1 focus:ring-primary-500"
             required
           />
+        </div>
+      )}
+
+      {/* Gateway account for the DeepSeek preset */}
+      {provider === 'deepseek' && (
+        <div className="mb-2">
+          {apiAccounts === null ? (
+            <p className="text-xs text-gray-400">Looking for gateway accounts on {selectedHost?.name || 'this host'}…</p>
+          ) : apiAccounts.length === 0 ? (
+            <p className="text-xs text-amber-400/80">
+              {selectedHost?.name || 'This host'} has no gateway API account. DeepSeek needs one whose key
+              includes {DEEPSEEK.model} (slab-emsim is on zlmc and garage-wsl).
+            </p>
+          ) : (
+            <>
+              <select
+                value={apiAccountDir}
+                onChange={(e) => setApiAccountDir(e.target.value)}
+                className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white
+                           focus:outline-none focus:ring-1 focus:ring-primary-500"
+              >
+                {apiAccounts.map((a) => (
+                  <option key={a.dir} value={a.dir}>{a.label || a.dir.split('/').pop()}</option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                Claude Code running {DEEPSEEK.model}, billed to this key. Subagents and background
+                calls use DeepSeek too. The key must include DeepSeek: slab-emsim does, stanford-api doesn&apos;t.
+              </p>
+            </>
+          )}
         </div>
       )}
 

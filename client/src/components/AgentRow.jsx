@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { hasChatView } from '../lib/providerCaps';
+import { hasChatView, iconProvider } from '../lib/providerCaps';
 import { useApp } from '../context/AppContext';
 import ProviderIcon from './ProviderIcon';
 import { agentState, sinceLabel } from '../lib/agentState';
@@ -113,7 +113,7 @@ function AgentRow({ agent, showProject = false }) {
             Stop button and off the right edge of a phone screen. The name needs its
             own truncating span, and the provider icon must not shrink. */}
         <div className="font-medium text-white text-sm flex items-center gap-1.5 min-w-0">
-          <ProviderIcon provider={provider} className="w-3.5 h-3.5 flex-shrink-0" />
+          <ProviderIcon provider={iconProvider(agent.config)} className="w-3.5 h-3.5 flex-shrink-0" />
           <span className="truncate">{agent.name}</span>
           {st.stale && (
             <span
