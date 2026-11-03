@@ -3390,6 +3390,15 @@ function ChatView({ agentId, session, onMeta }) {
             The agent is showing {blockingPrompt} above — it won't read a message until that's answered.
           </div>
         )}
+        {/* The reason also lives in the chip's title, but a tooltip does not exist on a
+            phone: a failed upload there was just a red chip with no explanation. */}
+        {attachments.some((a) => a.status === 'error') && (
+          <div className="text-xs text-red-400 mb-1 space-y-0.5">
+            {attachments.filter((a) => a.status === 'error').map((a) => (
+              <div key={a.id} className="break-words">{a.name}: {a.error}</div>
+            ))}
+          </div>
+        )}
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mb-1.5">
             {attachments.map((a) => (

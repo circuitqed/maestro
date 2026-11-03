@@ -31,7 +31,7 @@ import { usageForAgent } from '../services/usage.js';
 import { isRemote, isValidSessionName, execOnHost, shellQuote, sshBaseArgs, remoteWrap, isHostUnreachable, describeHostError } from '../services/hosts.js';
 import { sanitizeSessionName, uniqueSessionName } from '../services/sessions.js';
 import { appendAgentLane } from '../services/scaffold.js';
-import { resolveAgentWorkingDir, ensureDirOnHost } from '../services/projectPaths.js';
+import { resolveAgentFileRoot, ensureDirOnHost } from '../services/projectPaths.js';
 import { pinnedTranscriptExists, codexRolloutExists } from '../services/transcript.js';
 import { receiveUpload } from '../services/upload.js';
 import { resolveTranscriptFile, readTranscriptTail } from '../services/transcript.js';
@@ -597,7 +597,7 @@ router.post('/:id/upload', async (req, res) => {
     if (agent.host_id && !host) return res.status(400).json({ error: 'Unknown host' });
 
     const project = agent.project_id ? getProject(agent.project_id) : null;
-    const workingDir = resolveAgentWorkingDir(agent, project, host);
+    const workingDir = await resolveAgentFileRoot(agent, project, host);
     if (!workingDir) return res.status(400).json({ error: 'No working directory for this agent' });
 
     // Under the agent's own working dir (per-project), so attachments never leak
@@ -759,7 +759,7 @@ router.get('/:id/file', async (req, res) => {
     if (agent.host_id && !host) return res.status(400).json({ error: 'Unknown host' });
 
     const project = agent.project_id ? getProject(agent.project_id) : null;
-    const workingDir = resolveAgentWorkingDir(agent, project, host);
+    const workingDir = await resolveAgentFileRoot(agent, project, host);
     if (!workingDir) return res.status(400).json({ error: 'No working directory for this agent' });
 
     const rawPath = typeof req.query.path === 'string' ? req.query.path.trim() : '';

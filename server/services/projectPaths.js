@@ -40,6 +40,26 @@ export function resolveAgentWorkingDir(agent, project, host) {
 }
 
 /**
+ * The directory an agent ACTUALLY runs in, for routes that read or write files
+ * next to it (chat attachments, the file viewer).
+ *
+ * resolveAgentWorkingDir() answers "what is configured", and null is a real
+ * answer there: startAgentSession() then launches tmux without `-c`, so the agent
+ * runs in the host's $HOME. Every host shell (no project by design) and any agent
+ * on a project with an empty path is like this. Treating null as "nowhere" made
+ * those agents refuse every upload with a bare red failure while the agent itself
+ * was happily working in ~. So fall back to the same $HOME tmux used.
+ */
+export async function resolveAgentFileRoot(agent, project, host) {
+  const configured = resolveAgentWorkingDir(agent, project, host);
+  if (configured) return configured;
+  if (!isRemote(host)) return process.env.HOME || null;
+  const { stdout } = await execOnHost(host, 'printf %s "$HOME"');
+  const home = String(stdout || '').trim();
+  return home.startsWith('/') ? home : null;
+}
+
+/**
  * Ensure a directory exists on a host.
  *   - local  => fs.mkdirSync(path, { recursive: true })
  *   - remote => execOnHost(host, `mkdir -p <shellQuoted path>`)
