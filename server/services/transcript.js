@@ -16,6 +16,7 @@ import {
   setAgentClaudeSessionId,
 } from './db.js';
 import { resolveAgentWorkingDir } from './projectPaths.js';
+import { AGY_DIR, agyConversationFromPath, transcriptLineParser } from './agyTranscript.js';
 
 // A single transcript line can legitimately be large (base64 images embedded in
 // tool_result records), so the cap is generous. It only exists to bound memory
@@ -211,6 +212,53 @@ export async function resolveCodexRollout(host, sessionName, cwd, pinnedId, excl
 }
 
 /**
+ * Locate an Antigravity agent's transcript (format and translation: agyTranscript.js).
+ *
+ * agy holds `presence/<conversation-id>.lock` open for as long as a conversation is
+ * live, so the pane's own process names its conversation exactly — the same "ask
+ * the live process" rule as Codex, without the mtime guessing. Then, for a stopped
+ * agent: the pinned id, then agy's own cache/last_conversations.json, which maps
+ * each workspace directory to the conversation last used there.
+ *
+ * `agyHome` is the agent's alternate HOME (an account other than the default), or
+ * null for the real one. Returns an absolute host path, or null.
+ */
+export async function resolveAgyTranscript(host, sessionName, agyHome, cwd, pinnedId) {
+  if (!sessionName || !isValidSessionName(sessionName)) return null;
+  const base = agyHome ? `${shellQuote(agyHome)}/${AGY_DIR}` : `"$HOME"/${AGY_DIR}`;
+  const script = [
+    `S=${shellQuote(sessionName)}; C=${shellQuote(cwd || '')}; P=${shellQuote(isUuid(pinnedId) ? pinnedId : '')}; B=${base}`,
+    // The full stream when present; transcript.jsonl has long fields cut short.
+    `t(){ for n in transcript_full.jsonl transcript.jsonl; do f="$B/brain/$1/.system_generated/logs/$n"; [ -f "$f" ] && { echo "$f"; return 0; }; done; return 1; }`,
+    `m(){ stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }`,
+    // pane -> bash -lc -> agy: the same two generations the Codex lookup walks.
+    `pane=$(tmux list-panes -t "=$S:" -F '#{pane_pid}' 2>/dev/null | head -1)`,
+    `if [ -n "$pane" ]; then`,
+    `  kids=$(pgrep -P "$pane" 2>/dev/null)`,
+    `  gkids=$(printf '%s\\n' "$kids" | grep -v '^$' | while read -r k; do pgrep -P "$k" 2>/dev/null; done)`,
+    `  ids=$(printf '%s\\n%s\\n%s' "$pane" "$kids" "$gkids" | grep -v '^$' | sort -u | while read -r p; do`,
+    `      ls -l "/proc/$p/fd" 2>/dev/null | sed -n 's|.*/presence/\\([0-9a-fA-F-]\\{36\\}\\)\\.lock$|\\1|p'`,
+    `      lsof -p "$p" -Fn 2>/dev/null | sed -n 's|^n.*/presence/\\([0-9a-fA-F-]\\{36\\}\\)\\.lock$|\\1|p'`,
+    `    done | sort -u)`,
+    // More than one lock has never been seen; if it happens, the most recently
+    // written conversation is the one being talked to.
+    `  f=$(printf '%s\\n' "$ids" | grep -v '^$' | while read -r i; do x=$(t "$i") && printf '%s\\t%s\\n' "$(m "$x")" "$x"; done | sort -rn | head -1 | cut -f2)`,
+    `  [ -n "$f" ] && { echo "$f"; exit 0; }`,
+    `fi`,
+    `[ -n "$P" ] && t "$P" && exit 0`,
+    `[ -n "$C" ] || exit 0`,
+    `i=$(grep -F "\\"$C\\":" "$B/cache/last_conversations.json" 2>/dev/null | sed -n 's|.*: *"\\([0-9a-fA-F-]\\{36\\}\\)".*|\\1|p' | head -1)`,
+    `[ -n "$i" ] && t "$i"`,
+  ].join('\n');
+  try {
+    const { stdout } = await execOnHost(host, script);
+    return firstLine(stdout) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Whether a pinned Codex rollout still exists on the host — the Codex counterpart of
  * pinnedTranscriptExists. Codex names its rollouts rollout-<ts>-<uuid>.jsonl under a
  * date hierarchy, so the id has to be globbed for rather than looked up by path.
@@ -259,10 +307,27 @@ export async function resolveTranscriptFile(agent, host) {
     return file;
   }
 
-  // Antigravity writes no transcript Maestro can render; its chat is prompts and
-  // the send box only. Searching Claude's folders for it could only ever find some
-  // other agent's conversation in the same directory.
-  if (agent && agent.config && agent.config.provider === 'antigravity') return null;
+  // Antigravity: its own files, located from the live process (see
+  // resolveAgyTranscript), and never Claude's folders, where the search below could
+  // only turn up another agent's conversation from the same directory.
+  if (agent && agent.config && agent.config.provider === 'antigravity') {
+    const project = agent.project_id ? getProject(agent.project_id) : null;
+    const cwd = resolveAgentWorkingDir(agent, project, host);
+    const file = await resolveAgyTranscript(
+      host,
+      agent.screen_session,
+      agent.config.agyHome || null,
+      cwd,
+      agent.claude_session_id
+    );
+    // Pin it, as Codex does, so a stopped agent's chat still opens its last
+    // conversation rather than whichever one agy last used in that directory.
+    const id = agyConversationFromPath(file);
+    if (id && id !== agent.claude_session_id) {
+      try { setAgentClaudeSessionId(agent.id, id); } catch { /* optimisation only */ }
+    }
+    return file;
+  }
 
   // 0. The id the live process was LAUNCHED with, used only to seed the search when
   //    the stored pin is missing or points at nothing. It is not an answer on its
@@ -526,8 +591,10 @@ export async function readTranscriptTail(agent, host, k) {
       if (done) return;
       done = true;
       const records = [];
+      const parse = transcriptLineParser(agent, file);
       for (const l of lines) {
-        try { records.push(JSON.parse(l)); } catch { /* skip malformed */ }
+        const r = parse(l);
+        if (r) records.push(r);
       }
       resolve({ records, atStart: lines.length < k });
     };
@@ -618,6 +685,7 @@ export function setupTranscriptWS(wss) {
         }
 
         let buffer = '';
+        const parse = transcriptLineParser(agent, filePath);
         child.stdout.setEncoding('utf8');
         child.stdout.on('data', (chunk) => {
           buffer += chunk;
@@ -634,12 +702,8 @@ export function setupTranscriptWS(wss) {
             buffer = buffer.slice(idx + 1);
             const trimmed = line.trim();
             if (!trimmed) continue;
-            let record;
-            try {
-              record = JSON.parse(trimmed);
-            } catch {
-              continue; // skip malformed / partial lines
-            }
+            const record = parse(trimmed); // null: malformed / partial / skipped line
+            if (!record) continue;
             if (ws.readyState === ws.OPEN) {
               ws.send(JSON.stringify({ type: 'record', record }));
             }

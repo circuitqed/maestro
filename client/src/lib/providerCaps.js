@@ -1,7 +1,8 @@
-// Providers whose agents are worth opening the chat view for. A transcript renderer
-// exists only for claude and codex, but the chat is also where prompts are answered
-// and messages are sent — so a provider without a renderer still belongs here: it
-// shows prompts and an empty history rather than a conversation. Kept in one place
+// Providers whose agents are worth opening the chat view for. All three have a
+// transcript: claude and codex natively, antigravity translated server-side into
+// Claude's record shapes (server/services/agyTranscript.js). A provider without one
+// would still belong here, since the chat is also where prompts are answered and
+// messages sent; it would show prompts and an empty history. Kept in one place
 // because the gate used to be duplicated in two components, which is how an
 // Antigravity agent ended up with no Chat button at all.
 export const CHAT_PROVIDERS = ['claude', 'codex', 'antigravity'];

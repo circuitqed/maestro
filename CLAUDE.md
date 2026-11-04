@@ -194,6 +194,14 @@ panel/modal header switches live. The tmux TUI stays the single source of truth:
   in the project's encoded-cwd dir. Start chooses `--session-id` (first/empty) vs
   `--resume` (existing transcript) by whether the file already exists — Claude
   rejects `--session-id` when it exists and `--resume` when it doesn't.
+- **Antigravity (agy) transcripts** live at
+  `<home>/.gemini/antigravity-cli/brain/<conv-id>/.system_generated/logs/transcript_full.jsonl`
+  (`transcript.jsonl` beside it truncates long fields). The live agy process holds
+  `presence/<conv-id>.lock` open, which names its conversation exactly; fallbacks are
+  the pin, then agy's `cache/last_conversations.json` (cwd → conv id).
+  `agyTranscript.js` translates each step into Claude's record shapes server-side, so
+  the client renders it with the Claude path unchanged. A tool output always sits at
+  the step right after its call, so pairing is by step index and stateless.
 
 ## Terminal UX
 
