@@ -22,7 +22,8 @@ const PROVIDERS = [
 // DeepSeek V4.1 Flash, as Stanford's AI API Gateway names it. The exact spaced name
 // is the only one accepted -- the kebab-case form is rejected -- and /v1/models does
 // not list it even for keys that can call it, so it cannot be discovered, only known.
-// Only some gateway keys carry it (slab-emsim does, stanford-api does not).
+// Only some gateway keys carry it: slab-emsim since it was issued, stanford-api since
+// its key-change request went through (~2026-11-03; em-sim-deepseek runs on it).
 const DEEPSEEK = { model: 'DeepSeek V4.1 Flash 1017', preferredAccount: 'slab-emsim' };
 
 function sanitizeSessionName(name) {
@@ -376,7 +377,7 @@ function AddAgentForm({ projectId, onClose, type = 'agent', showProjectSelector 
               </select>
               <p className="text-xs text-gray-500 mt-1">
                 Claude Code running {DEEPSEEK.model}, billed to this key. Subagents and background
-                calls use DeepSeek too. The key must include DeepSeek: slab-emsim does, stanford-api doesn&apos;t.
+                calls use DeepSeek too. The key must include DeepSeek (slab-emsim and stanford-api both do).
               </p>
             </>
           )}
