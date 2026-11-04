@@ -259,6 +259,11 @@ export async function resolveTranscriptFile(agent, host) {
     return file;
   }
 
+  // Antigravity writes no transcript Maestro can render; its chat is prompts and
+  // the send box only. Searching Claude's folders for it could only ever find some
+  // other agent's conversation in the same directory.
+  if (agent && agent.config && agent.config.provider === 'antigravity') return null;
+
   // 0. The id the live process was LAUNCHED with, used only to seed the search when
   //    the stored pin is missing or points at nothing. It is not an answer on its
   //    own: argv never changes, so it still names the original session long after
@@ -411,6 +416,37 @@ function firstLine(stdout) {
     .split('\n')
     .map((s) => s.trim())
     .find(Boolean) || null;
+}
+
+/**
+ * The session id the agent's LIVE process was launched with (--session-id or
+ * --resume in the pane process's argv). Only a seed for resolveTranscriptFile —
+ * argv never changes after a fork, so the lineage check there still applies.
+ *
+ * c8dd202 deleted this while keeping its one call, so every agent with no pinned
+ * id threw "liveSessionId is not defined" and its chat showed only that error:
+ * all Antigravity agents (never pinned) and any Claude agent whose pin was empty.
+ *
+ * Uses `ps` rather than /proc so it works on the mac mini too. Returns null for
+ * anything unexpected; the caller falls back to the directory search.
+ */
+async function liveSessionId(agent, host) {
+  const name = agent && agent.screen_session;
+  if (!name || !isValidSessionName(name)) return null;
+  const cmd =
+    `pid=$(tmux list-panes -t ${shellQuote(`=${name}:`)} -F '#{pane_pid}' 2>/dev/null | head -1); ` +
+    '[ -z "$pid" ] && exit 0; ' +
+    'kids=$(pgrep -P "$pid" 2>/dev/null | tr "\n" "," | sed "s/,$//"); ' +
+    '[ -z "$kids" ] && exit 0; ' +
+    'ps -o args= -p "$kids" 2>/dev/null | ' +
+    "grep -oE '(--resume|--session-id)[= ]+[0-9a-fA-F-]{36}' | grep -oE '[0-9a-fA-F-]{36}' | head -1";
+  try {
+    const { stdout } = await execOnHost(host, cmd, { timeout: 15000 });
+    const id = firstLine(stdout);
+    return id && isUuid(id) ? id : null;
+  } catch {
+    return null;  // agent stopped, host unreachable, no ps -- the directory search still works
+  }
 }
 
 /**
