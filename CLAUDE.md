@@ -124,6 +124,7 @@ Open http://localhost:3000 for development (Vite dev server with HMR)
 | POST | /api/agents/:id/input | Inject text into the agent's tmux session (chat send box) |
 | POST | /api/agents/:id/answer | Answer an active select prompt (presses option number 1-9) |
 | GET | /api/agents/:id/pane | Capture the live pane (chat uses it to detect active questions) |
+| GET | /api/agents/:id/view?path= | Open an agent's HTML file as a sandboxed page (redirects to `/api/view/<token>/…`) |
 | GET | /api/agents/:id/transcript/meta | Whether a transcript file was located `{available, sessionId}` |
 | DELETE | /api/agents/:id | Delete agent |
 | GET | /api/hosts | List hosts |
@@ -194,6 +195,16 @@ panel/modal header switches live. The tmux TUI stays the single source of truth:
   in the project's encoded-cwd dir. Start chooses `--session-id` (first/empty) vs
   `--resume` (existing transcript) by whether the file already exists — Claude
   rejects `--session-id` when it exists and `--resume` when it doesn't.
+- **HTML files open as pages.** A chat link to `.html`/`.htm` (and the viewer's
+  **Open page** button) goes to `GET /api/agents/:id/view?path=`, which redirects to
+  `/api/view/<token>/<absolute path>`. Every response there carries
+  `Content-Security-Policy: sandbox allow-scripts …` (never `allow-same-origin`): the
+  page runs in an opaque origin, so its scripts can't read Maestro's cookies or
+  storage, and its requests to Maestro go cross-site without the session cookie.
+  Since the cookie can't authenticate the page's own assets, the token does: an HMAC
+  over the agent id and a 4 h expiry, granting what `/file` grants for that agent.
+  Relative links (`plot.png`, `app.js`) resolve under the same prefix. `/file` still
+  serves HTML as text/plain; don't loosen it — `/view` is the one place markup runs.
 - **Antigravity (agy) transcripts** live at
   `<home>/.gemini/antigravity-cli/brain/<conv-id>/.system_generated/logs/transcript_full.jsonl`
   (`transcript.jsonl` beside it truncates long fields). The live agy process holds

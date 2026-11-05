@@ -3,7 +3,7 @@ import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
 import { spawn } from 'child_process';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHmac, timingSafeEqual } from 'crypto';
 import { requireAuth } from '../middleware/auth.js';
 import {
   getAgents,
@@ -755,107 +755,220 @@ router.get('/:id/file', async (req, res) => {
     if (!agent) return res.status(404).json({ error: 'Agent not found' });
     if (!checkAgentAccess(req, res, agent)) return;
 
-    const host = agent.host_id ? getHost(agent.host_id) : null;
-    if (agent.host_id && !host) return res.status(400).json({ error: 'Unknown host' });
-
-    const project = agent.project_id ? getProject(agent.project_id) : null;
-    const workingDir = await resolveAgentFileRoot(agent, project, host);
-    if (!workingDir) return res.status(400).json({ error: 'No working directory for this agent' });
-
     const rawPath = typeof req.query.path === 'string' ? req.query.path.trim() : '';
-    if (!rawPath) return res.status(400).json({ error: 'path is required' });
-    if (rawPath.includes('\0')) return res.status(400).json({ error: 'Invalid path' });
+    const t = await fileTarget(agent, rawPath);
+    if (t.error) return res.status(t.code).json({ error: t.error });
 
-    // Relative paths resolve against the working dir (hosts are unix; posix semantics).
-    // Absolute paths (and the resolved realpath) are confined to `root`. Remote agents
-    // routinely `cd` into sibling project dirs under the host's default_root — e.g. an
-    // agent whose Claude cwd is .../qubit-designer that writes files in .../awr-qubit-sim
-    // — so widen the confinement root to default_root when it's an ancestor of the
-    // working dir; otherwise a correct absolute link into a sibling dir is wrongly 403'd.
-    const wd = workingDir.replace(/\/+$/, '');
-    let root = wd;
-    if (isRemote(host) && host.default_root) {
-      const dr = host.default_root.replace(/\/+$/, '');
-      if (dr && (wd === dr || wd.startsWith(dr + '/'))) root = dr;
-    }
-    // …and agents stage scratch artifacts in the host temp dir — a preview render, an
-    // exported plot — then link them in chat. Those 403'd even though the file is
-    // exactly what the agent just told the user to look at. Symlink escapes are still
-    // blocked: confinement is re-checked against the RESOLVED path below, so a link in
-    // /tmp pointing at /etc/shadow resolves outside every root and is refused.
-    const roots = [root, ...EXTRA_FILE_ROOTS.filter((r) => !within(r, root))];
-    const candidate = rawPath.startsWith('/')
-      ? path.posix.normalize(rawPath)
-      : path.posix.normalize(path.posix.join(wd, rawPath));
-
-    if (!roots.some((r) => within(candidate, r))) {
-      return res.status(403).json({ error: 'Path is outside the allowed directory' });
-    }
-
-    const base = path.posix.basename(candidate);
+    const base = path.posix.basename(t.candidate);
     const { type, inline, csp } = fileServeType(base);
     const forceDownload = req.query.download === '1' || req.query.download === 'true';
-    const setHeaders = () => {
+    await streamFile(req, res, t, () => {
       res.setHeader('Content-Type', type);
       res.setHeader('X-Content-Type-Options', 'nosniff');
       if (csp) res.setHeader('Content-Security-Policy', csp);
       res.setHeader('Content-Disposition', `${inline && !forceDownload ? 'inline' : 'attachment'}; filename="${base.replace(/[\r\n"\\]/g, '_')}"`);
       res.setHeader('Cache-Control', 'private, no-store');
-    };
-    const failNow = (code) => {
-      if (!res.headersSent) res.status(code).end();
-      else res.end();
-    };
-
-    if (isRemote(host)) {
-      // One SSH round-trip does resolve + confine + is-file + cat atomically: this
-      // closes the cross-round-trip TOCTOU window and turns a failed read into an
-      // HTTP error (exit code) instead of a silent empty/truncated 200. Path-based
-      // confinement still can't detect hardlinks — bounded by the agent's own trust
-      // boundary (it can already read any same-fs file it has access to).
-      setHeaders();
-      const script =
-        `f=$(realpath ${shellQuote(candidate)} 2>/dev/null); ` +
-        `if [ -z "$f" ] || [ ! -f "$f" ]; then ${findByBaseSh(wd, base)} fi; ` +
-        `[ -n "$f" ] || exit 3; ` +
-        `ok=0; for r in ${roots.map(shellQuote).join(' ')}; do ` +
-        `rr=$(realpath "$r" 2>/dev/null) || continue; ` +
-        `case "$f" in "$rr"/*) ok=1; break;; esac; done; ` +
-        `[ "$ok" = 1 ] || exit 4; ` +
-        `[ -f "$f" ] || exit 5; ` +
-        `exec cat -- "$f"`;
-      const child = spawn('ssh', [...sshBaseArgs(host), host.ssh_target, remoteWrap(host, script)], { stdio: ['ignore', 'pipe', 'ignore'] });
-      child.on('error', () => failNow(502));
-      child.stdout.on('error', () => failNow(502));
-      child.stdout.pipe(res, { end: false }); // we end() ourselves in 'close' based on exit code
-      child.on('close', (code) => {
-        if (res.headersSent) return res.end();     // bytes streamed -> just finish
-        if (code === 0) return res.end();           // empty file, success (200)
-        failNow(code === 4 ? 403 : 404);            // 4=outside dir; 2/3/5/other=not found/unreadable
-      });
-      req.on('close', () => { try { child.kill('SIGTERM'); } catch { /* already gone */ } });
-    } else {
-      // Local: re-confine after resolving symlinks. (The realpath->open window is a
-      // sub-ms in-process race; same hardlink caveat as above.)
-      let realTarget = await hostRealpath(host, candidate);
-      if (!realTarget || !(await hostIsFile(host, realTarget))) {
-        const found = await findByBaseLocal(wd, base); // bare-name fallback, see findByBaseSh
-        realTarget = found ? await hostRealpath(host, found) : null;
-      }
-      if (!realTarget) return res.status(404).json({ error: 'File not found' });
-      const realRoots = (await Promise.all(roots.map((r) => hostRealpath(host, r)))).filter(Boolean);
-      if (!realRoots.some((r) => within(realTarget, r))) {
-        return res.status(403).json({ error: 'Path is outside the allowed directory' });
-      }
-      if (!(await hostIsFile(host, realTarget))) return res.status(404).json({ error: 'Not a file' });
-      setHeaders();
-      const stream = fs.createReadStream(realTarget);
-      stream.on('error', () => failNow(500));
-      req.on('close', () => stream.destroy());
-      stream.pipe(res);
-    }
+    });
   } catch (err) {
     if (!res.headersSent) res.status(500).json({ error: err.message });
+    else res.end();
+  }
+});
+
+// Open an HTML file as a page. Redirects to /api/view/<token>/<absolute path>, served
+// by viewRouter below. See VIEW_CSP for why that is safe to do in our origin.
+router.get('/:id/view', async (req, res) => {
+  try {
+    const agent = getAgent(req.params.id);
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
+    if (!checkAgentAccess(req, res, agent)) return;
+    const rawPath = typeof req.query.path === 'string' ? req.query.path.trim() : '';
+    const t = await fileTarget(agent, rawPath);
+    if (t.error) return res.status(t.code).json({ error: t.error });
+    const real = await realFileTarget(t);
+    if (!real) return res.status(404).json({ error: 'File not found' });
+    res.redirect(302, `/api/view/${viewToken(agent.id)}${real.split('/').map(encodeURIComponent).join('/')}`);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Where a file link may point, and the absolute path it names. Returns
+// { host, wd, roots, candidate } or { code, error }.
+async function fileTarget(agent, rawPath) {
+  const host = agent.host_id ? getHost(agent.host_id) : null;
+  if (agent.host_id && !host) return { code: 400, error: 'Unknown host' };
+
+  const project = agent.project_id ? getProject(agent.project_id) : null;
+  const workingDir = await resolveAgentFileRoot(agent, project, host);
+  if (!workingDir) return { code: 400, error: 'No working directory for this agent' };
+
+  if (!rawPath) return { code: 400, error: 'path is required' };
+  if (rawPath.includes('\0')) return { code: 400, error: 'Invalid path' };
+
+  // Relative paths resolve against the working dir (hosts are unix; posix semantics).
+  // Absolute paths (and the resolved realpath) are confined to `root`. Remote agents
+  // routinely `cd` into sibling project dirs under the host's default_root — e.g. an
+  // agent whose Claude cwd is .../qubit-designer that writes files in .../awr-qubit-sim
+  // — so widen the confinement root to default_root when it's an ancestor of the
+  // working dir; otherwise a correct absolute link into a sibling dir is wrongly 403'd.
+  const wd = workingDir.replace(/\/+$/, '');
+  let root = wd;
+  if (isRemote(host) && host.default_root) {
+    const dr = host.default_root.replace(/\/+$/, '');
+    if (dr && (wd === dr || wd.startsWith(dr + '/'))) root = dr;
+  }
+  // …and agents stage scratch artifacts in the host temp dir — a preview render, an
+  // exported plot — then link them in chat. Those 403'd even though the file is
+  // exactly what the agent just told the user to look at. Symlink escapes are still
+  // blocked: confinement is re-checked against the RESOLVED path below, so a link in
+  // /tmp pointing at /etc/shadow resolves outside every root and is refused.
+  const roots = [root, ...EXTRA_FILE_ROOTS.filter((r) => !within(r, root))];
+  const candidate = rawPath.startsWith('/')
+    ? path.posix.normalize(rawPath)
+    : path.posix.normalize(path.posix.join(wd, rawPath));
+
+  if (!roots.some((r) => within(candidate, r))) {
+    return { code: 403, error: 'Path is outside the allowed directory' };
+  }
+  return { host, wd, roots, candidate };
+}
+
+// Remote: one SSH round-trip does resolve + confine + is-file + `then` atomically.
+// This closes the cross-round-trip TOCTOU window and turns a failed read into an
+// exit code instead of a silent empty/truncated 200. Path-based confinement still
+// can't detect hardlinks — bounded by the agent's own trust boundary (it can already
+// read any same-fs file it has access to).
+function remoteFileScript({ wd, roots, candidate }, then) {
+  const base = path.posix.basename(candidate);
+  return `f=$(realpath ${shellQuote(candidate)} 2>/dev/null); ` +
+    `if [ -z "$f" ] || [ ! -f "$f" ]; then ${findByBaseSh(wd, base)} fi; ` +
+    `[ -n "$f" ] || exit 3; ` +
+    `ok=0; for r in ${roots.map(shellQuote).join(' ')}; do ` +
+    `rr=$(realpath "$r" 2>/dev/null) || continue; ` +
+    `case "$f" in "$rr"/*) ok=1; break;; esac; done; ` +
+    `[ "$ok" = 1 ] || exit 4; ` +
+    `[ -f "$f" ] || exit 5; ` + then;
+}
+
+// Local: resolve symlinks, then re-confine. (The realpath->open window is a sub-ms
+// in-process race; same hardlink caveat as above.) Returns the real path or null.
+async function localFileTarget({ host, wd, roots, candidate }) {
+  let realTarget = await hostRealpath(host, candidate);
+  if (!realTarget || !(await hostIsFile(host, realTarget))) {
+    const found = await findByBaseLocal(wd, path.posix.basename(candidate)); // bare-name fallback, see findByBaseSh
+    realTarget = found ? await hostRealpath(host, found) : null;
+  }
+  if (!realTarget) return null;
+  const realRoots = (await Promise.all(roots.map((r) => hostRealpath(host, r)))).filter(Boolean);
+  if (!realRoots.some((r) => within(realTarget, r))) return null;
+  return (await hostIsFile(host, realTarget)) ? realTarget : null;
+}
+
+async function realFileTarget(t) {
+  if (!isRemote(t.host)) return localFileTarget(t);
+  try {
+    const { stdout } = await execOnHost(t.host, remoteFileScript(t, 'printf %s "$f"'));
+    return String(stdout).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// Send the file, confined as above. setHeaders runs before any byte is written.
+async function streamFile(req, res, t, setHeaders) {
+  const failNow = (code) => {
+    if (!res.headersSent) res.status(code).end();
+    else res.end();
+  };
+  if (isRemote(t.host)) {
+    setHeaders();
+    const child = spawn('ssh', [...sshBaseArgs(t.host), t.host.ssh_target, remoteWrap(t.host, remoteFileScript(t, 'exec cat -- "$f"'))], { stdio: ['ignore', 'pipe', 'ignore'] });
+    child.on('error', () => failNow(502));
+    child.stdout.on('error', () => failNow(502));
+    child.stdout.pipe(res, { end: false }); // we end() ourselves in 'close' based on exit code
+    child.on('close', (code) => {
+      if (res.headersSent) return res.end();     // bytes streamed -> just finish
+      if (code === 0) return res.end();           // empty file, success (200)
+      failNow(code === 4 ? 403 : 404);            // 4=outside dir; 2/3/5/other=not found/unreadable
+    });
+    req.on('close', () => { try { child.kill('SIGTERM'); } catch { /* already gone */ } });
+    return;
+  }
+  const realTarget = await localFileTarget(t);
+  if (!realTarget) return res.status(404).json({ error: 'File not found' });
+  setHeaders();
+  const stream = fs.createReadStream(realTarget);
+  stream.on('error', () => failNow(500));
+  req.on('close', () => stream.destroy());
+  stream.pipe(res);
+}
+
+// --- HTML files as pages --------------------------------------------------------
+//
+// An agent's report is often an HTML page with its own scripts, styles and images
+// beside it. Serving it as text/plain (what /file does, so agent-authored markup can
+// never run in Maestro's origin) shows the source instead of the page.
+//
+// /api/view serves it as a real page, made safe by VIEW_CSP's `sandbox`: the
+// document gets a unique opaque origin, so its scripts cannot read Maestro's
+// cookies, storage or DOM, and its requests to Maestro are cross-site, so the
+// session cookie (SameSite=Lax by default) is not sent and it cannot act as you.
+// No allow-same-origin, ever — that one flag would undo all of it.
+//
+// Because the page cannot carry the session cookie, its relative assets (plot.png,
+// app.js) authenticate with a capability in the URL instead: /api/view/<token>/<path>,
+// where the token is an HMAC over the agent id and an expiry. Siblings resolve under
+// the same prefix, so relative links just work. The token grants exactly what the
+// agent's /file route grants for VIEW_TTL_MS, and no-referrer keeps it from leaking
+// to CDNs the page loads from. A page's scripts can read other files in the agent's
+// roots — which the agent that wrote it could already read itself.
+const VIEW_CSP = 'sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads';
+const VIEW_TTL_MS = 4 * 60 * 60 * 1000;
+const VIEW_KEY = process.env.SESSION_SECRET || 'maestro-secret-change-in-production';
+const VIEW_TYPES = {
+  html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8',
+  css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', mjs: 'text/javascript; charset=utf-8',
+  json: 'application/json', svg: 'image/svg+xml', wasm: 'application/wasm',
+  woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', otf: 'font/otf',
+};
+
+const viewSig = (agentId, exp) => createHmac('sha256', VIEW_KEY).update(`view\n${agentId}\n${exp}`).digest('base64url').slice(0, 32);
+function viewToken(agentId) {
+  const exp = Date.now() + VIEW_TTL_MS;
+  return `${agentId}.${exp}.${viewSig(agentId, exp)}`;
+}
+function checkViewToken(token) {
+  const [id, exp, sig] = String(token).split('.');
+  if (!id || !exp || !sig || Number(exp) < Date.now()) return null;
+  const want = viewSig(id, exp);
+  if (sig.length !== want.length || !timingSafeEqual(Buffer.from(sig), Buffer.from(want))) return null;
+  return id;
+}
+
+export const viewRouter = Router();
+viewRouter.get('/:token/*', async (req, res) => {
+  try {
+    const agentId = checkViewToken(req.params.token);
+    if (!agentId) return res.status(403).type('text/plain').send('This link has expired. Open the file again from the chat.\n');
+    const agent = getAgent(agentId);
+    if (!agent) return res.status(404).end();
+    const t = await fileTarget(agent, '/' + req.params[0]);
+    if (t.error) return res.status(t.code).type('text/plain').send(t.error + '\n');
+    const base = path.posix.basename(t.candidate);
+    const ext = (base.includes('.') ? base.split('.').pop() : '').toLowerCase();
+    const known = VIEW_TYPES[ext];
+    const { type, inline } = known ? { type: known, inline: true } : fileServeType(base);
+    await streamFile(req, res, t, () => {
+      res.setHeader('Content-Type', type);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Security-Policy', VIEW_CSP);
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${base.replace(/[\r\n"\\]/g, '_')}"`);
+      res.setHeader('Cache-Control', 'private, no-store');
+    });
+  } catch (err) {
+    if (!res.headersSent) res.status(500).type('text/plain').send(err.message + '\n');
     else res.end();
   }
 });

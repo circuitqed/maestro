@@ -185,6 +185,9 @@ function remarkFilePaths() {
   return (tree) => walk(tree);
 }
 
+const isHtmlPath = (p) => /\.html?$/i.test(String(p || ''));
+const viewUrl = (agentId, p) => `/api/agents/${encodeURIComponent(agentId)}/view?path=${encodeURIComponent(p)}`;
+
 // A link to a file in the agent's working dir. Left-click a text/markdown file opens
 // the in-app viewer; ctrl/cmd-click (or a non-viewable type) uses the raw endpoint.
 function FileLink({ path, className, title, children }) {
@@ -192,6 +195,15 @@ function FileLink({ path, className, title, children }) {
   const agentId = ctx && ctx.agentId;
   const openFile = ctx && ctx.openFile;
   if (!agentId) return <span className={className}>{children}</span>;
+  // An HTML file opens as a page (sandboxed, see /api/view on the server), in a new
+  // tab: showing its source in the viewer is rarely what a click on a report means.
+  if (isHtmlPath(path)) {
+    return (
+      <a href={viewUrl(agentId, path)} target="_blank" rel="noopener noreferrer" title={title || `Open ${path} as a page`} className={className}>
+        {children}
+      </a>
+    );
+  }
   const url = `/api/agents/${encodeURIComponent(agentId)}/file?path=${encodeURIComponent(path)}`;
   const onClick = (e) => {
     if (!openFile) return; // fall back to opening the raw endpoint
@@ -2422,6 +2434,17 @@ function FileViewer({ agentId, path, onClose, variant = 'modal' }) {
         >
           {svgSource ? 'Rendered' : 'Source'}
         </button>
+      )}
+      {isHtmlPath(path) && (
+        <a
+          href={viewUrl(agentId, path)}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Open as a web page in a new tab"
+          className="text-xs px-1.5 py-0.5 rounded border border-gray-600 text-gray-300 hover:text-white hover:border-gray-400"
+        >
+          Open page
+        </a>
       )}
       <a href={dlUrl} download={name} className="flex items-center gap-1 text-xs text-gray-300 hover:text-white" title="Download file">
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

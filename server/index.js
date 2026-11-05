@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 
 import authRoutes from './routes/auth.js';
 import projectsRoutes from './routes/projects.js';
-import agentsRoutes from './routes/agents.js';
+import agentsRoutes, { viewRouter } from './routes/agents.js';
 import connectionRoutes from './routes/connections.js';
 import hostsRoutes from './routes/hosts.js';
 import usageRoutes from './routes/usage.js';
@@ -85,6 +85,7 @@ app.use('/api/swarms', swarmsRoutes);  // browser-facing
 app.use('/api/auth', authRoutes);
 app.use('/api/projects', projectsRoutes);
 app.use('/api/agents', agentsRoutes);
+app.use('/api/view', viewRouter);  // HTML files as sandboxed pages; capability-URL authed
 app.use('/api/connections', connectionRoutes);
 app.use('/api/hosts', hostsRoutes);
 app.use('/api/usage', usageRoutes);  // browser-facing plan usage
