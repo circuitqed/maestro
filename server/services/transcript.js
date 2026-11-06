@@ -112,34 +112,56 @@ export async function pinnedTranscriptExists(host, sessionId, configDir = null) 
 }
 
 /**
- * Bring a session's transcript over from another account on this host, so an agent
- * switched to a different account RESUMES its conversation instead of starting blank.
+ * Make sure the copy of a session under the account an agent is about to run as is
+ * the MOST COMPLETE one on the host, so a switched agent resumes where it left off.
  *
- * Transcripts live inside the config dir, so after a switch (work ran out of usage,
- * em-sim-main moved to stanford-api) the pinned file is "absent" under the new
- * account, start chose --session-id, and the agent came up with an empty
- * conversation while its real one sat in ~/.claude-accts/work. Copying it (with its
- * sidecar dir of subagent and tool-result files) into the same project folder under
- * the new account is what lets --resume find it. A copy, not a move: the old
- * account's history stays intact.
+ * Transcripts live inside the config dir, so switching accounts strands the
+ * conversation in the old one. Two failures came from that on 2026-11-06, when the
+ * work plan ran out and agents moved to stanford-api:
  *
- * Returns the new path, or null when no other account has it.
+ *   absent  em-sim-main and em-sim-axiem had never run on stanford-api, so start
+ *           chose --session-id and they came up with an empty conversation.
+ *   stale   em-sim-core and lab-platform HAD, days earlier, so a copy existed and
+ *           --resume picked it up: em-sim-core resumed at Nov 4 (322 messages of 930).
+ *
+ * "Most complete" is the copy with the most messages, NOT the newest timestamp:
+ * resuming a stale copy appends a fresh record to it at once, so by timestamp the
+ * stale copy wins. The copy is taken with its sidecar dir (subagent and tool-result
+ * files); a stale copy it replaces is kept beside it as .superseded-<time>, and the
+ * old account's own file is never touched.
+ *
+ * Returns the path under the target account when one now exists, else null.
  */
 export async function adoptTranscriptFromOtherAccount(host, sessionId, configDir = null) {
   if (!isUuid(sessionId)) return null;
   const name = shellQuote(`${sessionId}.jsonl`);
-  const dest = claudeHomeExpr(configDir);
+  const home = claudeHomeExpr(configDir);
+  let copies;
   try {
     const { stdout } = await execOnHost(
       host,
-      `src=$(ls -t "$HOME"/.claude/projects/*/${name} "$HOME"/.claude-accts/*/projects/*/${name} 2>/dev/null | head -1); ` +
-        '[ -z "$src" ] && exit 0; ' +
-        `dst=${dest}/projects/$(basename "$(dirname "$src")"); ` +
-        '[ "$src" = "$dst/$(basename "$src")" ] && exit 0; ' +
-        'mkdir -p "$dst" && cp -p "$src" "$dst/" && ' +
-        '{ [ ! -d "${src%.jsonl}" ] || cp -rp "${src%.jsonl}" "$dst/"; } && ' +
-        'echo "$dst/$(basename "$src")"',
+      `for f in "$HOME"/.claude/projects/*/${name} "$HOME"/.claude-accts/*/projects/*/${name} ` +
+        `${home}/projects/*/${name}; do [ -f "$f" ] && echo "$(grep -c '"parentUuid"' "$f")|$f"; done; true`,
       { timeout: 60000 }
+    );
+    copies = String(stdout || '').split('\n').map((l) => l.trim()).filter(Boolean)
+      .map((l) => { const k = l.indexOf('|'); return { n: parseInt(l.slice(0, k), 10) || 0, file: l.slice(k + 1) }; });
+  } catch {
+    return null;
+  }
+  if (!copies.length) return null;
+  const root = configDir || null;
+  const mine = (f) => (root ? f.startsWith(`${root}/projects/`) : /\/\.claude\/projects\//.test(f));
+  const best = copies.reduce((a, b) => (b.n > a.n ? b : a));
+  const current = copies.find((c) => mine(c.file));
+  if (mine(best.file) || (current && current.n >= best.n)) return current ? current.file : null;
+  try {
+    const { stdout } = await execOnHost(
+      host,
+      `src=${shellQuote(best.file)}; dst=${home}/projects/$(basename "$(dirname "$src")"); t="$dst/$(basename "$src")"; ` +
+        'mkdir -p "$dst" && { [ ! -f "$t" ] || mv "$t" "$t.superseded-$(date +%Y%m%d%H%M%S)"; } && cp -p "$src" "$t" && ' +
+        '{ [ ! -d "${src%.jsonl}" ] || cp -rp "${src%.jsonl}" "$dst/"; } && echo "$t"',
+      { timeout: 120000 }
     );
     return firstLine(stdout);
   } catch {

@@ -85,12 +85,11 @@ export async function startAgentSession(agent, host, { registerAgent } = {}) {
         // answering from ~/.claude would always say "absent", restarting the agent
         // with --session-id for a uuid that already exists, which Claude rejects.
         const cfgDir = (agent.config && agent.config.claudeConfigDir) || null;
-        claudeResume = await pinnedTranscriptExists(host, claudeSessionId, cfgDir);
-        // Switched accounts since this session was written: carry it over rather
-        // than start the agent blank (see adoptTranscriptFromOtherAccount).
-        if (!claudeResume) {
-          claudeResume = !!(await adoptTranscriptFromOtherAccount(host, claudeSessionId, cfgDir));
-        }
+        // Switched accounts since this session was written: bring over the most
+        // complete copy, so the agent neither starts blank nor resumes a stale copy
+        // left from an earlier stint on this account (adoptTranscriptFromOtherAccount).
+        claudeResume = !!(await adoptTranscriptFromOtherAccount(host, claudeSessionId, cfgDir))
+          || await pinnedTranscriptExists(host, claudeSessionId, cfgDir);
       } else {
         claudeSessionId = randomUUID();
         setAgentClaudeSessionId(agent.id, claudeSessionId);
