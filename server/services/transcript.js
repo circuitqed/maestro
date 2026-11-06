@@ -111,6 +111,42 @@ export async function pinnedTranscriptExists(host, sessionId, configDir = null) 
   return !!(await findPinnedTranscript(host, sessionId, configDir));
 }
 
+/**
+ * Bring a session's transcript over from another account on this host, so an agent
+ * switched to a different account RESUMES its conversation instead of starting blank.
+ *
+ * Transcripts live inside the config dir, so after a switch (work ran out of usage,
+ * em-sim-main moved to stanford-api) the pinned file is "absent" under the new
+ * account, start chose --session-id, and the agent came up with an empty
+ * conversation while its real one sat in ~/.claude-accts/work. Copying it (with its
+ * sidecar dir of subagent and tool-result files) into the same project folder under
+ * the new account is what lets --resume find it. A copy, not a move: the old
+ * account's history stays intact.
+ *
+ * Returns the new path, or null when no other account has it.
+ */
+export async function adoptTranscriptFromOtherAccount(host, sessionId, configDir = null) {
+  if (!isUuid(sessionId)) return null;
+  const name = shellQuote(`${sessionId}.jsonl`);
+  const dest = claudeHomeExpr(configDir);
+  try {
+    const { stdout } = await execOnHost(
+      host,
+      `src=$(ls -t "$HOME"/.claude/projects/*/${name} "$HOME"/.claude-accts/*/projects/*/${name} 2>/dev/null | head -1); ` +
+        '[ -z "$src" ] && exit 0; ' +
+        `dst=${dest}/projects/$(basename "$(dirname "$src")"); ` +
+        '[ "$src" = "$dst/$(basename "$src")" ] && exit 0; ' +
+        'mkdir -p "$dst" && cp -p "$src" "$dst/" && ' +
+        '{ [ ! -d "${src%.jsonl}" ] || cp -rp "${src%.jsonl}" "$dst/"; } && ' +
+        'echo "$dst/$(basename "$src")"',
+      { timeout: 60000 }
+    );
+    return firstLine(stdout);
+  } catch {
+    return null;
+  }
+}
+
 // The trailing UUID of a Codex rollout filename
 // (rollout-<ISO ts>-<uuid>.jsonl); null if the name doesn't match.
 function rolloutIdFromPath(p) {

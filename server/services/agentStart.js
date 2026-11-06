@@ -20,7 +20,7 @@ import { getProvider } from './providers.js';
 import { createSession, startProviderSession } from './tmux.js';
 import { execOnHost, isRemote, shellQuote, isHostUnreachable, describeHostError } from './hosts.js';
 import { resolveAgentWorkingDir } from './projectPaths.js';
-import { pinnedTranscriptExists, codexRolloutExists } from './transcript.js';
+import { pinnedTranscriptExists, codexRolloutExists, adoptTranscriptFromOtherAccount } from './transcript.js';
 
 function fail(code, message) {
   const err = new Error(message);
@@ -84,11 +84,13 @@ export async function startAgentSession(agent, host, { registerAgent } = {}) {
         // Anthropic account keeps its transcripts in its own config dir, and
         // answering from ~/.claude would always say "absent", restarting the agent
         // with --session-id for a uuid that already exists, which Claude rejects.
-        claudeResume = await pinnedTranscriptExists(
-          host,
-          claudeSessionId,
-          (agent.config && agent.config.claudeConfigDir) || null
-        );
+        const cfgDir = (agent.config && agent.config.claudeConfigDir) || null;
+        claudeResume = await pinnedTranscriptExists(host, claudeSessionId, cfgDir);
+        // Switched accounts since this session was written: carry it over rather
+        // than start the agent blank (see adoptTranscriptFromOtherAccount).
+        if (!claudeResume) {
+          claudeResume = !!(await adoptTranscriptFromOtherAccount(host, claudeSessionId, cfgDir));
+        }
       } else {
         claudeSessionId = randomUUID();
         setAgentClaudeSessionId(agent.id, claudeSessionId);
