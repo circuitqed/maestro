@@ -443,8 +443,11 @@ async function newerTranscriptInAgentDir(agent, host, pinned) {
       host,
       `for f in $(ls -t ${dir}/*.jsonl 2>/dev/null | head -5); do ` +
         `t=$(tail -c 200000 "$f" | grep -o '"timestamp":"[^"]*"' | tail -1 | grep -oE '[0-9T:.Z-]{20,}'); ` +
-        `n=$(grep -c ${shellQuote(pinnedId)} "$f" 2>/dev/null || echo 0); ` +
-        `printf '%s|%s|%s\n' "$t" "$n" "$f"; done`,
+        // grep -c already prints 0 when nothing matches (exiting 1); a `|| echo 0`
+        // here printed a SECOND 0 on its own line, splitting this file's record.
+        `n=$(grep -c ${shellQuote(pinnedId)} "$f" 2>/dev/null); ` +
+        `a=$(grep -m1 -o '"agentName":"[^"]*"' "$f" 2>/dev/null | sed 's/^"agentName":"//; s/"$//'); ` +
+        `printf '%s|%s|%s|%s\n' "$t" "$n" "$f" "$a"; done`,
       { timeout: 25000 }
     );
     lines = String(stdout || '').split('\n').map((x) => x.trim()).filter(Boolean);
@@ -455,7 +458,8 @@ async function newerTranscriptInAgentDir(agent, host, pinned) {
   let pinnedTs = null;
   const candidates = [];
   for (const line of lines) {
-    const [ts, nRaw, file] = line.split('|');
+    const [ts, nRaw, file, ...rest] = line.split('|');
+    const name = rest.join('|');
     // A blank timestamp means the probe failed to parse that file, not that the
     // file is old -- skipping silently is how a quoting bug in this very command
     // (BRE braces eaten by the template literal) made every candidate vanish.
@@ -466,7 +470,13 @@ async function newerTranscriptInAgentDir(agent, host, pinned) {
     // Descendants only. A handful of incidental mentions is not lineage: the real
     // thing cites its parent hundreds of times (321 for arxiver), whereas an
     // unrelated transcript that happens to name the id does so a few times.
-    if ((parseInt(nRaw, 10) || 0) < 10) continue;
+    //
+    // Or a session claude recorded under this agent's own --name. /clear starts a
+    // fresh transcript that cites its predecessor zero times, so lineage alone left
+    // em-sim-main's chat on the pre-/clear file (005ca968) while the agent worked in
+    // cdbf9587 -- whose agent-name record says em-sim-main.
+    const named = !!name && name === agent.name;
+    if (!named && (parseInt(nRaw, 10) || 0) < 10) continue;
     candidates.push({ ts, file });
   }
   if (!candidates.length) return null;
