@@ -1573,6 +1573,8 @@ function TaskMessageCard({ info }) {
   );
 }
 
+const KEEPALIVE_RE = /^\s*\[maestro keepalive\]/;
+
 function renderUserPrompt(rec) {
   const content = rec.message?.content;
   const raw =
@@ -1587,6 +1589,23 @@ function renderUserPrompt(rec) {
   // the marker and the card silently never rendered on the Claude side.
   const task = c.kind === 'text' ? maestroTaskMessage(c.text) : null;
   if (task) return <TaskMessageCard info={task} />;
+  // Maestro's cache keep-alive (server/services/cacheKeepalive.js) sends the same
+  // paragraph every few minutes to an idle agent. Shown in full it buried the real
+  // conversation; a marker that one was sent is all a reader needs.
+  if (c.kind === 'text' && KEEPALIVE_RE.test(c.text)) {
+    const ms = recordTimeMs(rec);
+    return (
+      <div className="flex justify-center my-0.5">
+        <div
+          className="inline-flex items-center gap-1.5 text-[10px] text-gray-500 border border-gray-800 rounded-full px-2 py-px"
+          title={c.text}
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-gray-600" aria-hidden="true" />
+          keep-alive sent{ms ? ` · ${new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''}
+        </div>
+      </div>
+    );
+  }
   if (c.kind === 'command') {
     return (
       <div className="flex justify-end">
@@ -2067,7 +2086,9 @@ function claudeParts(rec, ctx) {
       if (!block) return;
       const key = `${rec.uuid}-${i}`;
       if (block.type === 'text') {
-        if (block.text && block.text.trim()) msg.push(<Markdown key={key}>{block.text}</Markdown>);
+        // A bare "." is the agent's whole answer to a keep-alive with nothing to do;
+        // the keep-alive marker already says that happened.
+        if (block.text && block.text.trim() && block.text.trim() !== '.') msg.push(<Markdown key={key}>{block.text}</Markdown>);
       } else if (block.type === 'thinking') {
         // `thinkingDisplay: "updates"` marks a thinking block the model wrote FOR
         // the user: Claude Code's progress-update feature, which the TUI surfaces

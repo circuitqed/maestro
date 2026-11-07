@@ -11,17 +11,24 @@
  *
  * But not forever. A ping is only worth it if the idle stretch ends soon; an agent
  * left overnight would ping all night for a turn that never comes. So this is ski
- * rental: keep pinging until the pings have cost as much as one rewrite would
- * (write price / read price, ~12 pings, ~54 min), then let the cache go. That is
- * never worse than twice the cost of knowing the future, whatever the idle-time
- * distribution turns out to be.
+ * rental: keep pinging until the pings have cost as much as one rewrite would,
+ * then let the cache go. That is never worse than twice the cost of knowing the
+ * future, whatever the idle-time distribution turns out to be.
+ *
+ * The cap is in DOLLARS, read back from each ping turn's own usage, not a count of
+ * pings. A count assumes one cheap request per ping; measured on 2026-11-07 a ping
+ * that took the invitation to check `yap new` was 2-3 requests, $0.17-0.25, and the
+ * count-based cap let ~3x too much through. Dollars correct for whatever a ping
+ * turns out to do.
  *
  * Timing is measured from when the last REQUEST started, not when its reply was
  * written: the cache clock starts at the read, and a long reply can finish a minute
  * later. Hence 270 s rather than 285 s -- the tick, the paste and the request itself
  * all have to fit in the remaining margin.
  *
- * Which agents: Claude agents on an API (gateway) account, where a lapse is dollars.
+ * Which agents: Claude agents on an API (gateway) account, where a lapse is dollars,
+ * running an Anthropic model. A gateway model like DeepSeek showed no lapses at all
+ * (zero rewrites on 2026-11-06 and -07 against 142 ping requests), so it is skipped.
  * `config.cacheKeepalive` true/false overrides per agent; the `cache_keepalive`
  * setting 'off' stops it fleet-wide.
  *
@@ -55,7 +62,7 @@ const PING_TEXT =
 
 const accountKinds = new Map(); // hostKey -> { at, kinds: Map<dir, kind> }
 const files = new Map(); // agentId -> { at, sessionId, file }
-const pings = new Map(); // agentId -> consecutive keep-alives since the last real turn
+const pings = new Map(); // agentId -> { n, spent, counted: Set<turn ts> } since the last real turn
 
 const hostKey = (host) => (host ? String(host.id) : 'local');
 
@@ -88,7 +95,8 @@ async function transcriptFile(agent, host) {
 }
 
 // Prints one line per recent user/assistant record of the main thread:
-// type, timestamp, model, message id, ping marker (K), prompt or tool result (P/T).
+// type, timestamp, model, message id, ping marker (K), prompt or tool result (P/T),
+// then usage: input, cache write, cache read, output.
 const TAIL_PY = `
 import json,sys
 for l in sys.stdin:
@@ -105,7 +113,8 @@ for l in sys.stdin:
         txt=' '.join(b.get('text','') for b in c if isinstance(b,dict) and b.get('type')=='text')
     else:
         tr=tu=th=False; txt=str(c or '')
-    print(t,r['timestamp'],m.get('model') or '-',m.get('id') or '-','K' if txt.lstrip().startswith(${JSON.stringify(MARKER)}) else '-','T' if tr else 'U' if tu else 'H' if th else 'P')
+    u=m.get('usage') or {}
+    print(t,r['timestamp'],(m.get('model') or '-').replace(' ','_'),m.get('id') or '-','K' if txt.lstrip().startswith(${JSON.stringify(MARKER)}) else '-','T' if tr else 'U' if tu else 'H' if th else 'P',u.get('input_tokens') or 0,u.get('cache_creation_input_tokens') or 0,u.get('cache_read_input_tokens') or 0,u.get('output_tokens') or 0)
 `;
 
 /**
@@ -118,8 +127,12 @@ async function lastRequest(host, file) {
   const { stdout } = await execOnHost(host, cmd, { timeout: 15000 });
   const recs = String(stdout).trim().split('\n').filter(Boolean)
     .map((l) => {
-      const [type, ts, model, id, k, u] = l.split(' ');
-      return { type, ts, model, id, ping: k === 'K', prompt: type === 'user' && u === 'P', toolUse: u === 'U', thinking: u === 'H' };
+      const [type, ts, model, id, k, u, ...n] = l.split(' ');
+      const [inp, cw, cr, out] = n.map((x) => Number(x) || 0);
+      return {
+        type, ts, model, id, ping: k === 'K', prompt: type === 'user' && u === 'P', toolUse: u === 'U', thinking: u === 'H',
+        usage: { in: inp, cw5: cw, read: cr, out },
+      };
     });
   let i = recs.length - 1;
   while (i >= 0 && recs[i].type !== 'assistant') i--;
@@ -134,13 +147,28 @@ async function lastRequest(host, file) {
   let j = recs.length - 1;
   while (j >= 0 && !recs[j].prompt) j--;
   const turnWasPing = j >= 0 && recs[j].ping;
+  // What this turn cost, and what rewriting the context would. Every block of one
+  // reply carries the same usage, so each message id counts once.
+  const rates = ratesFor(reply.model);
+  let turnCost = 0;
+  const seen = new Set();
+  for (let x = j + 1; x < recs.length; x++) {
+    const r = recs[x];
+    if (r.type !== 'assistant' || seen.has(r.id)) continue;
+    seen.add(r.id);
+    if (rates) turnCost += costOf(rates, r.usage);
+  }
+  const ctx = reply.usage.in + reply.usage.cw5 + reply.usage.read;
+  const rewriteCost = rates ? (ctx * (rates.cw5 ?? rates.in)) / 1e6 : 0;
   // The lead is mid-turn if the newest record is a user record (a request is in
   // flight), a tool call (a foreground tool is running) or a lone thinking block (the
   // reply is still streaming; blocks are written as they finish). Otherwise its turn
   // ended, even if a background subagent is still at work.
   const end = recs[recs.length - 1];
   const pending = end.type === 'user' || end.toolUse || end.thinking;
-  return Number.isFinite(startedAt) ? { startedAt, model: reply.model, turnWasPing, pending } : null;
+  return Number.isFinite(startedAt)
+    ? { startedAt, model: reply.model, turnWasPing, turnTs: j >= 0 ? recs[j].ts : null, turnCost, rewriteCost, pending }
+    : null;
 }
 
 /**
@@ -163,9 +191,15 @@ async function hasDraft(agent, host) {
   return false; // nothing visible after the cursor
 }
 
-function cap(model) {
-  const r = ratesFor(model);
-  return r && r.cw5 && r.read ? Math.floor(r.cw5 / r.read) : 12;
+function costOf(r, u) {
+  return (u.in * (r.in || 0) + u.cw5 * (r.cw5 ?? r.in ?? 0) + u.read * (r.read || 0) + u.out * (r.out || 0)) / 1e6;
+}
+
+// Only where a lapse is a real, priced rewrite: an Anthropic model whose cache
+// write costs more than a read.
+function worthKeeping(model) {
+  const r = /^claude-/.test(String(model || '')) ? ratesFor(model) : null;
+  return !!(r && r.read && (r.cw5 ?? r.in) > r.read);
 }
 
 async function tick() {
@@ -187,20 +221,30 @@ async function tick() {
       if (!file) continue;
       const last = await lastRequest(host, file);
       if (!last || last.pending) continue;
-      if (!last.turnWasPing) pings.set(agent.id, 0);
+      if (!worthKeeping(last.model)) continue;
+      let st = pings.get(agent.id);
+      if (!last.turnWasPing || !st) {
+        st = { n: 0, spent: 0, counted: new Set() };
+        pings.set(agent.id, st);
+      }
+      // A finished ping turn: add what it actually cost, once.
+      if (last.turnWasPing && last.turnTs && !st.counted.has(last.turnTs)) {
+        st.counted.add(last.turnTs);
+        st.spent += last.turnCost;
+      }
       const age = (now - last.startedAt) / 1000;
       if (age < PING_AFTER_S) continue;
       // Already lapsed: a ping now would pay the full rewrite for nothing.
       if (age > 300) continue;
-      const n = pings.get(agent.id) || 0;
-      if (n >= cap(last.model)) continue; // ski rental: bought the skis' worth, stop
+      // Ski rental: the pings have cost one rewrite; buy the skis and stop.
+      if (st.spent >= last.rewriteCost) continue;
       if (await hasDraft(agent, host)) continue;
 
       // Settled by the transcript: its turn ended 270 s ago and nothing is in flight.
       const out = await deliverWhenSafe(agent, PING_TEXT, { host, scope: SCOPE, settled: true });
       if (out.sent) {
-        pings.set(agent.id, n + 1);
-        console.log(`keepalive: ${agent.name} ping ${n + 1}/${cap(last.model)} at ${Math.round(age)}s`);
+        st.n += 1;
+        console.log(`keepalive: ${agent.name} ping ${st.n} at ${Math.round(age)}s, spent $${st.spent.toFixed(2)} of $${last.rewriteCost.toFixed(2)}`);
       }
     } catch (err) {
       /* one agent's unreachable host must not stop the others */
@@ -221,4 +265,4 @@ export function startCacheKeepalive(intervalMs = 10000) {
 }
 
 // For tests and one-off checks; not part of the service's interface.
-export const _internals = { lastRequest, hasDraft, cap };
+export const _internals = { lastRequest, hasDraft, worthKeeping };

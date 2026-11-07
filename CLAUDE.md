@@ -420,10 +420,16 @@ last request started 270 s ago.
 
 - **The ping is allowed to be useful.** It invites a quick check (`yap new`, a
   background job) and otherwise a one-character reply. It must not start long work.
-- **Capped by ski rental:** pings stop once they have cost one rewrite (write price /
-  read price from `pricing.js`: 25 on Opus 5.5, about 1 h 50 min). Pings are counted
-  per TURN, by the prompt that started it, so a ping that runs a tool still counts.
-  Without that, one tool call would reset the count and it would ping all night.
+- **Capped by ski rental, in dollars:** pings stop once their measured cost (each
+  ping turn's own usage, every request in it) reaches the cost of rewriting the
+  current context. It was a count (write/read price = 25 on Opus 5.5), but a ping
+  that checks `yap new` is 2-3 requests, $0.17-0.25 not $0.06, so the count let ~3x
+  too much through: on 2026-11-07 pings cost $95 to save $114 of lapses. A ping turn
+  that runs tools still counts as a ping, or one tool call would reset the cap.
+- **Anthropic models only.** DeepSeek through the gateway had zero lapses on both
+  days measured, so its 142 ping requests bought nothing.
+- **Chat shows a ping as a small "keep-alive sent" pill** (full text on hover), and
+  hides the agent's bare "." reply, instead of the whole paragraph every 5 minutes.
 - **Timing is from the request's start** (the record before the reply), not the reply,
   since a long reply finishes well after the cache was read. Past 300 s it does nothing:
   the cache is already gone.
