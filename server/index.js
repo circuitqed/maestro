@@ -30,6 +30,7 @@ import { startUpdateWatch } from './services/updateWatch.js';
 import { startAgentSession } from './services/agentStart.js';
 import { observeIdle } from './services/inject.js';
 import { startHarnessWatch } from './services/harnessWatch.js';
+import { startCacheKeepalive } from './services/cacheKeepalive.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -213,6 +214,10 @@ initDb().then(() => {
       // so they drift behind by weeks unless someone restarts them. Restarts resume
       // the conversation, which is what makes this safe to automate.
       startUpdateWatch({ getAgents, getHost, startAgentSession, registerAgent, observeIdle });
+
+      // An idle API agent's prompt cache lapses after 5 minutes; a short turn just
+      // before then costs a fraction of rewriting it. See cacheKeepalive.js.
+      startCacheKeepalive(10000);
   });
 }).catch((err) => {
   console.error('Failed to initialize database:', err);

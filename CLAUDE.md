@@ -409,6 +409,29 @@ subscription the dollars are API-equivalent value, not a bill.
 **This is measurement, not a budget.** No caps, no thresholds, no "you have N left, so
 stop" — a number handed to an agent becomes a target it optimises against.
 
+### Cache keep-alive for idle API agents
+
+`services/cacheKeepalive.js`. The prompt cache expires 5 minutes after the last
+request, and an agent that waits longer -- on Dave, another agent, a background job --
+rewrites its whole context at 1.25x input on the next turn. On 2026-11-06 that was 129
+lapses and $209 in one day, all of it idle time. A turn that only reads the cache costs
+0.05-0.1x, so Maestro sends an idle agent a short `[maestro keepalive]` turn when its
+last request started 270 s ago.
+
+- **The ping is allowed to be useful.** It invites a quick check (`yap new`, a
+  background job) and otherwise a one-character reply. It must not start long work.
+- **Capped by ski rental:** pings stop once they have cost one rewrite (write price /
+  read price from `pricing.js`: 25 on Opus 5.5, about 1 h 50 min). Pings are counted
+  per TURN, by the prompt that started it, so a ping that runs a tool still counts.
+  Without that, one tool call would reset the count and it would ping all night.
+- **Timing is from the request's start** (the record before the reply), not the reply,
+  since a long reply finishes well after the cache was read. Past 300 s it does nothing:
+  the cache is already gone.
+- **Who:** Claude agents on an `api` account. `config.cacheKeepalive` true/false
+  overrides per agent; the `cache_keepalive` setting `off` stops it everywhere.
+- **Never** into a busy pane or a question (inject.js), over a typed draft (Claude's
+  suggested prompt is dim, SGR 2; a draft is not), or within 2 min of chat input.
+
 ### Sending files to a host
 
 `POST /api/hosts/:id/upload` lands a file in `<default_root>/inbox` on that machine,
