@@ -100,10 +100,12 @@ for l in sys.stdin:
     c=m.get('content')
     if isinstance(c,list):
         tr=any(isinstance(b,dict) and b.get('type')=='tool_result' for b in c)
+        tu=any(isinstance(b,dict) and b.get('type')=='tool_use' for b in c)
+        th=t=='assistant' and c and all(isinstance(b,dict) and b.get('type') in ('thinking','redacted_thinking') for b in c)
         txt=' '.join(b.get('text','') for b in c if isinstance(b,dict) and b.get('type')=='text')
     else:
-        tr=False; txt=str(c or '')
-    print(t,r['timestamp'],m.get('model') or '-',m.get('id') or '-','K' if txt.lstrip().startswith(${JSON.stringify(MARKER)}) else '-','T' if tr else 'P')
+        tr=tu=th=False; txt=str(c or '')
+    print(t,r['timestamp'],m.get('model') or '-',m.get('id') or '-','K' if txt.lstrip().startswith(${JSON.stringify(MARKER)}) else '-','T' if tr else 'U' if tu else 'H' if th else 'P')
 `;
 
 /**
@@ -117,7 +119,7 @@ async function lastRequest(host, file) {
   const recs = String(stdout).trim().split('\n').filter(Boolean)
     .map((l) => {
       const [type, ts, model, id, k, u] = l.split(' ');
-      return { type, ts, model, id, ping: k === 'K', prompt: type === 'user' && u === 'P' };
+      return { type, ts, model, id, ping: k === 'K', prompt: type === 'user' && u === 'P', toolUse: u === 'U', thinking: u === 'H' };
     });
   let i = recs.length - 1;
   while (i >= 0 && recs[i].type !== 'assistant') i--;
@@ -132,8 +134,12 @@ async function lastRequest(host, file) {
   let j = recs.length - 1;
   while (j >= 0 && !recs[j].prompt) j--;
   const turnWasPing = j >= 0 && recs[j].ping;
-  // A user record after the final reply: a turn is starting right now.
-  const pending = recs[recs.length - 1].type === 'user';
+  // The lead is mid-turn if the newest record is a user record (a request is in
+  // flight), a tool call (a foreground tool is running) or a lone thinking block (the
+  // reply is still streaming; blocks are written as they finish). Otherwise its turn
+  // ended, even if a background subagent is still at work.
+  const end = recs[recs.length - 1];
+  const pending = end.type === 'user' || end.toolUse || end.thinking;
   return Number.isFinite(startedAt) ? { startedAt, model: reply.model, turnWasPing, pending } : null;
 }
 
@@ -168,7 +174,10 @@ async function tick() {
   const now = Date.now();
   for (const agent of getAgents()) {
     try {
-      if (agent.status !== 'idle' || !agent.screen_session) continue;
+      // Not just 'idle': a lead with a background subagent reads 'running' all along
+      // (the subagent keeps its pane changing), and those are the leads that lapse
+      // most. Whether the lead's own turn ended comes from the transcript below.
+      if (agent.status === 'stopped' || !agent.screen_session) continue;
       const host = agent.host_id ? getHost(agent.host_id) : null;
       if (host && host.status === 'offline') continue;
       if (!(await eligible(agent, host))) continue;
@@ -187,7 +196,8 @@ async function tick() {
       if (n >= cap(last.model)) continue; // ski rental: bought the skis' worth, stop
       if (await hasDraft(agent, host)) continue;
 
-      const out = await deliverWhenSafe(agent, PING_TEXT, { host, scope: SCOPE });
+      // Settled by the transcript: its turn ended 270 s ago and nothing is in flight.
+      const out = await deliverWhenSafe(agent, PING_TEXT, { host, scope: SCOPE, settled: true });
       if (out.sent) {
         pings.set(agent.id, n + 1);
         console.log(`keepalive: ${agent.name} ping ${n + 1}/${cap(last.model)} at ${Math.round(age)}s`);

@@ -98,10 +98,13 @@ export function markBusy(agentId) {
 export async function deliverWhenSafe(
   agent,
   text,
-  { host = null, scope = 'default', ticks = IDLE_TICKS_REQUIRED, onPrompt = null } = {}
+  { host = null, scope = 'default', ticks = IDLE_TICKS_REQUIRED, onPrompt = null, settled = null } = {}
 ) {
   if (!agent || !agent.screen_session) return { sent: false, reason: 'no_session' };
-  if (!isSettled(agent.id, { scope, ticks })) return { sent: false, reason: 'busy' };
+  // `settled: true` is for a caller with better evidence than the pane-activity
+  // streak: an agent whose background subagent keeps its pane ticking never reads
+  // idle, though its own turn ended hours ago. The prompt check below still applies.
+  if (settled !== true && !isSettled(agent.id, { scope, ticks })) return { sent: false, reason: 'busy' };
 
   // A prompting session is not available, whatever its status says.
   const pane = await capturePane(agent.screen_session, host).catch(() => '');

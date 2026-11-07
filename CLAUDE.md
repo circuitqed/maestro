@@ -427,6 +427,13 @@ last request started 270 s ago.
 - **Timing is from the request's start** (the record before the reply), not the reply,
   since a long reply finishes well after the cache was read. Past 300 s it does nothing:
   the cache is already gone.
+- **Busy-or-idle comes from the transcript, not `agents.status`.** A lead with a
+  background subagent reads `running` for hours (the subagent keeps its pane changing),
+  and those are the leads that lapse most. It is mid-turn only if its newest record is
+  a user record, a tool call, or a lone thinking block; `deliverWhenSafe(..., {settled:
+  true})` takes that evidence in place of the idle streak and still refuses questions.
+- **Measured:** em-sim-main's first ping read 295k from cache and wrote ~300 tokens,
+  about $0.06 against a $1.47 rewrite.
 - **Who:** Claude agents on an `api` account. `config.cacheKeepalive` true/false
   overrides per agent; the `cache_keepalive` setting `off` stops it everywhere.
 - **Never** into a busy pane or a question (inject.js), over a typed draft (Claude's
