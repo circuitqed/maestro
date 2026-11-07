@@ -100,8 +100,12 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
       {/* Inner container fills the visible area above the keyboard */}
       <div className="flex flex-col h-full w-full overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between gap-2 px-4 py-3 bg-gray-800 border-b border-gray-700">
-          <div className="flex items-center gap-3 min-w-0">
+        {/* Two lines on purpose. With the name and four badges on one line, the
+            badges are flex-shrink-0 and the name was the only thing that could give,
+            so on a phone it shrank to "em-…" -- the one thing you need to know which
+            agent you are talking to. The name gets its own line; the badges wrap. */}
+        <div className="px-3 pt-2 pb-2 bg-gray-800 border-b border-gray-700 space-y-1.5">
+          <div className="flex items-center gap-2">
             <button
               onClick={onClose}
               className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex-shrink-0"
@@ -111,24 +115,26 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
-            <span className="text-gray-400 text-sm font-mono truncate">{sessionName}</span>
-            {mode === 'chat' && <ModelBadge
+            <span className="flex-1 min-w-0 text-white text-sm font-medium truncate" title={sessionName}>
+              {(agentRow && agentRow.name) || sessionName}
+            </span>
+            {agentId != null && <div className="flex-shrink-0"><ViewToggle mode={mode} onChange={setViewMode} /></div>}
+          </div>
+          {mode === 'chat' && agentId != null && (
+          <div className="flex flex-wrap items-center gap-1.5 pl-1">
+            <ModelBadge
               info={modelInfo}
               provider={agentProvider}
               configuredModel={(agentRow && agentRow.config && agentRow.config.model) || null}
               className="flex-shrink-0"
               onClick={agentBusy ? undefined : openModelPicker}
               busy={agentBusy}
-            />}
-          {mode === 'chat' && agentId != null && <ConnectionBadge hostId={hostId} />}
-          {mode === 'chat' && agentId != null && (
+            />
+            <ConnectionBadge hostId={hostId} />
             <AccountBadge agentId={agentId} hostId={hostId} provider={agentProvider} running={agentRunning} />
-          )}
-          {mode === 'chat' && agentId != null && (
             <UsageBadge agentId={agentId} provider={agentProvider} />
-          )}
           </div>
-          {agentId != null && <ViewToggle mode={mode} onChange={setViewMode} />}
+          )}
         </div>
 
         {/* Body - terminal or chat */}

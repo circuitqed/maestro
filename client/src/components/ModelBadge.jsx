@@ -52,7 +52,7 @@ function ModelBadge({ info, className = '', onClick, busy = false, provider = nu
       }
     >
       <ProviderIcon provider={info.provider} className="w-3 h-3 flex-shrink-0" />
-      <span className="truncate max-w-[9rem]">{info.model}</span>
+      <span className="truncate max-w-[14rem] md:max-w-[9rem]">{info.model}</span>
       {info.effort && <span className="text-gray-400 flex-shrink-0">· {info.effort}</span>}
     </Tag>
   );
