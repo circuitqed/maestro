@@ -648,8 +648,8 @@ function tailReadArgs(host, filePath, k) {
  * with embedded images isn't capped by exec's maxBuffer. Returns { records, atStart }
  * where atStart is true once the whole file fits in `k` (nothing older remains).
  */
-export async function readTranscriptTail(agent, host, k) {
-  const file = await resolveTranscriptFile(agent, host);
+export async function readTranscriptTail(agent, host, k, fileOverride = null) {
+  const file = fileOverride || (await resolveTranscriptFile(agent, host));
   if (!file) return { records: [], atStart: true };
   const { file: cmd, args } = tailReadArgs(host, file, k);
   return new Promise((resolve) => {
@@ -677,6 +677,68 @@ export async function readTranscriptTail(agent, host, k) {
     child.on('error', () => finish([]));
     child.on('close', () => finish(out.split('\n').map((s) => s.trim()).filter(Boolean)));
   });
+}
+
+/**
+ * The session this agent was in BEFORE `file`, for paging the chat back across a
+ * /clear (or a compaction fork).
+ *
+ * The chat follows the agent to its new transcript the moment it clears, which is
+ * right for the live view and meant everything before the clear vanished from it:
+ * Dave watched lab-platform clear itself and could no longer scroll back to what it
+ * had been doing. The old file is still on disk beside the new one.
+ *
+ * Which file came before: in the same directory, a transcript Claude recorded under
+ * this agent's own --name (the agentName record -- the same signal the forward
+ * follow uses, and the one that keeps agents sharing ~/.claude/projects/-home-dave
+ * apart), whose last record is no later than this file's first, newest such.
+ * Returns { file, sessionId } or null.
+ */
+export async function previousSessionFile(agent, host, file) {
+  if (!agent || !agent.name || !file) return null;
+  const dir = file.replace(/\/[^/]*$/, '');
+  if (!dir || dir === file) return null;
+  let out;
+  try {
+    const { stdout } = await execOnHost(
+      host,
+      `first=$(head -c 300000 ${shellQuote(file)} | grep -o '"timestamp":"[^"]*"' | head -1 | grep -oE '[0-9T:.Z-]{20,}'); ` +
+        `echo "FIRST|$first"; ` +
+        `for f in $(ls -t ${shellQuote(dir)}/*.jsonl 2>/dev/null | head -15); do ` +
+        `[ "$f" = ${shellQuote(file)} ] && continue; ` +
+        `t=$(tail -c 200000 "$f" | grep -o '"timestamp":"[^"]*"' | tail -1 | grep -oE '[0-9T:.Z-]{20,}'); ` +
+        `a=$(grep -m1 -o '"agentName":"[^"]*"' "$f" 2>/dev/null | sed 's/^"agentName":"//; s/"$//'); ` +
+        `printf '%s|%s|%s\n' "$t" "$f" "$a"; done`,
+      { timeout: 25000 }
+    );
+    out = String(stdout || '');
+  } catch {
+    return null;
+  }
+  const lines = out.split('\n').map((x) => x.trim()).filter(Boolean);
+  const firstLineRec = lines.find((l) => l.startsWith('FIRST|'));
+  const first = firstLineRec ? firstLineRec.slice(6) : '';
+  const siblings = new Set(getPinnedSessionIdsOnHost(agent.id, agent.host_id) || []);
+  let best = null;
+  for (const l of lines) {
+    if (l.startsWith('FIRST|')) continue;
+    const [ts, f, ...rest] = l.split('|');
+    const name = rest.join('|');
+    if (!ts || !f || name !== agent.name) continue;
+    const id = transcriptIdFromPath(f);
+    if (!id || siblings.has(id)) continue;
+    if (first && ts > first) continue; // still being written after this one began
+    if (!best || ts > best.ts) best = { ts, file: f, sessionId: id };
+  }
+  return best ? { file: best.file, sessionId: best.sessionId } : null;
+}
+
+/** The file for an earlier session of this agent, confined to its current transcript's directory. */
+export async function earlierSessionFile(agent, host, sessionId) {
+  if (!isUuid(sessionId)) return null;
+  const current = await resolveTranscriptFile(agent, host);
+  if (!current) return null;
+  return `${current.replace(/\/[^/]*$/, '')}/${sessionId}.jsonl`;
 }
 
 /**

@@ -2075,7 +2075,22 @@ function TimeSeparator({ ms }) {
   );
 }
 
+// Where the agent's context was cleared (or forked): everything above is an earlier
+// session, loaded on demand; the agent itself no longer remembers it.
+function SessionDivider() {
+  return (
+    <div className="flex items-center gap-3 my-3 text-[11px] text-gray-500" role="separator">
+      <div className="flex-1 border-t border-dashed border-gray-700" />
+      <span title="The agent started a fresh session here; it does not remember what is above">
+        context cleared — earlier session above
+      </span>
+      <div className="flex-1 border-t border-dashed border-gray-700" />
+    </div>
+  );
+}
+
 function claudeParts(rec, ctx) {
+  if (rec.type === 'session_divider') return { message: <SessionDivider key={rec.uuid} />, tool: null, toolCount: 0 };
   if (rec.type === 'assistant') {
     const content = rec.message?.content;
     const blocks = typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : [];
@@ -2647,6 +2662,9 @@ function ChatView({ agentId, session, onMeta }) {
   const settleTimerRef = useRef(null);
   const textareaRef = useRef(null);
   const historyLimitRef = useRef(CHAT_TAIL_CAP);
+  // Which session "load earlier" is paging: null = the live one, else the uuid of an
+  // earlier session (before a /clear), reached once the live one's start is shown.
+  const earlierSessionRef = useRef(null);
   const loadingEarlierRef = useRef(false);
   const pendingPrependRef = useRef(null); // { prevH, prevTop } while a load-earlier prepend settles
 
@@ -2773,7 +2791,10 @@ function ChatView({ agentId, session, onMeta }) {
     const prevTop = el ? el.scrollTop : 0;
     try {
       const nextLimit = historyLimitRef.current + CHAT_TAIL_CAP;
-      const res = await fetch(`/api/agents/${agentId}/transcript?tail=${nextLimit}`);
+      const sess = earlierSessionRef.current;
+      const res = await fetch(
+        `/api/agents/${agentId}/transcript?tail=${nextLimit}${sess ? `&session=${encodeURIComponent(sess)}` : ''}`
+      );
       if (!res.ok) return;
       const data = await res.json();
       historyLimitRef.current = nextLimit;
@@ -2784,11 +2805,22 @@ function ChatView({ agentId, session, onMeta }) {
         seenUuidsRef.current.add(key);
         older.push(rec);
       }
+      const reachedStart = data.atStart || older.length === 0;
+      // The start of this session is not the start of the conversation when the
+      // agent cleared itself: carry on into the session before, behind a divider
+      // marking where the context was cleared.
+      if (reachedStart && data.previous && !seenUuidsRef.current.has(`session-divider-${data.previous}`)) {
+        seenUuidsRef.current.add(`session-divider-${data.previous}`);
+        older.unshift({ type: 'session_divider', uuid: `session-divider-${data.previous}`, sessionId: data.previous });
+        earlierSessionRef.current = data.previous;
+        historyLimitRef.current = 0;
+      } else if (reachedStart) {
+        setAtStart(true);
+      }
       if (older.length) {
         pendingPrependRef.current = { prevH, prevTop };
         setRecords((prev) => [...older, ...prev]);
       }
-      if (data.atStart || older.length === 0) setAtStart(true);
     } catch {
       /* leave the button for a retry */
     } finally {

@@ -34,7 +34,7 @@ import { appendAgentLane } from '../services/scaffold.js';
 import { resolveAgentFileRoot, ensureDirOnHost } from '../services/projectPaths.js';
 import { pinnedTranscriptExists, codexRolloutExists } from '../services/transcript.js';
 import { receiveUpload } from '../services/upload.js';
-import { resolveTranscriptFile, readTranscriptTail } from '../services/transcript.js';
+import { resolveTranscriptFile, readTranscriptTail, previousSessionFile, earlierSessionFile } from '../services/transcript.js';
 
 const router = Router();
 
@@ -737,8 +737,23 @@ router.get('/:id/transcript', async (req, res) => {
     }
 
     const tail = Math.min(Math.max(parseInt(req.query.tail, 10) || 500, 1), 20000);
-    const { records, atStart } = await readTranscriptTail(agent, host, tail);
-    res.json({ records, atStart });
+    // ?session=<uuid> pages an EARLIER session of this agent (before a /clear). Only
+    // a uuid, and only inside the agent's own transcript directory.
+    let file = null;
+    if (req.query.session) {
+      file = await earlierSessionFile(agent, host, String(req.query.session));
+      if (!file) return res.status(400).json({ error: 'unknown session' });
+    }
+    const { records, atStart } = await readTranscriptTail(agent, host, tail, file);
+    // At the start of this session: say which session came before, so the chat can
+    // keep scrolling back across the clear.
+    let previous = null;
+    if (atStart) {
+      const cur = file || (await resolveTranscriptFile(agent, host));
+      const prev = await previousSessionFile(agent, host, cur);
+      previous = prev ? prev.sessionId : null;
+    }
+    res.json({ records, atStart, previous });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
