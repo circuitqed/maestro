@@ -445,6 +445,23 @@ last request started 270 s ago.
 - **Never** into a busy pane or a question (inject.js), over a typed draft (Claude's
   suggested prompt is dim, SGR 2; a draft is not), or within 2 min of chat input.
 
+### Agents clearing their own context: `maestro-clear`
+
+Every lead is told to write STATUS.md and `/clear` at ~150k, but `/clear` is typed
+into the composer and an agent cannot type into its own. em-sim agents asked
+em-sim-main; lab-platform had nobody and reached 875k ($4.38 per cache rewrite). The
+improvised `sleep 20; tmux send-keys /clear` fires mid-turn if the turn runs long.
+
+`maestro-clear ["RESUME PROMPT"]` (POST `/api/agent/clear`, caller = its tmux
+session, so only ever itself) queues the request in `services/selfClear.js`. Every 5 s
+it checks the caller's transcript: once its turn has ENDED after asking (the same
+`turnState` the keep-alive uses, so background subagents don't block it), with no
+draft and no question widget, it types `/clear` with `send-keys -l` (a pasted
+"/clear" is composer text, not necessarily the command), waits 4 s and delivers the
+resume prompt. Unexecuted after 30 min, the request is dropped rather than firing
+into some unrelated later moment. The CLI reads `~/.maestro/env` itself because
+nothing sources it into agents' shells.
+
 ### "Needs you": agents stopped on a prompt
 
 An agent stopped on a permission prompt, an AskUserQuestion or a model dialog stops

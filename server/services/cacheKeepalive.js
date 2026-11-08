@@ -168,7 +168,10 @@ async function lastRequest(host, file) {
   const end = recs[recs.length - 1];
   const pending = end.type === 'user' || end.toolUse || end.thinking;
   return Number.isFinite(startedAt)
-    ? { startedAt, model: reply.model, turnWasPing, turnTs: j >= 0 ? recs[j].ts : null, turnCost, rewriteCost, pending }
+    ? {
+        startedAt, endedAt: Date.parse(end.ts), model: reply.model, turnWasPing,
+        turnTs: j >= 0 ? recs[j].ts : null, turnCost, rewriteCost, pending,
+      }
     : null;
 }
 
@@ -268,6 +271,17 @@ export function startCacheKeepalive(intervalMs = 10000) {
   }, intervalMs);
   timer.unref?.();
 }
+
+/**
+ * Where an agent's own turn stands, from its transcript: { pending, endedAt, ... }
+ * or null. Shared with selfClear.js, which has to know the same thing -- has the
+ * lead's turn ended, whatever its background subagents are doing.
+ */
+export async function turnState(agent, host) {
+  const file = await transcriptFile(agent, host);
+  return file ? lastRequest(host, file) : null;
+}
+export { hasDraft };
 
 // For tests and one-off checks; not part of the service's interface.
 export const _internals = { lastRequest, hasDraft, worthKeeping };

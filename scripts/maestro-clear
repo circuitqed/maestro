@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# maestro-clear — clear your own context once this turn ends, then resume.
+#
+#   maestro-clear                      resume with the default prompt (read your
+#                                      CLAUDE.md/AGENTS.md and STATUS.md, continue)
+#   maestro-clear "RESUME PROMPT"      resume with this instead (max 2000 chars)
+#   maestro-clear --cancel             forget a queued request
+#
+# HOW TO USE IT
+#   1. Make STATUS.md (or your handoff file) complete: a fresh session will know
+#      only what is written down.
+#   2. Long work that must outlive the clear runs under nohup, not as a harness
+#      background task.
+#   3. Run maestro-clear, then END YOUR TURN. Maestro waits until your turn has
+#      actually finished, types /clear, and sends the resume prompt into the fresh
+#      session. A request it cannot carry out within 30 minutes is dropped.
+#
+# It only ever clears the caller: who you are comes from your tmux session.
+set -euo pipefail
+
+# The installer writes the server's address to ~/.maestro/env on remote hosts, but
+# nothing sources it into an agent's shell, so read it here.
+if [ -z "${MAESTRO_URL:-}" ] && [ -r "$HOME/.maestro/env" ]; then . "$HOME/.maestro/env"; fi
+BASE="${MAESTRO_URL:-http://localhost:7007}"
+TOKEN_FILE="${MAESTRO_AGENT_TOKEN_FILE:-$HOME/.maestro/agent-token}"
+die() { printf '%s\n' "$*" >&2; exit 1; }
+
+METHOD=POST
+RESUME=""
+case "${1:-}" in
+  -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  --cancel) METHOD=DELETE ;;
+  *) RESUME="${1:-}" ;;
+esac
+
+[ -r "$TOKEN_FILE" ] || die "no agent token at $TOKEN_FILE — ask Dave to run scripts/install-agent-cli.sh on this host"
+TOKEN="$(cat "$TOKEN_FILE")"
+SESSION="${MAESTRO_SESSION:-}"
+if [ -z "$SESSION" ] && [ -n "${TMUX:-}" ]; then
+  SESSION="$(tmux display-message -p '#S' 2>/dev/null || true)"
+fi
+[ -n "$SESSION" ] || die "cannot tell which agent this is: not inside tmux and no MAESTRO_SESSION set"
+
+# The prompt goes as JSON on stdin, never in argv of curl (it may be long, and
+# quoting it into a shell string is how prompts get mangled).
+BODY="$(RESUME="$RESUME" python3 -c 'import json,os; print(json.dumps({"resume": os.environ["RESUME"]}))')"
+OUT="$(printf '%s' "$BODY" | curl -sS -X "$METHOD" "$BASE/api/agent/clear" \
+  -H "X-Maestro-Agent-Token: $TOKEN" \
+  -H "X-Maestro-Session: $SESSION" \
+  -H 'Content-Type: application/json' --data-binary @-)"
+
+case "$OUT" in
+  *'"queued":true'*) echo "queued: end your turn now; Maestro will /clear this session and send the resume prompt." ;;
+  *'"cancelled":true'*) echo "cancelled." ;;
+  *'"cancelled":false'*) echo "nothing was queued." ;;
+  *) die "maestro-clear failed: $OUT" ;;
+esac

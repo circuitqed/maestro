@@ -12,6 +12,7 @@ import { requireAgentIdentity } from '../middleware/agentIdentity.js';
 import { usageForAgent } from '../services/usage.js';
 import { planUsage, accountKindFor } from '../services/planUsage.js';
 import { gatewayUsage } from '../services/gatewayUsage.js';
+import { requestClear, cancelClear } from '../services/selfClear.js';
 import {
   submitTask, getTask, acknowledgeTask, finishTask, cancelTask,
   inboxFor, outboxFor, listDelegates, config,
@@ -85,6 +86,14 @@ router.post('/tasks/:id/cancel', (req, res) => {
 
 router.get('/inbox', (req, res) => res.json(inboxFor(req.agent.id)));
 router.get('/outbox', (req, res) => res.json(outboxFor(req.agent.id)));
+
+// Clear the CALLER's own context once its turn ends, then send it `resume`. Only
+// ever the caller: identity is the tmux session, so no agent can clear another.
+router.post('/clear', (req, res) => {
+  const resume = req.body && typeof req.body.resume === 'string' ? req.body.resume : '';
+  res.json(requestClear(req.agent.id, resume));
+});
+router.delete('/clear', (req, res) => res.json({ cancelled: cancelClear(req.agent.id) }));
 
 // --- Plan usage: the `/usage` equivalent, reachable from outside the TUI ---------
 //

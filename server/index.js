@@ -31,6 +31,7 @@ import { startAgentSession } from './services/agentStart.js';
 import { observeIdle } from './services/inject.js';
 import { startHarnessWatch } from './services/harnessWatch.js';
 import { startCacheKeepalive } from './services/cacheKeepalive.js';
+import { startSelfClear } from './services/selfClear.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -219,6 +220,8 @@ initDb().then(() => {
       // An idle API agent's prompt cache lapses after 5 minutes; a short turn just
       // before then costs a fraction of rewriting it. See cacheKeepalive.js.
       startCacheKeepalive(10000);
+      // Agents asking to have their own context cleared (maestro-clear).
+      startSelfClear(5000);
   });
 }).catch((err) => {
   console.error('Failed to initialize database:', err);
