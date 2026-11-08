@@ -43,12 +43,12 @@ const tone = (pct) => (pct >= 90 ? 'bg-red-500' : pct >= 75 ? 'bg-amber-500' : '
 function Meter({ label, pct, value, title }) {
   const p = Math.max(0, Math.min(100, Number.isFinite(pct) ? pct : 0));
   return (
-    <div className="grid grid-cols-[3.5rem_1fr_auto] items-center gap-2 text-xs" title={title}>
+    <div className="grid grid-cols-[3.5rem_1fr_9.5rem] items-center gap-2 text-xs" title={title}>
       <span className="text-gray-500 truncate">{label}</span>
       <div className="h-1.5 rounded-full bg-gray-700 overflow-hidden">
         <div className={`h-full rounded-full ${tone(p)}`} style={{ width: `${p}%` }} />
       </div>
-      <span className="text-gray-300 tabular-nums whitespace-nowrap">{value}</span>
+      <span className="text-gray-300 tabular-nums whitespace-nowrap text-right truncate">{value}</span>
     </div>
   );
 }

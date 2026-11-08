@@ -2790,36 +2790,46 @@ function ChatView({ agentId, session, onMeta }) {
     const prevH = el ? el.scrollHeight : 0;
     const prevTop = el ? el.scrollTop : 0;
     try {
-      const nextLimit = historyLimitRef.current + CHAT_TAIL_CAP;
-      const sess = earlierSessionRef.current;
-      const res = await fetch(
-        `/api/agents/${agentId}/transcript?tail=${nextLimit}${sess ? `&session=${encodeURIComponent(sess)}` : ''}`
-      );
-      if (!res.ok) return;
-      const data = await res.json();
-      historyLimitRef.current = nextLimit;
-      const older = [];
-      for (const rec of data.records || []) {
-        const key = providerRef.current === 'codex' ? codexKey(rec) : rec && rec.uuid;
-        if (!key || seenUuidsRef.current.has(key)) continue;
-        seenUuidsRef.current.add(key);
-        older.push(rec);
+      // Up to two fetches: when this one reaches the start of a session that had a
+      // predecessor, fetch the predecessor's last page in the same click -- otherwise
+      // the click shows only the divider, with nothing above it yet.
+      const all = [];
+      for (let pass = 0; pass < 2; pass++) {
+        const nextLimit = historyLimitRef.current + CHAT_TAIL_CAP;
+        const sess = earlierSessionRef.current;
+        const res = await fetch(
+          `/api/agents/${agentId}/transcript?tail=${nextLimit}${sess ? `&session=${encodeURIComponent(sess)}` : ''}`
+        );
+        if (!res.ok) break;
+        const data = await res.json();
+        historyLimitRef.current = nextLimit;
+        const older = [];
+        for (const rec of data.records || []) {
+          const key = providerRef.current === 'codex' ? codexKey(rec) : rec && rec.uuid;
+          if (!key || seenUuidsRef.current.has(key)) continue;
+          seenUuidsRef.current.add(key);
+          older.push(rec);
+        }
+        const reachedStart = data.atStart || older.length === 0;
+        let crossed = false;
+        // The start of this session is not the start of the conversation when the
+        // agent cleared itself: carry on into the session before, behind a divider
+        // marking where the context was cleared.
+        if (reachedStart && data.previous && !seenUuidsRef.current.has(`session-divider-${data.previous}`)) {
+          seenUuidsRef.current.add(`session-divider-${data.previous}`);
+          older.unshift({ type: 'session_divider', uuid: `session-divider-${data.previous}`, sessionId: data.previous });
+          earlierSessionRef.current = data.previous;
+          historyLimitRef.current = 0;
+          crossed = true;
+        } else if (reachedStart) {
+          setAtStart(true);
+        }
+        all.unshift(...older);
+        if (!crossed) break;
       }
-      const reachedStart = data.atStart || older.length === 0;
-      // The start of this session is not the start of the conversation when the
-      // agent cleared itself: carry on into the session before, behind a divider
-      // marking where the context was cleared.
-      if (reachedStart && data.previous && !seenUuidsRef.current.has(`session-divider-${data.previous}`)) {
-        seenUuidsRef.current.add(`session-divider-${data.previous}`);
-        older.unshift({ type: 'session_divider', uuid: `session-divider-${data.previous}`, sessionId: data.previous });
-        earlierSessionRef.current = data.previous;
-        historyLimitRef.current = 0;
-      } else if (reachedStart) {
-        setAtStart(true);
-      }
-      if (older.length) {
+      if (all.length) {
         pendingPrependRef.current = { prevH, prevTop };
-        setRecords((prev) => [...older, ...prev]);
+        setRecords((prev) => [...all, ...prev]);
       }
     } catch {
       /* leave the button for a retry */
