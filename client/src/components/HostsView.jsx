@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import AgentRow from './AgentRow';
 import ProviderIcon from './ProviderIcon';
@@ -18,6 +18,115 @@ import { iconProvider } from '../lib/providerCaps';
  * utilities, not work, and forcing them into a project misfiles them in every other
  * view.
  */
+
+// ---- Machine stats -------------------------------------------------------------
+// Polled every few seconds while this tab is open (and visible); the server caches
+// for a few seconds too, since each measurement samples CPU for a second.
+const STATS_POLL_MS = 5000;
+
+const GB = 1024 ** 3;
+const fmtBytes = (b) => {
+  if (!Number.isFinite(b)) return '–';
+  if (b >= 1024 * GB) return `${(b / (1024 * GB)).toFixed(1)} TB`;
+  if (b >= 10 * GB) return `${Math.round(b / GB)} GB`;
+  return `${(b / GB).toFixed(1)} GB`;
+};
+const fmtUptime = (s) => {
+  if (!Number.isFinite(s) || s < 0) return null;
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  return d > 0 ? `${d}d ${h}h` : `${h}h ${Math.floor((s % 3600) / 60)}m`;
+};
+// Semantic, not decorative: the bar turns amber, then red, as headroom runs out.
+const tone = (pct) => (pct >= 90 ? 'bg-red-500' : pct >= 75 ? 'bg-amber-500' : 'bg-emerald-500');
+
+function Meter({ label, pct, value, title }) {
+  const p = Math.max(0, Math.min(100, Number.isFinite(pct) ? pct : 0));
+  return (
+    <div className="grid grid-cols-[3.5rem_1fr_auto] items-center gap-2 text-xs" title={title}>
+      <span className="text-gray-500 truncate">{label}</span>
+      <div className="h-1.5 rounded-full bg-gray-700 overflow-hidden">
+        <div className={`h-full rounded-full ${tone(p)}`} style={{ width: `${p}%` }} />
+      </div>
+      <span className="text-gray-300 tabular-nums whitespace-nowrap">{value}</span>
+    </div>
+  );
+}
+
+function HostStats({ stats }) {
+  if (!stats) return <div className="mb-3 text-xs text-gray-600">measuring…</div>;
+  if (stats.error) return <div className="mb-3 text-xs text-gray-500">stats unavailable — {stats.error}</div>;
+  const memUsed = stats.memTotal - stats.memAvail;
+  const swapUsed = (stats.swapTotal || 0) - (stats.swapFree || 0);
+  const load = stats.load || [];
+  const loadNote = load.length ? `load ${load.map((x) => x.toFixed(1)).join(' ')}` : '';
+  return (
+    <div className="mb-3 space-y-1.5">
+      <Meter
+        label="CPU"
+        pct={stats.cpuPct}
+        value={`${Math.round(stats.cpuPct ?? 0)}% · ${stats.ncpu} cores`}
+        title={`${loadNote} (1, 5, 15 min) on ${stats.ncpu} cores`}
+      />
+      <Meter
+        label="Memory"
+        pct={(100 * memUsed) / stats.memTotal}
+        value={`${fmtBytes(memUsed)} / ${fmtBytes(stats.memTotal)}`}
+        title={`${fmtBytes(stats.memAvail)} available`}
+      />
+      {stats.swapTotal > 0 && (
+        <Meter
+          label="Swap"
+          pct={(100 * swapUsed) / stats.swapTotal}
+          value={`${fmtBytes(swapUsed)} / ${fmtBytes(stats.swapTotal)}`}
+        />
+      )}
+      {(stats.disks || []).map((d) => (
+        <Meter
+          key={d.mount}
+          label={(stats.disks.length > 1 ? d.mount : 'Disk')}
+          pct={(100 * (d.size - d.avail)) / d.size}
+          value={`${fmtBytes(d.avail)} free / ${fmtBytes(d.size)}`}
+          title={`${d.mount}`}
+        />
+      ))}
+      {(stats.gpus || []).map((g, i) => (
+        <Meter
+          key={i}
+          label={stats.gpus.length > 1 ? `GPU ${i}` : 'GPU'}
+          pct={g.util}
+          value={`${g.util}% · ${fmtBytes(g.memUsed)} / ${fmtBytes(g.memTotal)}`}
+          title={g.name}
+        />
+      ))}
+      <div className="text-[11px] text-gray-500 tabular-nums">
+        {loadNote}
+        {fmtUptime(stats.uptimeS) && <span> · up {fmtUptime(stats.uptimeS)}</span>}
+        {stats.wsl && <span> · WSL</span>}
+      </div>
+    </div>
+  );
+}
+
+function useHostStats() {
+  const [stats, setStats] = useState({});
+  useEffect(() => {
+    let stop = false;
+    let timer = null;
+    const load = async () => {
+      if (document.visibilityState === 'visible') {
+        try {
+          const res = await fetch('/api/hosts/stats');
+          if (res.ok && !stop) setStats(await res.json());
+        } catch { /* keep the last reading */ }
+      }
+      if (!stop) timer = setTimeout(load, STATS_POLL_MS);
+    };
+    load();
+    return () => { stop = true; clearTimeout(timer); };
+  }, []);
+  return stats;
+}
 
 // Chunked like the chat uploader, and for the same reason: Cloudflare kills any
 // request whose origin has not answered in ~100s, so a single-shot upload is capped
@@ -56,7 +165,7 @@ const STATUS = {
   unknown: { dot: 'bg-gray-500', text: 'text-gray-400', label: 'unknown' },
 };
 
-function HostCard({ host, agents, onAddShell, onTest, busy }) {
+function HostCard({ host, agents, onAddShell, onTest, busy, stats }) {
   const [adding, setAdding] = useState(false);
   const [testing, setTesting] = useState(false);
   const [err, setErr] = useState(null);
@@ -171,6 +280,8 @@ function HostCard({ host, agents, onAddShell, onTest, busy }) {
         </div>
       </div>
 
+      <HostStats stats={stats} />
+
       {err && (
         <div className="mb-2 text-xs text-red-300 bg-red-500/10 border border-red-500/40 rounded px-2 py-1">
           {err}
@@ -221,6 +332,7 @@ function HostCard({ host, agents, onAddShell, onTest, busy }) {
 export default function HostsView() {
   const { hosts, agents, createAgent, startAgent, openAgentView, testHost, loadAgents } = useApp();
   const [busy, setBusy] = useState(false);
+  const stats = useHostStats();
 
   const byHost = useMemo(() => {
     const m = new Map();
@@ -290,6 +402,7 @@ export default function HostsView() {
           onAddShell={addShell}
           onTest={testHost}
           busy={busy}
+          stats={stats[h.id]}
         />
       ))}
     </div>

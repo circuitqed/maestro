@@ -5,6 +5,7 @@ import { agentTokenOk } from '../middleware/agentIdentity.js';
 import { getHosts, getHost, createHost, updateHost, deleteHost, countAgentsOnHost } from '../services/db.js';
 import { testHost } from '../services/hosts.js';
 import { receiveUpload } from '../services/upload.js';
+import { allHostStats } from '../services/hostStats.js';
 
 const router = Router();
 
@@ -37,6 +38,16 @@ const isValidRoot = (p) => typeof p === 'string' && p.startsWith('/');
 router.get('/', (req, res) => {
   try {
     res.json(getHosts());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CPU, memory, disk, GPU, uptime for every host (Hosts tab polls this while open).
+// Cached a few seconds server-side: each measurement samples CPU for a second.
+router.get('/stats', async (req, res) => {
+  try {
+    res.json(await allHostStats());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
