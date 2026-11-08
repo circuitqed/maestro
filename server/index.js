@@ -25,7 +25,7 @@ import { setupTerminalWS } from './services/terminal.js';
 import { setupTranscriptWS } from './services/transcript.js';
 import { initDb, getUserCount, getAgents, getHost } from './services/db.js';
 import SQLiteStore from './services/sessionStore.js';
-import { startMonitoring, onStateChange, getAllAgentStates, registerAgent } from './services/agentMonitor.js';
+import { startMonitoring, onStateChange, getAllAgentStates, getAllWaiting, registerAgent } from './services/agentMonitor.js';
 import { startUpdateWatch } from './services/updateWatch.js';
 import { startAgentSession } from './services/agentStart.js';
 import { observeIdle } from './services/inject.js';
@@ -167,6 +167,7 @@ notifyWss.on('connection', (ws) => {
   ws.send(JSON.stringify({
     type: 'initial_states',
     states: getAllAgentStates(),
+    waiting: getAllWaiting(),
   }));
 
   ws.on('close', () => {

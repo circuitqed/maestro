@@ -445,6 +445,23 @@ last request started 270 s ago.
 - **Never** into a busy pane or a question (inject.js), over a typed draft (Claude's
   suggested prompt is dim, SGR 2; a draft is not), or within 2 min of chat input.
 
+### "Needs you": agents stopped on a prompt
+
+An agent stopped on a permission prompt, an AskUserQuestion or a model dialog stops
+changing its pane, so it read as a calm `idle` and sat until someone opened it.
+em-sim-core spent a morning on a false "Dangerous rm operation" prompt, lapsing its
+cache 22 times ($76). The monitor now tests every captured pane with
+`isQuestionWidget` (agentMonitor.js) and publishes `agent_waiting {agentId, since}`
+on the notifications socket (and `waiting` in `initial_states`). The dashboard puts
+those agents in a **Needs you** section above both views, oldest first, never
+collapsed, pulled out of every other list including Favorites; the row carries a
+"needs you · 12m" badge, and a sound/notification fires when one starts waiting.
+
+Detection is stricter than inject.js's `looksLikePrompt`: the cursor must sit ON a
+numbered option (`❯ 1. Yes`). The looser test is right for refusing a delivery, but
+a reply ending in a numbered list above a normal composer matched it -- cryostat and
+bose-linc both showed as waiting on the first deploy.
+
 ### Sending files to a host
 
 `POST /api/hosts/:id/upload` lands a file in `<default_root>/inbox` on that machine,

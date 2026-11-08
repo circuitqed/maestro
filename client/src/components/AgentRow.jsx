@@ -16,7 +16,8 @@ const STATUS_COLORS = {
 };
 
 function AgentRow({ agent, showProject = false }) {
-  const { startAgent, stopAgent, deleteAgent, openAgentView, toggleAgentFavorite } = useApp();
+  const { startAgent, stopAgent, deleteAgent, openAgentView, toggleAgentFavorite, agentWaiting } = useApp();
+  const waitingAt = agentWaiting && agentWaiting[agent.id];
   const [showMenu, setShowMenu] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -115,6 +116,14 @@ function AgentRow({ agent, showProject = false }) {
         <div className="font-medium text-white text-sm flex items-center gap-1.5 min-w-0">
           <ProviderIcon provider={iconProvider(agent.config)} className="w-3.5 h-3.5 flex-shrink-0" />
           <span className="truncate">{agent.name}</span>
+          {waitingAt && !st.stale && (
+            <span
+              className="flex-shrink-0 text-[10px] uppercase tracking-wide px-1 py-0.5 rounded bg-amber-500/20 text-amber-300"
+              title="Stopped on a question or permission prompt. Open it to answer."
+            >
+              needs you{sinceLabel(waitingAt) && sinceLabel(waitingAt) !== 'just now' ? ` · ${sinceLabel(waitingAt).replace(' ago', '')}` : ''}
+            </span>
+          )}
           {st.stale && (
             <span
               className="flex-shrink-0 text-[10px] uppercase tracking-wide px-1 py-0.5 rounded bg-amber-500/15 text-amber-300"

@@ -10,6 +10,8 @@ export function useNotifications(authenticated) {
   const reconnectAttemptRef = useRef(0);
   const reconnectTimeoutRef = useRef(null);
   const [agentStates, setAgentStates] = useState({});
+  // agentId -> ISO time it began waiting on a prompt only a person can answer
+  const [agentWaiting, setAgentWaiting] = useState({});
   const [soundEnabled, setSoundEnabled] = useState(() => {
     return localStorage.getItem('notificationSound') !== 'false';
   });
@@ -67,6 +69,23 @@ export function useNotifications(authenticated) {
 
         if (data.type === 'initial_states') {
           setAgentStates(data.states);
+          setAgentWaiting(data.waiting || {});
+        } else if (data.type === 'agent_waiting') {
+          setAgentWaiting((prev) => {
+            const next = { ...prev };
+            if (data.since) next[data.agentId] = data.since;
+            else delete next[data.agentId];
+            return next;
+          });
+          if (data.since) {
+            playSound();
+            if (Notification.permission === 'granted') {
+              new Notification('Agent needs you', {
+                body: `${data.sessionName} is stopped on a question`,
+                icon: '/favicon.ico',
+              });
+            }
+          }
         } else if (data.type === 'agent_state_change') {
           setAgentStates((prev) => ({
             ...prev,
@@ -163,6 +182,7 @@ export function useNotifications(authenticated) {
 
   return {
     agentStates,
+    agentWaiting,
     soundEnabled,
     toggleSound,
     connected,

@@ -56,6 +56,8 @@ export function registerAgent(agentId, sessionName, host = null) {
  * Unregister an agent from monitoring
  */
 export function unregisterAgent(agentId) {
+  const info = agentActivity.get(agentId);
+  if (info && info.waitingSince) emitWaiting(agentId, info.sessionName, null);
   agentActivity.delete(agentId);
 }
 
@@ -100,6 +102,7 @@ async function capturePaneContent(sessionName, host = null) {
 async function checkPaneActivity(agentId, info) {
   const content = await capturePaneContent(info.sessionName, info.host);
   if (content === null) return;
+  noteWaiting(agentId, info, isQuestionWidget(content));
 
   // Check if content changed
   if (content !== info.lastContent) {
@@ -336,6 +339,53 @@ async function syncHostGroup(host, hostAgents) {
       }
     }
   }
+}
+
+/**
+ * Is the agent stopped on a question only a person can answer -- a permission
+ * prompt, AskUserQuestion, a model dialog? Those are invisible from the dashboard:
+ * the pane stops changing, so the agent reads as a calm 'idle', and it sits there
+ * until someone happens to open it. em-sim-core spent a morning on a "Dangerous rm
+ * operation not ruled out" prompt, lapsing its cache 22 times ($76) while it looked
+ * fine. Same shape test inject.js uses to refuse delivery into such a prompt.
+ *
+ * Kept beside the idle/busy state rather than replacing it: an agent can be waiting
+ * on a prompt while a background subagent still works.
+ */
+// Stricter than inject.js's looksLikePrompt, on purpose. That one only has to be
+// safe (refusing a delivery costs a retry), so "a cursor somewhere plus two numbered
+// lines" is fine -- but a reply that ends in a numbered list above an ordinary
+// composer matches it too, and here a false positive would cry wolf on the one
+// section meant to be trusted. A real select widget puts the cursor ON an option
+// ("❯ 1. Yes"); the composer's cursor is followed by text, or by nothing.
+export function isQuestionWidget(pane) {
+  const lines = String(pane || '').split('\n').map((l) => l.trim()).filter(Boolean).slice(-18);
+  const onOption = lines.some((l) => /^❯\s*\d+[.)]\s+\S/.test(l));
+  const numbered = lines.filter((l) => /^(❯\s*)?\d+[.)]\s+\S/.test(l)).length;
+  return onOption && numbered >= 2;
+}
+
+function noteWaiting(agentId, info, waiting) {
+  const was = info.waitingSince || null;
+  if (waiting && !was) info.waitingSince = new Date().toISOString();
+  else if (!waiting && was) info.waitingSince = null;
+  else return;
+  emitWaiting(agentId, info.sessionName, info.waitingSince);
+}
+
+function emitWaiting(agentId, sessionName, since) {
+  const event = { type: 'agent_waiting', agentId, sessionName, since, timestamp: new Date().toISOString() };
+  console.log(`Agent ${sessionName}: ${since ? 'waiting on a prompt' : 'prompt answered'}`);
+  for (const listener of stateListeners) {
+    try { listener(event); } catch (err) { console.error('Error in state listener:', err); }
+  }
+}
+
+/** agentId -> ISO time it started waiting on a prompt, for agents waiting now. */
+export function getAllWaiting() {
+  const out = {};
+  for (const [agentId, info] of agentActivity) if (info.waitingSince) out[agentId] = info.waitingSince;
+  return out;
 }
 
 /**

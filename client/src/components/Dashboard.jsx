@@ -20,6 +20,7 @@ function Section({ title, count, defaultCollapsed = false, children, variant = '
     active: 'text-blue-400',
     idle: 'text-green-400',
     stopped: 'text-gray-500',
+    waiting: 'text-amber-400',
   };
 
   return (
@@ -47,7 +48,7 @@ function Section({ title, count, defaultCollapsed = false, children, variant = '
 }
 
 function Dashboard() {
-  const { projects, agents, createProject, agentStates, loadAgents, swarms, swarmAuths } = useApp();
+  const { projects, agents, createProject, agentStates, agentWaiting, loadAgents, swarms, swarmAuths } = useApp();
   const [view, setView] = useState(() => localStorage.getItem('dashboardView') || 'projects');
   const [showAddProject, setShowAddProject] = useState(false);
   const [showAddAgent, setShowAddAgent] = useState(false);
@@ -108,6 +109,7 @@ function Dashboard() {
     // not land in "Ready" -- that section is collapsed by default, which is how
     // eight dead agents came to be filed under a heading claiming they were fine.
     if (isUnresponsive(a)) return 'unresponsive';
+    if (agentWaiting && agentWaiting[a.id]) return 'waiting';
     const s = liveStatus(a);
     if (s === 'stopped') return 'stopped';
     if (s === 'busy' || s === 'running') return 'active';
@@ -151,7 +153,7 @@ function Dashboard() {
   const getProjectActivity = (project) => {
     if (isNewProject(project)) return 'active';
     const buckets = (projectAgents[project.id] || []).map(bucket);
-    if (buckets.includes('active')) return 'active';
+    if (buckets.includes('active') || buckets.includes('waiting')) return 'active';
     if (buckets.includes('idle')) return 'idle';
     return 'stopped';
   };
@@ -197,7 +199,11 @@ function Dashboard() {
   // Pinned agents come out of the normal buckets entirely: showing one both under
   // Favorites and under Active reads as a duplicate row, and the whole point is
   // that the few you are working with stop sliding down the list.
-  const favoriteAgents = agents.filter((a) => a.favorite).sort(byRecency);
+  // Waiting on a question comes out of every other list, favourites included: it is
+  // the one state that needs Dave, and it was invisible under a calm "idle".
+  const waitingSince = (a) => tsOf(agentWaiting && agentWaiting[a.id]);
+  const waitingAgents = agents.filter((a) => bucket(a) === 'waiting').sort((x, y) => waitingSince(x) - waitingSince(y));
+  const favoriteAgents = agents.filter((a) => a.favorite && bucket(a) !== 'waiting').sort(byRecency);
   const notFav = (a) => !a.favorite;
   const activeAgents = agents.filter((a) => notFav(a) && bucket(a) === 'active').sort(byRecency);
   const idleAgents = agents.filter((a) => notFav(a) && bucket(a) === 'idle').sort(byRecency);
@@ -337,6 +343,19 @@ function Dashboard() {
       {pendingSwarms.map((swarm) => (
         <SwarmApprovalCard key={swarm.id} swarm={swarm} />
       ))}
+
+      {/* Agents stopped on a prompt only a person can answer (permission, question,
+          dialog). Above both views, never collapsed, oldest first: each one is
+          blocked until someone opens it, and nothing else on the page says so. */}
+      {waitingAgents.length > 0 && (
+        <Section title="Needs you" count={waitingAgents.length} variant="waiting">
+          <div className="space-y-2">
+            {waitingAgents.map((agent) => (
+              <AgentRow key={agent.id} agent={agent} showProject />
+            ))}
+          </div>
+        </Section>
+      )}
 
       {/* Projects View */}
       {view === 'projects' && (

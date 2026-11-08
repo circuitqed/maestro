@@ -29,6 +29,7 @@ export function AppProvider({ children }) {
   // Notifications
   const {
     agentStates,
+    agentWaiting,
     soundEnabled,
     toggleSound,
     connected: notificationsConnected,
@@ -751,6 +752,7 @@ export function AppProvider({ children }) {
 
     // Notifications
     agentStates,
+    agentWaiting,
     soundEnabled,
     toggleSound,
     notificationsConnected,
