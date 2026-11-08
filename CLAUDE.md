@@ -420,7 +420,7 @@ last request started 270 s ago.
 
 - **The ping is allowed to be useful.** It invites a quick check (`yap new`, a
   background job) and otherwise a one-character reply. It must not start long work.
-- **Capped by ski rental, in dollars:** pings stop once their measured cost (each
+- **Capped by ski rental, in dollars, at HALF a rewrite** (`CAP_FRACTION`): pings stop once their measured cost (each
   ping turn's own usage, every request in it) reaches the cost of rewriting the
   current context. It was a count (write/read price = 25 on Opus 5.5), but a ping
   that checks `yap new` is 2-3 requests, $0.17-0.25 not $0.06, so the count let ~3x

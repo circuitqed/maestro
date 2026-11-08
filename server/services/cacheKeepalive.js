@@ -48,6 +48,7 @@ const SCOPE = 'keepalive';
 export const MARKER = '[maestro keepalive]';
 const PING_AFTER_S = 270;
 const USER_QUIET_S = 120; // someone sent this agent input recently: leave it alone
+const CAP_FRACTION = 0.5; // stop once pings in one idle stretch cost this much of a rewrite
 const ACCOUNT_TTL_MS = 30 * 60 * 1000;
 const FILE_TTL_MS = 60 * 1000;
 
@@ -236,8 +237,12 @@ async function tick() {
       if (age < PING_AFTER_S) continue;
       // Already lapsed: a ping now would pay the full rewrite for nothing.
       if (age > 300) continue;
-      // Ski rental: the pings have cost one rewrite; buy the skis and stop.
-      if (st.spent >= last.rewriteCost) continue;
+      // Ski rental, at half a rewrite. Classic ski rental stops at one full rewrite;
+      // simulated on this fleet's real idle gaps (2026-11-04..06), the cheapest cap
+      // was usually lower, because a gap that outlasts a few pings tends to be a long
+      // one (overnight, a long job) and the pings only delay the lapse. Measured on
+      // 2026-11-07 at the full cap: $127 of pings against $49 of lapses saved.
+      if (st.spent >= last.rewriteCost * CAP_FRACTION) continue;
       if (await hasDraft(agent, host)) continue;
 
       // Settled by the transcript: its turn ended 270 s ago and nothing is in flight.
