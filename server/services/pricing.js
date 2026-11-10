@@ -59,6 +59,11 @@ const ANTHROPIC = {
   // Priced by prompt size: <=100k tokens vs over.
   'claude-haiku-5-5':  { in: 0.10, out: 0.50, cw5: 0.125, cw1h: 0.20, read: 0.01,
     long:              { in: 0.50, out: 2.50, cw5: 0.625, cw1h: 1,    read: 0.05 } },
+  // DeepSeek through the Stanford LiteLLM gateway (Anthropic route), measured
+  // 2026-11-10 from x-litellm-response-cost: cached input bills at 1.5x fresh input
+  // ($0.3375 vs $0.225), and above Opus 5.5's $0.20 read. No cache write is ever
+  // reported, so cw5/cw1h are just the input price.
+  'deepseek v4-1 flash 1017': { in: 0.225, out: 1.80, cw5: 0.225, cw1h: 0.225, read: 0.3375 },
 };
 
 // OpenAI/Codex. The shape differs: one cached-input price and no separate write
