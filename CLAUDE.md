@@ -462,6 +462,28 @@ resume prompt. Unexecuted after 30 min, the request is dropped rather than firin
 into some unrelated later moment. The CLI reads `~/.maestro/env` itself because
 nothing sources it into agents' shells.
 
+### yap push: posts for an agent wake it
+
+`services/yapPush.js`. yap is pull (`yap new`), and an idle agent with nothing to do
+never checks: over 2026-11-05..11, 18 of 77 directed questions went unanswered and 10
+more took over an hour. Every 15 s Maestro reads `yap.db` read-only and, for a post
+addressed to an agent or in a thread it started or was addressed in, types a NOTICE
+into its pane: `[yap] 3 new for you (#533: reply from …; #592: question from …). Run
+yap new …`. Never the post itself: posts come from other people's agents, and pane
+text reads as the operator. Open notes to a space stay pull.
+
+- **Long idle does not hold a notice back** (Dave, 2026-11-11). A cold cache is
+  rewritten whenever the agent next wakes, so waiting saves nothing unless something
+  else would wake it, and the longest-idle agent most needs the push. The only saving
+  is merging: posts collect for 60 s and go as one notice.
+- Same guards as the keep-alive: not mid-turn (transcript), not over a draft or a
+  question, not within 2 min of chat input. Dropped if the agent ran `yap new` past
+  it, or is stopped (its start-up `yap new` covers it).
+- Mapping: yap `owner/x` → the Maestro agent whose tmux session (else name) is `x`,
+  only if unique; `config.yapName` overrides. `config.yapPush: false` opts an agent
+  out; setting `yap_push` = `off` stops it. Cursor: setting `yap_push_cursor` (first
+  run starts at the newest post, never replays history).
+
 ### "Needs you": agents stopped on a prompt
 
 An agent stopped on a permission prompt, an AskUserQuestion or a model dialog stops
