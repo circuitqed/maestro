@@ -512,7 +512,10 @@ it had spent itself. `GET /api/agent/spend` (CLI `maestro-usage spend [--all]`):
   `aws_meter_ledger` by UTC day and `project` tag. A floor: no data transfer, IPv4,
   IOPS, S3, or anything deleted before `aws_meter_started_at`. `billed()` asks Cost
   Explorer (6 h cache, $0.01/request) and supersedes the meter once the key is granted
-  `ce:GetCostAndUsage`. Agent -> tag: `config.awsProject`, else its session, name or
+  `ce:GetCostAndUsage` (granted 2026-11-13). This is a Stanford member account: tag
+  activation is refused here ("Linked account doesn't have access"), but `project` is
+  already active upstream, so the bill splits by project. The bill lags ~1 day; the
+  meter is same-day. Agent -> tag: `config.awsProject`, else its session, name or
   project name matched against seen tags ignoring punctuation. Dashboard JSON:
   `GET /api/usage/aws`. `aws_meter`=`off` disables it.
 - Agents are told about it in the shared CLAUDE.md files (oracle, zlmc's three, whistler).

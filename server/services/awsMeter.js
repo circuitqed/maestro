@@ -45,7 +45,7 @@ const LARGE = {
   m7i: 0.1008, c7i: 0.08925, r7i: 0.1323, m7a: 0.11592, c7a: 0.10264, r7a: 0.15215,
   m6i: 0.096, c6i: 0.085, r6i: 0.126, m6a: 0.0864, c6a: 0.0765, r6a: 0.1134,
   m5: 0.096, c5: 0.085, r5: 0.126, t3: 0.0832, t3a: 0.0752, t4g: 0.0672,
-  m7g: 0.0816, c7g: 0.0725, r7g: 0.1071,
+  m7g: 0.0816, c7g: 0.0725, r7g: 0.1071, m8g: 0.08976, c8g: 0.07976, r8g: 0.11782,
 };
 const SIZE = { nano: 1 / 16, micro: 1 / 8, small: 1 / 4, medium: 1 / 2, large: 1 };
 // USD per GB-month.
@@ -313,7 +313,8 @@ export async function billed() {
         : `Cost Explorer: ${e.name || e.message}`,
     };
   }
-  billedCache = { at: Date.now(), value };
+  // A refusal is cached briefly, so a newly granted permission shows up within minutes.
+  billedCache = { at: value.ok ? Date.now() : Date.now() - BILLED_TTL_MS + 10 * 60 * 1000, value };
   return value;
 }
 
