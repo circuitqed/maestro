@@ -189,6 +189,14 @@ panel/modal header switches live. The tmux TUI stays the single source of truth:
   numbered widget, and renders clickable options; a click POSTs to `/answer`,
   which presses that option's number key (`tmux send-keys <n>`) to select+submit.
   Answered questions render from the transcript with the chosen option marked.
+- **Multi-question forms** (AskUserQuestion with several questions, or any multiSelect)
+  are tabbed (`←  ☒ Color  ☐ Toppings  ✔ Submit  →`), and the last tab, "Review your
+  answers", has **no footer line** — the parser falls back to the tab bar there, or the
+  Submit screen never shows. Multi-select numbers only TOGGLE; the card's Next walks the
+  cursor to the unnumbered "Submit" row (→ is a text-cursor key inside the field).
+  "Type something" is a field, rendered as a text box: single-select presses its number
+  then pastes; multi-select walks the cursor onto it, pastes, and presses one more Enter
+  (typing ticks the row, the paste's Enter unticks it). Verified live 2026-11-13.
 - **Locating the transcript:** the filename equals the session UUID. On claude
   start, Maestro pins `--session-id <uuid>` (stored in `agents.claude_session_id`)
   so the file is found by globbing `<uuid>.jsonl`; fallback is the newest `.jsonl`

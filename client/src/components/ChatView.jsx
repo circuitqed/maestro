@@ -716,21 +716,40 @@ function parseActivePrompt(text) {
   // Footer of a live select widget. Claude: "↑/↓ to select" etc.; Codex: "Press
   // enter to continue" under a › cursor. Either way the numbered options sit above
   // it and a number key selects+submits (POST /answer works for both providers).
-  const footerIdx = lines.findIndex((l) => /to select|to navigate|Esc to cancel|↑\/↓|press enter to /i.test(l));
+  // A multi-question AskUserQuestion is a tabbed form: "←  ☒ Color  ☐ Toppings  ✔ Submit  →".
+  const TAB_BAR = /^\s*←\s+(.*\S)\s+→\s*$/;
+  const tabIdx = lines.findIndex((l) => TAB_BAR.test(l) && /Submit/.test(l));
+  let footerIdx = lines.findIndex((l) => /to select|to navigate|Esc to cancel|↑\/↓|press enter to /i.test(l));
+  // The form's last tab ("Review your answers … ❯ 1. Submit answers  2. Cancel") has
+  // NO footer line, so keying on the footer alone hid the one screen that submits.
+  if (footerIdx === -1 && tabIdx !== -1) {
+    footerIdx = lines.length;
+    while (footerIdx > tabIdx + 1 && !lines[footerIdx - 1].trim()) footerIdx--;
+  }
   if (footerIdx === -1) return null;
   const options = [];
   let firstOptIdx = -1;
   const start = Math.max(0, footerIdx - 25);
+  // Where the ❯ cursor sits: on a numbered row (its index), or on a multi-select's
+  // unnumbered "Submit" row (submitCursor). Arrow-driven answers need it.
+  let numberedCursor = -1;
+  let submitCursor = false;
   for (let i = start; i < footerIdx; i++) {
+    if (/^\s*[❯›]\s+Submit\s*$/.test(lines[i])) submitCursor = true;
     const m = lines[i].match(/^[\s│┃▎☐☑◉○❯›>*·-]*?(\d+)[.)]\s+(.*\S)\s*$/);
     if (m) {
       if (firstOptIdx === -1) firstOptIdx = i;
+      if (/^[\s│┃▎]*[❯›]/.test(lines[i])) numberedCursor = options.length;
       // A ✔ marks the value already in effect (the /model picker uses it). Pull it
       // out of the label so the UI can show "current" as state rather than leaving
       // a stray tick buried in the middle of the text.
       const raw = m[2].trim();
-      const current = /[✔✓]/.test(raw);
-      options.push({ n: parseInt(m[1], 10), label: raw.replace(/[✔✓]/g, '').replace(/\s{2,}/g, '  ').trim(), current });
+      // A checkbox's tick ("[✔] Cheese") is its state, not "current"; keep it for
+      // the checkbox pass below.
+      const box = /^\[[ ✔✓xX]\]/.exec(raw);
+      const rest = box ? raw.slice(box[0].length) : raw;
+      const current = /[✔✓]/.test(rest);
+      options.push({ n: parseInt(m[1], 10), label: (box ? box[0] + ' ' : '') + rest.replace(/[✔✓]/g, '').replace(/\s{2,}/g, '  ').trim(), current });
     }
   }
   // Not every select is numbered. Claude's "Do you trust this folder?" is driven purely
@@ -782,8 +801,48 @@ function parseActivePrompt(text) {
     }
   }
   if (options.length === 0) return null;
+
+  // What each AskUserQuestion row really is. A multi-select row is "[ ] Cheese" /
+  // "[✔] Cheese" and its number TOGGLES (nothing advances); "Type something" is a
+  // text field (press its number, type, Enter), not an answer; "Chat about this"
+  // abandons the form.
+  for (const o of options) {
+    const cb = /^\[([ ✔✓xX])\]\s*(.*)$/.exec(o.label);
+    if (cb) { o.checkbox = true; o.checked = cb[1] !== ' '; o.label = cb[2].trim(); }
+    if (/^Type something\.?$/i.test(o.label)) o.kind = 'text';
+    else if (/^Chat about this$/i.test(o.label)) o.kind = 'chat';
+  }
+  const multi = options.some((o) => o.checkbox);
+  // Row positions for arrow navigation in a multi-select: the checkboxes, then Submit.
+  const boxes = options.filter((o) => o.checkbox).length;
+  const cursorPos = submitCursor ? boxes : numberedCursor;
+
+  let tabs = null;
+  if (tabIdx !== -1 && tabIdx < firstOptIdx) {
+    tabs = TAB_BAR.exec(lines[tabIdx])[1].split(/\s{2,}/).map((t) => {
+      const m = /^([☐☒✔])\s*(.*)$/.exec(t.trim());
+      return m ? { label: m[2], done: m[1] !== '☐', submit: m[1] === '✔' } : { label: t.trim(), done: false };
+    });
+  }
+
+  // The review tab: the answers so far, then "Ready to submit your answers?".
+  const reviewAt = lines.findIndex((l, i) => i > tabIdx && i < firstOptIdx && /^\s*Review your answers\s*$/.test(l));
+  if (tabIdx !== -1 && reviewAt !== -1) {
+    const review = [];
+    for (let i = reviewAt + 1; i < firstOptIdx; i++) {
+      const q = /^\s*●\s*(.*\S)/.exec(lines[i]);
+      const a = /^\s*→\s*(.*\S)/.exec(lines[i]);
+      if (q) review.push({ q: q[1], a: '' });
+      else if (a && review.length) review[review.length - 1].a = a[1];
+    }
+    const ask = lines.slice(reviewAt + 1, firstOptIdx).map((l) => l.trim()).filter((l) => /\?$/.test(l)).pop();
+    const warning = lines.slice(reviewAt + 1, firstOptIdx).map((l) => l.trim()).find((l) => /^⚠/.test(l));
+    return { question: ask || 'Ready to submit your answers?', options, cursorIndex, tabs, review, warning: warning ? warning.replace(/^⚠\s*/, '') : null, multi: false };
+  }
+
   const qLines = [];
   for (let i = firstOptIdx - 1; i >= start && qLines.length < 4; i--) {
+    if (i === tabIdx) break; // the tab bar is above the question, not part of it
     const t = lines[i].replace(/[│╰╯╭╮─┃▎☐☑◉○❯›>]/g, '').trim();
     if (!t) {
       if (qLines.length) break;
@@ -792,7 +851,7 @@ function parseActivePrompt(text) {
     if (/to select|to navigate/.test(t)) break;
     qLines.unshift(t);
   }
-  return { question: qLines.join(' ').slice(0, 400), options, cursorIndex };
+  return { question: qLines.join(' ').slice(0, 400), options, cursorIndex, tabs, multi, cursorPos, submitPos: boxes };
 }
 
 // Characters that can legitimately appear in a URL — used to decide whether the
@@ -1375,8 +1434,42 @@ function ModelPromptCard({ prompt, onAnswer, onPressKeys, provider }) {
   );
 }
 
-function ActivePromptCard({ prompt, onAnswer, onPressKeys }) {
+const moveKeys = (from, to) => Array(Math.abs(to - from)).fill(to > from ? 'Down' : 'Up');
+
+function ActivePromptCard({ prompt, onAnswer, onPressKeys, onTypeAnswer }) {
   const [busy, setBusy] = useState(false);
+  const [typed, setTyped] = useState('');
+  const textOpt = prompt.options.find((o) => o.kind === 'text' && o.n);
+  const choices = prompt.options.filter((o) => o.kind !== 'text' && o.kind !== 'chat');
+  const chatOpt = prompt.options.find((o) => o.kind === 'chat' && o.n);
+  // "Type something": its number opens the field, then the text goes in over the
+  // same paste path as a chat message (inert, and it ends with Enter).
+  const sendTyped = async () => {
+    const text = typed.replace(/\s*\n\s*/g, ' ').trim();
+    if (!text || !textOpt || !onTypeAnswer || busy) return;
+    setBusy(true);
+    try {
+      if (prompt.multi) {
+        // A multi-select's number only ticks the row, and its field takes text only
+        // with the cursor on it. Typing ticks the row; Enter toggles it. So walk
+        // there, paste (whose Enter unticks), then one more Enter to tick it again.
+        if (!onPressKeys || prompt.cursorPos == null || prompt.cursorPos < 0) return;
+        const keys = moveKeys(prompt.cursorPos, prompt.options.indexOf(textOpt));
+        if (keys.length) await onPressKeys(keys);
+      } else {
+        await onAnswer(textOpt.n); // focuses the field
+      }
+      await new Promise((r) => setTimeout(r, 500));
+      await onTypeAnswer(text);
+      if (prompt.multi) {
+        await new Promise((r) => setTimeout(r, 400));
+        await onPressKeys(['Enter']);
+      }
+      setTyped('');
+    } finally {
+      setBusy(false);
+    }
+  };
   // Un-numbered widgets have no key that selects directly, so move the cursor the
   // required number of rows and press Enter — the same trick the model picker uses for
   // "this session only".
@@ -1402,31 +1495,134 @@ function ActivePromptCard({ prompt, onAnswer, onPressKeys }) {
           </svg>
           <span className="font-medium">The agent is waiting for your answer</span>
         </div>
+        {prompt.tabs && prompt.tabs.length > 1 && (
+          // The form's questions, done or not; ← / → move between them.
+          <div className="flex flex-wrap items-center gap-1 mb-2">
+            {prompt.tabs.map((t, i) => (
+              <span
+                key={`${t.label}-${i}`}
+                className={`text-[11px] rounded px-1.5 py-0.5 border ${
+                  t.submit
+                    ? 'border-gray-600 text-gray-400'
+                    : t.done
+                      ? 'border-green-600/50 bg-green-900/20 text-green-300'
+                      : 'border-gray-600 text-gray-300'
+                }`}
+              >
+                {t.submit ? '' : t.done ? '✓ ' : ''}{t.label}
+              </span>
+            ))}
+            {onPressKeys && (
+              <span className="ml-auto flex gap-1">
+                <button type="button" disabled={busy} onClick={() => onPressKeys(['Left'])}
+                        className="text-[11px] rounded border border-gray-600 px-1.5 py-0.5 text-gray-300 hover:border-blue-400 disabled:opacity-50"
+                        title="Previous question">←</button>
+                <button type="button" disabled={busy} onClick={() => onPressKeys(['Right'])}
+                        className="text-[11px] rounded border border-gray-600 px-1.5 py-0.5 text-gray-300 hover:border-blue-400 disabled:opacity-50"
+                        title="Next question">→</button>
+              </span>
+            )}
+          </div>
+        )}
         {prompt.question && (
           <div className="text-sm text-gray-100 mb-1.5 whitespace-pre-wrap break-words">{prompt.question}</div>
         )}
+        {prompt.review && prompt.review.length > 0 && (
+          <dl className="mb-2 space-y-1 text-sm">
+            {prompt.review.map((r, i) => (
+              <div key={i}>
+                <dt className="text-gray-400 text-xs">{r.q}</dt>
+                <dd className="text-gray-100">{r.a || <span className="text-amber-300">not answered</span>}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+        {prompt.warning && (
+          <div className="mb-2 text-xs text-amber-300">⚠ {prompt.warning}</div>
+        )}
         <div className="space-y-1">
-          {prompt.options.map((opt, idx) => (
-            <button
-              key={opt.n ?? `c${idx}`}
-              type="button"
-              disabled={busy}
-              onClick={() => choose(opt, idx)}
-              className={`w-full text-left rounded border px-2.5 py-1.5 text-sm text-gray-100 transition-colors cursor-pointer disabled:opacity-50 ${
-                idx === prompt.cursorIndex && !opt.n
-                  ? 'border-blue-400/70 bg-blue-900/30'
-                  : 'border-gray-600 hover:border-blue-400 hover:bg-blue-900/20'
-              }`}
-            >
-              {opt.n ? <span className="text-gray-500">{opt.n}.</span> : null} {opt.label}
-              {opt.current && (
-                <span className="ml-1.5 text-[10px] rounded bg-blue-600/40 text-blue-200 px-1.5 py-0.5 align-middle">
-                  current
-                </span>
-              )}
-            </button>
-          ))}
+          {choices.map((opt) => {
+            const idx = prompt.options.indexOf(opt);
+            return (
+              <button
+                key={opt.n ?? `c${idx}`}
+                type="button"
+                disabled={busy}
+                onClick={() => choose(opt, idx)}
+                aria-pressed={opt.checkbox ? opt.checked : undefined}
+                className={`w-full text-left rounded border px-2.5 py-1.5 text-sm text-gray-100 transition-colors cursor-pointer disabled:opacity-50 ${
+                  (idx === prompt.cursorIndex && !opt.n) || opt.checked
+                    ? 'border-blue-400/70 bg-blue-900/30'
+                    : 'border-gray-600 hover:border-blue-400 hover:bg-blue-900/20'
+                }`}
+              >
+                {opt.checkbox ? (
+                  <span className={opt.checked ? 'text-blue-300' : 'text-gray-500'}>{opt.checked ? '☑' : '☐'}</span>
+                ) : opt.n ? (
+                  <span className="text-gray-500">{opt.n}.</span>
+                ) : null}{' '}
+                {opt.label}
+                {opt.current && (
+                  <span className="ml-1.5 text-[10px] rounded bg-blue-600/40 text-blue-200 px-1.5 py-0.5 align-middle">
+                    current
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
+        {textOpt && onTypeAnswer && (
+          <form
+            className="mt-1.5 flex gap-1.5"
+            onSubmit={(e) => { e.preventDefault(); sendTyped(); }}
+          >
+            <input
+              type="text"
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              disabled={busy}
+              placeholder="Or type your own answer…"
+              aria-label="Type your own answer"
+              className="min-w-0 flex-1 rounded border border-gray-600 bg-gray-900/60 px-2.5 py-1.5 text-sm text-gray-100 placeholder-gray-500 focus:border-blue-400 focus:outline-none"
+            />
+            <button
+              type="submit"
+              disabled={busy || !typed.trim()}
+              className="rounded border border-blue-500/70 bg-blue-700/40 px-3 py-1.5 text-sm text-blue-100 hover:bg-blue-700/60 disabled:opacity-40"
+            >
+              Answer
+            </button>
+          </form>
+        )}
+        {(prompt.multi || chatOpt) && (
+          <div className="mt-2 flex items-center gap-2">
+            {prompt.multi && onPressKeys && (
+              // Numbers only toggle a multi-select. Its own "Submit" row moves on (to
+              // the next question, or the review); → would not while the cursor is in
+              // the text field, where it moves the text cursor instead.
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onPressKeys(
+                  prompt.cursorPos >= 0 ? [...moveKeys(prompt.cursorPos, prompt.submitPos), 'Enter'] : ['Right']
+                )}
+                className="rounded border border-blue-500/70 bg-blue-700/40 px-3 py-1 text-sm text-blue-100 hover:bg-blue-700/60 disabled:opacity-50"
+              >
+                Next →
+              </button>
+            )}
+            {chatOpt && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onAnswer(chatOpt.n)}
+                className="ml-auto text-xs text-gray-400 hover:text-gray-200 underline-offset-2 hover:underline disabled:opacity-50"
+              >
+                {chatOpt.label} instead
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -3099,7 +3295,7 @@ function ChatView({ agentId, session, onMeta }) {
 
   const onAnswerQuestion = useCallback(
     (choice) => {
-      answerAgentQuestion(agentId, choice).catch((e) =>
+      return answerAgentQuestion(agentId, choice).catch((e) =>
         setSendError(e.message || 'Failed to answer')
       );
     },
@@ -3441,7 +3637,7 @@ function ChatView({ agentId, session, onMeta }) {
                   onPressKeys={onPressKeys}
                 />
               ) : activePrompt ? (
-                <ActivePromptCard prompt={activePrompt} onAnswer={onAnswerQuestion} onPressKeys={onPressKeys} />
+                <ActivePromptCard prompt={activePrompt} onAnswer={onAnswerQuestion} onPressKeys={onPressKeys} onTypeAnswer={onSubmitLoginCode} />
               ) : (
                 isWorking && <WorkingIndicator label={activityLabel} />
               )}
