@@ -12,6 +12,8 @@ import { requireAgentIdentity } from '../middleware/agentIdentity.js';
 import { usageForAgent } from '../services/usage.js';
 import { planUsage, accountKindFor } from '../services/planUsage.js';
 import { gatewayUsage } from '../services/gatewayUsage.js';
+import { tokenSpendForAgent } from '../services/tokenSpend.js';
+import { metered, billed, awsProjectFor } from '../services/awsMeter.js';
 import { requestClear, cancelClear } from '../services/selfClear.js';
 import {
   submitTask, getTask, acknowledgeTask, finishTask, cancelTask,
@@ -144,6 +146,34 @@ router.get('/usage', async (req, res) => {
 router.get('/usage/plans', async (req, res) => {
   try {
     res.json(await planUsage({ includeAgents: req.query.agents !== '0' }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- What the caller has spent: its own tokens, and its project's AWS ------------
+// Same stance as /usage: measurement, never a budget. Tokens are the caller's own
+// transcripts priced by pricing.js; AWS is Maestro's meter of resources tagged with
+// the caller's project (awsMeter.js), plus the real bill once it is readable.
+router.get('/spend', async (req, res) => {
+  try {
+    const host = req.agent.host_id ? getHost(req.agent.host_id) : null;
+    const awsProject = req.query.project || awsProjectFor(req.agent);
+    const [tokens, bill] = await Promise.all([
+      tokenSpendForAgent(req.agent, host, { force: req.query.fresh === '1' }),
+      billed(),
+    ]);
+    const m = metered(req.query.all === '1' ? null : (awsProject || '\u0000none'));
+    res.json({
+      agent: req.agent.name,
+      tokens,
+      aws: {
+        project: awsProject,
+        ...(awsProject ? {} : { note: 'no AWS resources tagged with a project matching this agent have been seen; set config.awsProject, or pass ?project=' }),
+        metered: m,
+        billed: bill.ok ? { ...bill, monthToDate: req.query.all === '1' ? bill.monthToDate : { [awsProject]: bill.monthToDate[awsProject] ?? 0 } } : bill,
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

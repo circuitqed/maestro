@@ -33,6 +33,7 @@ import { startHarnessWatch } from './services/harnessWatch.js';
 import { startCacheKeepalive } from './services/cacheKeepalive.js';
 import { startSelfClear } from './services/selfClear.js';
 import { startYapPush } from './services/yapPush.js';
+import { startAwsMeter } from './services/awsMeter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -225,6 +226,8 @@ initDb().then(() => {
       startSelfClear(5000);
       // yap posts addressed to an agent, pushed as a notice. See yapPush.js.
       startYapPush(15000);
+      // AWS spend by project tag, metered from EC2 every 5 min (the bill is not readable).
+      startAwsMeter();
   });
 }).catch((err) => {
   console.error('Failed to initialize database:', err);

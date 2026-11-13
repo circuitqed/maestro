@@ -8,6 +8,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { planUsage } from '../services/planUsage.js';
+import { metered, billed } from '../services/awsMeter.js';
 import { PRICING_VERIFIED_ON, PRICING_SOURCES, pricedModels } from '../services/pricing.js';
 
 const router = Router();
@@ -25,6 +26,15 @@ router.get('/plans', async (req, res) => {
 // to its table rather than argued about.
 router.get('/pricing', (_req, res) => {
   res.json({ verifiedOn: PRICING_VERIFIED_ON, sources: PRICING_SOURCES, models: pricedModels() });
+});
+
+// AWS spend by project tag: Maestro's own meter, and the bill once readable.
+router.get('/aws', async (_req, res) => {
+  try {
+    res.json({ metered: metered(null), billed: await billed() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 export default router;

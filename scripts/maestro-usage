@@ -3,6 +3,9 @@
 #
 #   maestro-usage              my plan: the five-hour and seven-day windows
 #   maestro-usage plans        every plan in the fleet, and the agents on each
+#   maestro-usage spend        what I have spent: my own tokens in dollars (this
+#                              session, 24h, 7d, month) and my project's AWS
+#   maestro-usage spend --all  AWS for every project, not just mine
 #   maestro-usage --json       machine-readable, for either of the above
 #
 # WHY THIS EXISTS
@@ -24,6 +27,9 @@
 #   three, each looking like it had its own headroom.
 set -euo pipefail
 
+# The installer writes the server's address to ~/.maestro/env on remote hosts, but
+# nothing sources it into an agent's shell, so read it here (as maestro-clear does).
+if [ -z "${MAESTRO_URL:-}" ] && [ -r "$HOME/.maestro/env" ]; then . "$HOME/.maestro/env"; fi
 BASE="${MAESTRO_URL:-http://localhost:7007}"
 TOKEN_FILE="${MAESTRO_AGENT_TOKEN_FILE:-$HOME/.maestro/agent-token}"
 
@@ -32,12 +38,16 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
 # Arguments first, so --help works on a host with no token installed.
 JSON=0
 CMD=me
+ALL=0
+FRESH=0
 for a in "$@"; do
   case "$a" in
     --json) JSON=1 ;;
-    plans|me) CMD="$a" ;;
-    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) die "unknown argument: $a (try: maestro-usage [me|plans] [--json])" ;;
+    plans|me|spend) CMD="$a" ;;
+    --all) ALL=1 ;;
+    --fresh) FRESH=1 ;;
+    -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) die "unknown argument: $a (try: maestro-usage [me|plans|spend [--all] [--fresh]] [--json])" ;;
   esac
 done
 
@@ -56,6 +66,10 @@ MAESTRO_SESSION to the agent you want to ask about."
 
 path=/usage
 [ "$CMD" = plans ] && path=/usage/plans
+if [ "$CMD" = spend ]; then
+  path="/spend?all=$ALL"
+  [ "$FRESH" = 1 ] && path="$path&fresh=1"
+fi
 OUT="$(curl -sS -X GET "$BASE/api/agent$path" \
   -H "X-Maestro-Agent-Token: $TOKEN" \
   -H "X-Maestro-Session: $SESSION" \
@@ -128,6 +142,59 @@ def window(name, w):
         print("  %-9s   (not reported)" % name)
         return
     print("  %-9s %s%s" % (name, bar(w.get("utilization")), when(w.get("resetsAt"))))
+
+
+def tokline(name, w):
+    if not w:
+        print("  %-11s (none)" % name); return
+    extra = "  (up to %s by prompt-size tier)" % money(w["usdMax"]) if w.get("usdMax") else ""
+    unp = "  + %s tokens of unpriced models" % format(w["unpricedTokens"], ",") if w.get("unpricedTokens") else ""
+    print("  %-11s %10s%s%s" % (name, money(w.get("usd")), extra, unp))
+
+# --- spend: own tokens + project AWS ---
+if "tokens" in d:
+    t = d["tokens"]
+    print("%s" % d.get("agent", "?"))
+    print("")
+    print("model tokens (this agent's own transcripts, subagents included)")
+    if not t.get("supported", True) or not t.get("ok", True):
+        print("  not available — %s" % t.get("reason", "unknown"))
+    else:
+        tokline("session", t.get("session"))
+        tokline("last 24h", t.get("last24h"))
+        tokline("last 7d", t.get("last7d"))
+        tokline("this month", t.get("monthToDate"))
+        mods = (t.get("last7d") or {}).get("models") or {}
+        if mods:
+            print("  7d by model: " + ", ".join("%s %s" % (k, money(v.get("usd"))) for k, v in
+                                                sorted(mods.items(), key=lambda kv: -(kv[1].get("usd") or 0))))
+        print("  basis: %s" % t.get("basis", "?"))
+    a = d.get("aws") or {}
+    m = a.get("metered") or {}
+    print("")
+    print("AWS" + (" — project tag %s" % a["project"] if a.get("project") else ""))
+    if a.get("note"):
+        print("  %s" % a["note"])
+    projs = sorted(set(list((m.get("monthToDate") or {}).keys()) + list((m.get("today") or {}).keys())))
+    for p in projs:
+        g = lambda k: ((m.get(k) or {}).get(p) or {}).get("usd")
+        mo = (m.get("monthToDate") or {}).get(p) or {}
+        kinds = ", ".join("%s %s" % (k, money(v)) for k, v in sorted((mo.get("byKind") or {}).items()))
+        print("  %-14s today %9s   7d %9s   month %9s   (%s)" % (p, money(g("today")), money(g("last7d")), money(g("monthToDate")), kinds))
+        if mo.get("unpricedHours"):
+            print("  %-14s + %.1f instance-hours of types with no price in the table" % ("", mo["unpricedHours"]))
+    if not projs:
+        print("  nothing metered yet")
+    for r in m.get("running") or []:
+        rate = "$%.3f/h" % r["usdPerHour"] if r.get("usdPerHour") else "spot"
+        print("  running: %s %s %s (%s) %s" % (r["id"], r.get("type"), r.get("region"), r.get("name") or "-", rate))
+    print("  metered since %s; not counted: %s" % ((m.get("since") or "?")[:16], m.get("notCounted", "?")))
+    b = a.get("billed") or {}
+    if b.get("ok"):
+        print("  billed this month (Cost Explorer): " + ", ".join("%s %s" % (k, money(v)) for k, v in (b.get("monthToDate") or {}).items()))
+    else:
+        print("  billed: %s" % b.get("reason", "unavailable"))
+    raise SystemExit(0)
 
 # --- one plan: the caller's own ---
 if "plans" not in d:

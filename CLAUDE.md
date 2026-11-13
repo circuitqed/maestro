@@ -492,6 +492,31 @@ text reads as the operator. Open notes to a space stay pull.
   out; setting `yap_push` = `off` stops it. Cursor: setting `yap_push_cursor` (first
   run starts at the newest post, never replays history).
 
+### Spend: `maestro-usage spend` (tokens and AWS)
+
+Plan usage says how much of a SHARED plan or key is left; nothing told an agent what
+it had spent itself. `GET /api/agent/spend` (CLI `maestro-usage spend [--all]`):
+
+- **Tokens** (`services/tokenSpend.js`): the agent's own transcripts -- those in its
+  transcript dir whose `agentName` is its name, minus sessions pinned by other agents,
+  plus `<session>/subagents/*.jsonl` -- summed per model (one count per message id +
+  request id) for this session, 24h, 7d, month, and priced by pricing.js. Runs on the
+  agent's host, usage fields only; cached 10 min. Claude only for now. An unpriced
+  model (e.g. `claude-fable-5-2`, no verified price) is reported as tokens, never
+  guessed -- add it to `pricing_overrides`.
+- **AWS** (`services/awsMeter.js`): the bill is not readable (the default ~/.aws key
+  has no Cost Explorer, Budgets, CloudTrail or Pricing access, checked 2026-11-13), so
+  Maestro METERS it: every 5 min DescribeInstances/Volumes/Snapshots in every region,
+  charging instance time (exact launch and StateTransitionReason stop times, spot at
+  the current spot price, on-demand from a family table) and disk GB-hours into
+  `aws_meter_ledger` by UTC day and `project` tag. A floor: no data transfer, IPv4,
+  IOPS, S3, or anything deleted before `aws_meter_started_at`. `billed()` asks Cost
+  Explorer (6 h cache, $0.01/request) and supersedes the meter once the key is granted
+  `ce:GetCostAndUsage`. Agent -> tag: `config.awsProject`, else its session, name or
+  project name matched against seen tags ignoring punctuation. Dashboard JSON:
+  `GET /api/usage/aws`. `aws_meter`=`off` disables it.
+- Agents are told about it in the shared CLAUDE.md files (oracle, zlmc's three, whistler).
+
 ### "Needs you": agents stopped on a prompt
 
 An agent stopped on a permission prompt, an AskUserQuestion or a model dialog stops
