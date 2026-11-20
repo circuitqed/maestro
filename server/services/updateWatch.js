@@ -19,7 +19,7 @@
  *              has no /proc, and rather than the pane's "Restart to update" banner
  *              because that wording is not an API.
  */
-import { getSetting } from './db.js';
+import { getSetting, setSetting } from './db.js';
 import { execOnHost, shellQuote } from './hosts.js';
 import { resolveTranscriptFile } from './transcript.js';
 import { isSettled, looksLikePrompt } from './inject.js';
@@ -37,7 +37,7 @@ const VERSION_TTL_MS = 10 * 60 * 1000;
 // that long -- the streak is in memory, so every deploy reset it to zero. In a day
 // of rebuilds it never once reached the threshold: 30 agents behind, 0 restarted.
 const OBSERVE_MS = 60 * 1000;
-const IDLE_TICKS = 5;          // 5 consecutive minute-readings of 'idle'          // ~45 min continuously idle at the interval above
+const IDLE_TICKS = 5;          // 5 consecutive minute-readings of 'idle' (OBSERVE_MS)
 // Restarting the whole fleet at once is its own outage. 30 agents were behind when
 // this shipped (one by 80 versions); trickling them keeps any single bad build from
 // taking everything down together, and keeps the dashboard legible while it happens.
@@ -53,6 +53,21 @@ const installedCache = new Map(); // hostKey -> { at, version }
 // Library: restarted onto 2.1.303, transcript still said 2.1.223.
 const lastRestart = new Map();    // agentId -> timestamp
 const RESTART_COOLDOWN_MS = 2 * 60 * 60 * 1000;
+// The build each agent was last restarted ONTO, persisted. The cooldown alone was
+// not enough: an idle agent writes nothing after its restart, so its transcript
+// says the old version indefinitely and every agent idle for a day was bounced
+// every 2h15m (Whistler 32 times in 3 days). Restarted onto the installed build
+// means it IS on that build, whatever the transcript says; only a newer install
+// makes it a candidate again. Persisted so a deploy doesn't restart the fleet.
+const ONTO_KEY = 'update_restarted_onto';
+function restartedOnto() {
+  try { return JSON.parse(getSetting(ONTO_KEY) || '{}'); } catch { return {}; }
+}
+function recordRestart(agentId, version) {
+  const m = restartedOnto();
+  m[agentId] = version;
+  setSetting(ONTO_KEY, JSON.stringify(m));
+}
 let timer = null;
 let observeTimer = null;
 let running = false;
@@ -79,7 +94,10 @@ async function installedVersion(host) {
   if (hit && Date.now() - hit.at < VERSION_TTL_MS) return hit.version;
   let version = null;
   try {
-    const { stdout } = await execOnHost(host, 'claude --version 2>/dev/null', { timeout: 20000 });
+    // Local commands run INSIDE the Maestro container, whose PATH has no
+    // ~/.local/bin: a bare `claude` was "not found", so every oracle agent was
+    // silently skipped and sat on "Restart to update" for days (17 on 2026-11-20).
+    const { stdout } = await execOnHost(host, 'PATH="$HOME/.local/bin:$PATH" claude --version 2>/dev/null', { timeout: 20000 });
     const m = /([0-9]+\.[0-9]+\.[0-9]+)/.exec(String(stdout));
     version = m ? m[1] : null;
   } catch {
@@ -149,6 +167,7 @@ export async function checkOnce({ getAgents, getHost, startAgentSession, registe
     if (!installed) continue;
     const current = await sessionVersion(agent, host);
     if (!current || !isOlder(current, installed)) continue;
+    if (restartedOnto()[agent.id] === installed) continue; // already relaunched on it
     checked += 1;
     const since = Date.now() - (lastRestart.get(agent.id) || 0);
     if (since < RESTART_COOLDOWN_MS) continue;          // just bounced; its transcript lags
@@ -164,6 +183,7 @@ export async function checkOnce({ getAgents, getHost, startAgentSession, registe
       await killSession(agent.screen_session, host);
       const out = await startAgentSession(agent, host, { registerAgent });
       restarted += 1;
+      recordRestart(agent.id, installed);
       console.log(`[update] ${agent.name} restarted onto ${installed} (was ${current}): ${out.message}`);
     } catch (err) {
       console.log(`[update] ${agent.name} restart failed: ${err.message}`);
