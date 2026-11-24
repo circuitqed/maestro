@@ -710,6 +710,21 @@ function QuestionCard({ block, answered, chosen, onAnswer }) {
 // A Claude Code select widget (AskUserQuestion, plan approval, etc.) lives only in
 // the live pane while active — it isn't written to the transcript until answered.
 // Detect it from a pane snapshot and pull the numbered options for clickable answers.
+// The composer box: a full-width rule (possibly titled, e.g. "─── History 84/84 ───"),
+// a first line starting with ❯/›, continuation lines, then the closing rule. Returns
+// [firstLine, lastLine] of its contents, or null.
+function composerRange(lines) {
+  const RULE = /^\s*─{3,}.*─{3,}\s*$|^\s*─{10,}\s*$/;
+  for (let i = lines.length - 1; i > 0; i--) {
+    if (!RULE.test(lines[i])) continue;
+    let j = i - 1;
+    while (j >= 0 && !RULE.test(lines[j])) j--;
+    // Only the bottom-most box: rules in scrollback (tool output) are not a composer.
+    return j >= 0 && j < i - 1 && /^\s*[❯›>]/.test(lines[j + 1]) ? [j + 1, i - 1] : null;
+  }
+  return null;
+}
+
 function parseActivePrompt(text) {
   if (!text) return null;
   const lines = text.split('\n');
@@ -719,7 +734,17 @@ function parseActivePrompt(text) {
   // A multi-question AskUserQuestion is a tabbed form: "←  ☒ Color  ☐ Toppings  ✔ Submit  →".
   const TAB_BAR = /^\s*←\s+(.*\S)\s+→\s*$/;
   const tabIdx = lines.findIndex((l) => TAB_BAR.test(l) && /Submit/.test(l));
-  let footerIdx = lines.findIndex((l) => /to select|to navigate|Esc to cancel|↑\/↓|press enter to /i.test(l));
+  // The footer must LOOK like a key-hint line, not merely contain the words: a message
+  // in the composer that wrapped as "…we should be able to select" matched the bare
+  // /to select/ and turned the rest of the message into fake options (qubit-measurement,
+  // 2026-11-24). Real ones start with a key ("Enter to select · ↑/↓ to navigate · Esc
+  // to cancel", Codex's "Press enter to continue") or are "·"-separated hints. Lines in
+  // the composer box (between the rules, starting at its ❯) are typed text, never a widget.
+  const composer = composerRange(lines);
+  const HINT = /to select|to navigate|Esc to cancel|↑\/↓|press enter to /i;
+  const KEYISH = /^(?:enter|esc|press enter|↑|↓|←|→|tab|space|ctrl|shift)\b|^[↑↓←→]|\s·\s/i;
+  let footerIdx = lines.findIndex((l, i) =>
+    !(composer && i >= composer[0] && i <= composer[1]) && HINT.test(l) && KEYISH.test(l.trim()));
   // The form's last tab ("Review your answers … ❯ 1. Submit answers  2. Cancel") has
   // NO footer line, so keying on the footer alone hid the one screen that submits.
   if (footerIdx === -1 && tabIdx !== -1) {
