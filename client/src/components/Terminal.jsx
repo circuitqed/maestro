@@ -12,7 +12,42 @@ const KEYS = {
   ESCAPE: '\x1b',
   PAGE_UP: '\x1b[5~',
   PAGE_DOWN: '\x1b[6~',
+  UP: '\x1b[A',
+  DOWN: '\x1b[B',
+  RIGHT: '\x1b[C',
+  LEFT: '\x1b[D',
+  ENTER: '\r',
 };
+
+// Arrow buttons for phones, whose keyboards have none: select widgets, the trust
+// prompt, history and menus are all arrow-driven. Holding one repeats like a real key.
+function RepeatKey({ seq, label, title, sendKeys, className }) {
+  const timers = useRef({});
+  const stop = () => {
+    clearTimeout(timers.current.delay);
+    clearInterval(timers.current.repeat);
+  };
+  useEffect(() => stop, []);
+  return (
+    <button
+      aria-label={title}
+      title={title}
+      className={className}
+      onTouchStart={(e) => {
+        e.preventDefault();
+        stop();
+        sendKeys(seq);
+        timers.current.delay = setTimeout(() => {
+          timers.current.repeat = setInterval(() => sendKeys(seq), 90);
+        }, 400);
+      }}
+      onTouchEnd={stop}
+      onTouchCancel={stop}
+    >
+      {label}
+    </button>
+  );
+}
 
 const Terminal = forwardRef(function Terminal({ sessionName, hostId, showStatusBar = true }, ref) {
   const containerRef = useRef(null);
@@ -26,6 +61,9 @@ const Terminal = forwardRef(function Terminal({ sessionName, hostId, showStatusB
     getBufferText,
   } = useTerminal(sessionName, hostId);
   const isMobile = useMediaQuery('(max-width: 767px)');
+  // A tablet is wider than the phone breakpoint but has no keyboard either.
+  const isTouch = useMediaQuery('(pointer: coarse)');
+  const showKeyBar = isMobile || isTouch;
   const scrollIntervalRef = useRef(null);
   const [scrollControlsVisible, setScrollControlsVisible] = useState(false);
   const hideTimeoutRef = useRef(null);
@@ -322,9 +360,22 @@ const Terminal = forwardRef(function Terminal({ sessionName, hostId, showStatusB
         </div>
       )}
 
-      {/* Mobile toolbar - special keys + copy/paste */}
-      {isMobile && (
+      {/* Touch toolbar - special keys + copy/paste */}
+      {showKeyBar && (
         <div className="flex-shrink-0 flex items-center gap-1.5 px-2 py-1.5 bg-gray-800 border-t border-gray-700/50 overflow-x-auto">
+          <RepeatKey seq={KEYS.LEFT} label="←" title="Left arrow" sendKeys={sendKeys} className={`${toolBtn} !text-base`} />
+          <RepeatKey seq={KEYS.UP} label="↑" title="Up arrow" sendKeys={sendKeys} className={`${toolBtn} !text-base`} />
+          <RepeatKey seq={KEYS.DOWN} label="↓" title="Down arrow" sendKeys={sendKeys} className={`${toolBtn} !text-base`} />
+          <RepeatKey seq={KEYS.RIGHT} label="→" title="Right arrow" sendKeys={sendKeys} className={`${toolBtn} !text-base`} />
+          <button
+            aria-label="Enter"
+            title="Enter"
+            onTouchStart={(e) => { e.preventDefault(); sendKeys(KEYS.ENTER); }}
+            className={`${toolBtn} !text-base`}
+          >
+            ⏎
+          </button>
+          <div className="w-px h-6 bg-gray-600 flex-shrink-0" />
           <button
             onTouchStart={(e) => { e.preventDefault(); sendKeys(KEYS.TAB); }}
             className={toolBtn}
