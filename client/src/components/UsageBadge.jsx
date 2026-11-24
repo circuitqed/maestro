@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import UsageBar, { elapsedFraction, FIVE_HOURS_MIN, SEVEN_DAYS_MIN } from './UsageBar';
 
 /**
  * How much of its plan this agent's account has left.
@@ -49,12 +50,16 @@ function UsageBadge({ agentId, provider = 'claude' }) {
   let pct = null;
   let label = '';
   let detail = '';
+  let elapsed = null;
   if (u.provider === 'claude') {
     const five = u.fiveHour ? u.fiveHour.utilization : null;
     const seven = u.sevenDay ? u.sevenDay.utilization : null;
     const tight = (five ?? -1) >= (seven ?? -1) ? 'five' : 'seven';
     pct = tight === 'five' ? five : seven;
     label = tight === 'five' ? '5h' : '7d';
+    elapsed = tight === 'five'
+      ? elapsedFraction(u.fiveHour && u.fiveHour.resetsAt, FIVE_HOURS_MIN)
+      : elapsedFraction(u.sevenDay && u.sevenDay.resetsAt, SEVEN_DAYS_MIN);
     const t = (s) => (s ? new Date(s).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '?');
     detail = `5-hour window: ${five ?? '?'}% (resets ${t(u.fiveHour && u.fiveHour.resetsAt)})\n`
       + `7-day window: ${seven ?? '?'}% (resets ${t(u.sevenDay && u.sevenDay.resetsAt)})`
@@ -63,6 +68,7 @@ function UsageBadge({ agentId, provider = 'claude' }) {
     pct = u.primary ? u.primary.utilization : null;
     const days = u.primary && u.primary.windowMinutes ? Math.round(u.primary.windowMinutes / 1440) : null;
     label = days ? `${days}d` : 'plan';
+    elapsed = u.primary ? elapsedFraction(u.primary.resetsAtEpoch, u.primary.windowMinutes) : null;
     detail = `${pct}% of the ${days || '?'}-day window used`
       + (u.secondary ? `\nsecondary window: ${u.secondary.utilization}%` : '');
   }
@@ -79,13 +85,9 @@ function UsageBadge({ agentId, provider = 'claude' }) {
   return (
     <span
       className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] flex-shrink-0 ${tone}`}
-      title={`${detail}\n\nchecked ${u.checkedAt ? new Date(u.checkedAt).toLocaleTimeString() : 'just now'}`}
+      title={`${detail}${elapsed === null ? '' : `\n${Math.round(elapsed * 100)}% of the ${label} window has passed (white tick)`}\n\nchecked ${u.checkedAt ? new Date(u.checkedAt).toLocaleTimeString() : 'just now'}`}
     >
-      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-        <circle cx="12" cy="12" r="9" opacity="0.35" />
-        <path d="M12 12V7" />
-        <path d="M12 12l4 2.5" />
-      </svg>
+      <UsageBar pct={pct} elapsed={elapsed} className="w-10 h-1.5" />
       <span>{label} {Math.round(pct)}%</span>
     </span>
   );

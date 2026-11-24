@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import UsageBar, { elapsedFraction, FIVE_HOURS_MIN, SEVEN_DAYS_MIN } from './UsageBar';
 
 /**
  * Every plan in the fleet, and what is drawing on it.
@@ -12,14 +13,6 @@ import React, { useEffect, useState } from 'react';
  * down together.
  */
 
-// A plan at 2% and a plan at 95% should not look alike at a glance.
-function tone(pct) {
-  if (pct === null || pct === undefined) return 'bg-gray-600';
-  if (pct >= 90) return 'bg-red-500';
-  if (pct >= 70) return 'bg-amber-500';
-  return 'bg-emerald-500';
-}
-
 function resetsIn(ts) {
   if (!ts) return null;
   const t = new Date(ts).getTime();
@@ -31,17 +24,19 @@ function resetsIn(ts) {
   return h ? `resets in ${h}h ${String(m).padStart(2, '0')}m` : `resets in ${m}m`;
 }
 
-function Window({ label, w }) {
+function Window({ label, w, minutes }) {
   const pct = w && typeof w.utilization === 'number' ? w.utilization : null;
   const reset = w ? resetsIn(w.resetsAt) : null;
+  const elapsed = w ? elapsedFraction(w.resetsAt, minutes) : null;
   return (
     <div className="flex items-center gap-2 text-xs">
       <span className="w-12 flex-shrink-0 text-gray-400">{label}</span>
-      <div className="flex-1 h-2 rounded bg-gray-700 overflow-hidden">
-        {pct !== null && (
-          <div className={`h-full ${tone(pct)}`} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
-        )}
-      </div>
+      <UsageBar
+        pct={pct}
+        elapsed={elapsed}
+        className="flex-1 h-2"
+        title={elapsed === null ? undefined : `${Math.round(elapsed * 100)}% of the window has passed (white tick)`}
+      />
       <span className="w-12 flex-shrink-0 text-right tabular-nums text-gray-300">
         {pct === null ? '—' : `${pct.toFixed(1)}%`}
       </span>
@@ -64,17 +59,32 @@ const money = (v) =>
  * until it has been seen. A guessed "1st of the month" would be indistinguishable
  * from a known one at the moment it matters.
  */
+// Where we are in a monthly budget cycle, from the learned reset day. Unknown until a
+// reset has been observed: a guessed cycle would put the tick in a confident wrong place.
+function budgetElapsed(b) {
+  const day = b.resetDayOfMonth;
+  if (!day) return null;
+  const now = new Date();
+  const at = (y, m) => new Date(y, m, Math.min(day, new Date(y, m + 1, 0).getDate()));
+  let start = at(now.getFullYear(), now.getMonth());
+  if (start > now) start = at(now.getFullYear(), now.getMonth() - 1);
+  const end = at(start.getFullYear(), start.getMonth() + 1);
+  return Math.min(1, Math.max(0, (now - start) / (end - start)));
+}
+
 function Budget({ b }) {
   const pct = typeof b.utilization === 'number' ? b.utilization : null;
+  const elapsed = budgetElapsed(b);
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-2 text-xs">
         <span className="w-12 flex-shrink-0 text-gray-400">budget</span>
-        <div className="flex-1 h-2 rounded bg-gray-700 overflow-hidden">
-          {pct !== null && (
-            <div className={`h-full ${tone(pct)}`} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
-          )}
-        </div>
+        <UsageBar
+          pct={pct}
+          elapsed={elapsed}
+          className="flex-1 h-2"
+          title={elapsed === null ? undefined : `${Math.round(elapsed * 100)}% of the month has passed (white tick)`}
+        />
         <span className="w-12 flex-shrink-0 text-right tabular-nums text-gray-300">
           {pct === null ? '—' : `${pct.toFixed(1)}%`}
         </span>
@@ -136,6 +146,7 @@ export default function PlanUsage({ onClose }) {
               <h3 className="text-lg font-semibold text-white">Plan usage</h3>
               <p className="text-xs text-gray-400">
                 One row per account. A subscription signed in on several hosts shares one limit.
+                The white tick is how far through the window we are: fill past it is ahead of an even pace.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -181,8 +192,8 @@ export default function PlanUsage({ onClose }) {
                     <Budget b={p.budget} />
                   ) : p.ok ? (
                     <div className="space-y-1">
-                      <Window label="5-hour" w={p.fiveHour} />
-                      <Window label="7-day" w={p.sevenDay} />
+                      <Window label="5-hour" w={p.fiveHour} minutes={FIVE_HOURS_MIN} />
+                      <Window label="7-day" w={p.sevenDay} minutes={SEVEN_DAYS_MIN} />
                       {p.extraEnabled && (
                         <div className="text-xs text-amber-300">Extra usage credits enabled</div>
                       )}
