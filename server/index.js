@@ -11,6 +11,8 @@ import agentsRoutes, { viewRouter } from './routes/agents.js';
 import connectionRoutes from './routes/connections.js';
 import hostsRoutes from './routes/hosts.js';
 import usageRoutes from './routes/usage.js';
+import pushRoutes from './routes/push.js';
+import { initPush, onAgentWaiting } from './services/push.js';
 import accountLoginRoutes from './routes/accountLogin.js';
 import agentApiRoutes from './routes/agentApi.js';
 import swarmApiRoutes from './routes/swarmApi.js';
@@ -93,6 +95,7 @@ app.use('/api/view', viewRouter);  // HTML files as sandboxed pages; capability-
 app.use('/api/connections', connectionRoutes);
 app.use('/api/hosts', hostsRoutes);
 app.use('/api/usage', usageRoutes);  // browser-facing plan usage
+app.use('/api/push', pushRoutes);  // Web Push subscriptions (phone notifications)
 app.use('/api/accounts', accountLoginRoutes);  // sign an extra Anthropic account in on a host
 
 // Serve static files in production.
@@ -186,6 +189,7 @@ notifyWss.on('connection', (ws) => {
 
 // Broadcast agent state changes to all notification clients
 onStateChange((event) => {
+  if (event.type === 'agent_waiting') onAgentWaiting(event);
   const message = JSON.stringify(event);
   for (const client of notifyClients) {
     if (client.readyState === client.OPEN) {
@@ -198,6 +202,7 @@ onStateChange((event) => {
 const PORT = process.env.PORT || 5000;
 
 initDb().then(() => {
+  try { initPush(); } catch (err) { console.error('push: init failed', err.message); }
   server.listen(PORT, () => {
     console.log(`Maestro server running on port ${PORT}`);
     // Start monitoring agents for idle/busy state

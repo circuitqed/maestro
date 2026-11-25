@@ -537,6 +537,27 @@ numbered option (`❯ 1. Yes`). The looser test is right for refusing a delivery
 a reply ending in a numbered list above a normal composer matched it -- cryostat and
 bose-linc both showed as waiting on the first deploy.
 
+### Phone: dictation, Home Screen app, Web Push
+
+- **Dictation** (`VoiceButton.jsx`): a mic beside the chat composer using the browser's
+  speech recognition (Safari/iOS dictation, Chrome; hidden on Firefox and plain http).
+  Text is appended to the draft, never sent on its own. Safari's `continuous` mode
+  repeats earlier phrases, so there it takes one utterance per session and chains
+  sessions until tapped off (three instant ends in a row = give up, not spin).
+- **Home Screen app**: `client/public/manifest.webmanifest` + icons + apple meta tags.
+  No native app: Share → Add to Home Screen gives full screen, and is what iOS
+  requires before it will deliver Web Push at all.
+- **Web Push** (`services/push.js`, `routes/push.js`, `public/sw.js`, header menu →
+  *Phone notifications*): only "needs you" (an agent stopped on a prompt), never
+  "finished", with a 2-min per-agent cooldown. VAPID keys are generated once into the
+  `push_vapid` setting; regenerating them orphans every device. Subscriptions are per
+  device in `push_subscriptions`; a 404/410 from the push service deletes the row.
+  The SW has **no fetch handler** on purpose (a cached shell = stale bundle after a
+  deploy). Every push shows a notification because iOS revokes subscriptions whose
+  pushes don't; the page's own Notification uses the same `waiting-<id>` tag so the two
+  merge. Tapping one opens `/?agent=<id>` (or messages an open window), which opens that
+  agent's chat. Setting `push`=`off` stops sending.
+
 ### Sending files to a host
 
 `POST /api/hosts/:id/upload` lands a file in `<default_root>/inbox` on that machine,

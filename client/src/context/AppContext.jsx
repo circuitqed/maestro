@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { useNotifications } from '../hooks/useNotifications';
+import { registerServiceWorker } from '../lib/push';
 
 const AppContext = createContext(null);
 
@@ -512,6 +513,34 @@ export function AppProvider({ children }) {
     setTerminalOpen(true);
     setPanelFocus('terminal');
   }, []);
+
+  // A push notification opens an agent: by URL (/?agent=<id>, when no window was
+  // open) or by a message from the service worker (to a window already open).
+  const pendingOpenRef = React.useRef(
+    (() => { try { return new URLSearchParams(window.location.search).get('agent'); } catch { return null; } })()
+  );
+  useEffect(() => {
+    registerServiceWorker();
+    if (!('serviceWorker' in navigator)) return undefined;
+    const onMsg = (e) => {
+      if (e.data && e.data.type === 'open-agent') pendingOpenRef.current = String(e.data.agentId);
+      setPendingOpenTick((t) => t + 1);
+    };
+    navigator.serviceWorker.addEventListener('message', onMsg);
+    return () => navigator.serviceWorker.removeEventListener('message', onMsg);
+  }, []);
+  const [pendingOpenTick, setPendingOpenTick] = useState(0);
+  useEffect(() => {
+    const id = pendingOpenRef.current;
+    if (!id || !agents.length) return;
+    const agent = agents.find((a) => String(a.id) === id);
+    pendingOpenRef.current = null;
+    try {
+      const u = new URL(window.location.href);
+      if (u.searchParams.has('agent')) { u.searchParams.delete('agent'); window.history.replaceState(null, '', u); }
+    } catch { /* leave the URL */ }
+    if (agent) openAgentView(agent, 'chat');
+  }, [agents, pendingOpenTick, openAgentView]);
 
   // Back-compat: open a terminal by raw session name (no associated agent id).
   const openTerminal = useCallback((sessionName, hostId = null) => {

@@ -82,7 +82,8 @@ export function useNotifications(authenticated) {
             if (Notification.permission === 'granted') {
               new Notification('Agent needs you', {
                 body: `${data.sessionName} is stopped on a question`,
-                icon: '/favicon.ico',
+                icon: '/icon-192.png',
+                tag: `waiting-${data.agentId}`, // merges with the Web Push one (sw.js)
               });
             }
           }
