@@ -1,156 +1,210 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 /**
- * Dictation into the chat composer, via the browser's speech recognition.
+ * Dictation into the chat composer.
  *
- * Web Speech API: Safari (macOS and iOS, where it is Siri's dictation) and Chrome/Edge.
- * Firefox has none, and every browser needs a secure context, so on plain http the
- * button simply isn't rendered. Nothing is recorded or sent anywhere by Maestro: the
- * browser does the recognition and we only see the text.
+ * Records audio in the browser and sends it to POST /api/transcribe, which runs
+ * whisper.cpp on the mac mini (server/routes/transcribe.js). It replaced the
+ * browser's own speech recognition (Web Speech), which:
+ *   - is refused in an iOS Home Screen app ("service-not-allowed"), whatever the
+ *     microphone permission says -- the first thing that broke on a real iPhone;
+ *   - doesn't exist in Firefox;
+ *   - hears our vocabulary as ordinary words ("em-sim" -> "M-SIM", "yap queue" ->
+ *     "YAPQ"); Whisper is given the agent names as a prompt.
+ * The cost is no live text while speaking: the words land ~1-2 s after stopping.
  *
- * Tap to start, tap again to stop. Words land in the composer as you speak (interim
- * results replace themselves), appended after whatever was already typed, and are
- * never sent on their own: the person reads them and presses Send.
+ * Tap to start, tap again to stop. The text is appended after whatever was typed and
+ * is never sent on its own: the person reads it and presses Send.
  */
 
-const Recognition =
-  typeof window !== 'undefined' && window.isSecureContext !== false
-    ? window.SpeechRecognition || window.webkitSpeechRecognition
-    : null;
+const MAX_MS = 5 * 60 * 1000;
 
-export const voiceSupported = !!Recognition;
+export const voiceSupported =
+  typeof window !== 'undefined' &&
+  window.isSecureContext !== false &&
+  !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) &&
+  typeof window.MediaRecorder !== 'undefined';
 
-// Safari on every platform, including iOS Chrome/Firefox (all WebKit underneath).
-const isSafari =
-  typeof navigator !== 'undefined' &&
-  (/^((?!chrome|android|crios|fxios|edgios).)*safari/i.test(navigator.userAgent) ||
-    /iPad|iPhone|iPod/.test(navigator.userAgent));
+function pickType() {
+  // Safari records mp4/aac, Chrome and Firefox webm/opus; ask for what it has.
+  for (const t of ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm', 'audio/ogg;codecs=opus']) {
+    try { if (MediaRecorder.isTypeSupported(t)) return t; } catch { /* old Safari */ }
+  }
+  return '';
+}
+
+function micError(err) {
+  const n = err && err.name;
+  if (n === 'NotAllowedError' || n === 'SecurityError') {
+    return /iPad|iPhone|iPod/.test(navigator.userAgent)
+      ? 'Microphone access is off. On iPhone: Settings › Apps › Safari › Microphone (or, in Safari, aA › Website Settings › Microphone › Allow). A Home Screen app asks again after each relaunch.'
+      : 'Microphone access was refused. Allow it for this site in the browser’s site settings.';
+  }
+  if (n === 'NotFoundError') return 'No microphone found.';
+  if (n === 'NotReadableError') return 'The microphone is in use by another app.';
+  return `Could not start the microphone${err && err.message ? `: ${err.message}` : ''}`;
+}
 
 export default function VoiceButton({ value, onChange, inputRef, disabled }) {
-  const [listening, setListening] = useState(false);
+  const [phase, setPhase] = useState('idle'); // idle | recording | transcribing
+  const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState(null);
   const recRef = useRef(null);
-  const baseRef = useRef('');
-  // The latest value, for joining onto at start without re-creating callbacks.
+  const streamRef = useRef(null);
+  const chunksRef = useRef([]);
+  const timerRef = useRef(null);
+  const abortRef = useRef(false);
   const valueRef = useRef(value);
   valueRef.current = value;
 
-  // True from the tap that starts dictation to the tap that stops it. A recognition
-  // session can end on its own (Safari ends at each pause; Chrome after a long
-  // silence), and while this is set a new one starts where the last left off.
-  const wantRef = useRef(false);
-  const quickEndsRef = useRef(0);
-
-  const stop = useCallback(() => {
-    wantRef.current = false;
-    const rec = recRef.current;
-    if (rec) {
-      try { rec.stop(); } catch { /* already stopped */ }
-    }
-  }, []);
-
-  const start = () => {
-    if (!Recognition) return;
-    wantRef.current = true;
-    quickEndsRef.current = 0;
-    setError(null);
-    session();
+  const release = () => {
+    clearInterval(timerRef.current);
+    timerRef.current = null;
+    const s = streamRef.current;
+    streamRef.current = null;
+    if (s) s.getTracks().forEach((t) => t.stop()); // turns the mic indicator off
   };
 
-  const session = () => {
-    const startedAt = Date.now();
-    const rec = new Recognition();
-    // Safari's continuous mode repeats earlier phrases in later results, so ask for
-    // one utterance at a time there and chain sessions instead (see wantRef).
-    rec.continuous = !isSafari;
-    rec.interimResults = true;  // show words as they come
-    rec.lang = navigator.language || 'en-US';
-    const base = valueRef.current || '';
-    baseRef.current = base && !/\s$/.test(base) ? `${base} ` : base;
-
-    rec.onresult = (e) => {
-      // Rebuild from all results each time: finals accumulate, the last may be interim.
-      let text = '';
-      for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript;
-      onChange(baseRef.current + text.replace(/^\s+/, ''));
-    };
-    rec.onerror = (e) => {
-      // "no-speech" and "aborted" are just endings, not something to show.
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        wantRef.current = false;
-        setError('Microphone permission was refused. Allow it for this site in the browser settings.');
-      } else if (e.error && e.error !== 'no-speech' && e.error !== 'aborted') {
-        wantRef.current = false;
-        setError(`Dictation stopped: ${e.error}`);
+  const transcribe = async (blob) => {
+    setPhase('transcribing');
+    try {
+      const res = await fetch('/api/transcribe', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': (blob.type || 'application/octet-stream').split(';')[0] },
+        body: blob,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const text = (data.text || '').trim();
+      // Whisper's stock output for silence; never worth inserting.
+      if (text && !/^\[?(blank_audio|silence|no speech)\]?$/i.test(text)) {
+        const base = valueRef.current || '';
+        onChange(base && !/\s$/.test(base) ? `${base} ${text}` : base + text);
       }
-    };
-    rec.onend = () => {
-      recRef.current = null;
-      // Ended by itself while still wanted: carry on. Several instant ends in a row
-      // mean something is refusing quietly, so give up rather than spin.
-      if (wantRef.current) {
-        quickEndsRef.current = Date.now() - startedAt < 1000 ? quickEndsRef.current + 1 : 0;
-        if (quickEndsRef.current < 3) { session(); return; }
-        wantRef.current = false;
-      }
-      setListening(false);
-      // Hand the composer back for editing, cursor at the end.
       const el = inputRef && inputRef.current;
       if (el) {
         el.focus();
         const n = el.value.length;
         try { el.setSelectionRange(n, n); } catch { /* not a text field */ }
       }
-    };
-    recRef.current = rec;
-    try {
-      rec.start();
-      setListening(true);
     } catch (err) {
-      recRef.current = null;
-      wantRef.current = false;
-      setListening(false);
-      setError(err.message || 'Could not start dictation');
+      setError(err.message || 'Transcription failed');
+    } finally {
+      setPhase('idle');
     }
   };
 
-  // Stop listening if the chat unmounts (switching agent, closing the panel).
-  useEffect(() => () => {
-    wantRef.current = false;
+  const start = async () => {
+    setError(null);
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    } catch (err) {
+      setError(micError(err));
+      return;
+    }
+    streamRef.current = stream;
+    const type = pickType();
+    let rec;
+    try {
+      rec = type ? new MediaRecorder(stream, { mimeType: type }) : new MediaRecorder(stream);
+    } catch (err) {
+      release();
+      setError(`Could not record: ${err.message || err}`);
+      return;
+    }
+    chunksRef.current = [];
+    abortRef.current = false;
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunksRef.current.push(e.data); };
+    rec.onstop = () => {
+      release();
+      recRef.current = null;
+      if (abortRef.current) { setPhase('idle'); return; }
+      const blob = new Blob(chunksRef.current, { type: rec.mimeType || type || 'audio/mp4' });
+      chunksRef.current = [];
+      if (blob.size < 1000) { setPhase('idle'); return; } // a tap, not speech
+      transcribe(blob);
+    };
+    recRef.current = rec;
+    rec.start(1000); // chunks every second, so a long take isn't one giant buffer at the end
+    const t0 = Date.now();
+    setElapsed(0);
+    timerRef.current = setInterval(() => {
+      const ms = Date.now() - t0;
+      setElapsed(ms);
+      if (ms >= MAX_MS) stop();
+    }, 250);
+    setPhase('recording');
+  };
+
+  const stop = () => {
     const rec = recRef.current;
-    if (rec) { rec.onend = null; try { rec.abort(); } catch { /* gone */ } }
+    if (rec && rec.state !== 'inactive') {
+      try { rec.stop(); } catch { release(); setPhase('idle'); }
+    }
+  };
+
+  // Leaving the chat mid-take: drop it, and free the mic.
+  useEffect(() => () => {
+    abortRef.current = true;
+    const rec = recRef.current;
+    if (rec && rec.state !== 'inactive') { try { rec.stop(); } catch { /* gone */ } }
+    release();
   }, []);
 
   useEffect(() => {
     if (!error) return undefined;
-    const t = setTimeout(() => setError(null), 6000);
+    const t = setTimeout(() => setError(null), 8000);
     return () => clearTimeout(t);
   }, [error]);
 
-  if (!Recognition) return null;
+  if (!voiceSupported) return null;
+
+  const recording = phase === 'recording';
+  const busy = phase === 'transcribing';
+  const secs = Math.floor(elapsed / 1000);
+  const label = recording ? 'Stop and transcribe' : busy ? 'Transcribing…' : 'Dictate';
 
   return (
     <div className="relative flex-shrink-0 self-end">
       <button
         type="button"
-        onClick={listening ? stop : start}
-        disabled={disabled && !listening}
-        title={listening ? 'Stop dictation' : 'Dictate'}
-        aria-label={listening ? 'Stop dictation' : 'Dictate'}
-        aria-pressed={listening}
-        className={`p-2 rounded transition-colors disabled:opacity-40 ${
-          listening
-            ? 'bg-red-600 text-white hover:bg-red-500 animate-pulse motion-reduce:animate-none'
-            : 'text-gray-400 hover:text-gray-200 hover:bg-gray-700'
+        onClick={recording ? stop : start}
+        disabled={busy || (disabled && !recording)}
+        title={label}
+        aria-label={label}
+        aria-pressed={recording}
+        className={`p-2 rounded transition-colors disabled:opacity-60 ${
+          recording
+            ? 'bg-red-600 text-white hover:bg-red-500'
+            : busy
+              ? 'text-blue-300'
+              : 'text-gray-400 hover:text-gray-200 hover:bg-gray-700'
         }`}
       >
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3a3 3 0 00-3 3v6a3 3 0 006 0V6a3 3 0 00-3-3z" />
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-14 0M12 18v3" />
-        </svg>
+        {busy ? (
+          <svg className="w-5 h-5 animate-spin motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.3" strokeWidth="3" />
+            <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+          </svg>
+        ) : recording ? (
+          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5" /></svg>
+        ) : (
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3a3 3 0 00-3 3v6a3 3 0 006 0V6a3 3 0 00-3-3z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-14 0M12 18v3" />
+          </svg>
+        )}
       </button>
+      {recording && (
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 flex items-center gap-1 rounded bg-gray-900/90 px-1.5 py-0.5 text-[11px] tabular-nums text-red-300 whitespace-nowrap pointer-events-none">
+          <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse motion-reduce:animate-none" />
+          {Math.floor(secs / 60)}:{String(secs % 60).padStart(2, '0')}
+        </div>
+      )}
       {error && (
-        <div role="alert" className="absolute bottom-full left-0 mb-2 w-64 rounded bg-gray-800 border border-red-500/60 px-2.5 py-1.5 text-xs text-red-200 shadow-lg">
+        <div role="alert" className="absolute bottom-full left-0 mb-2 w-72 max-w-[80vw] rounded bg-gray-800 border border-red-500/60 px-2.5 py-1.5 text-xs text-red-200 shadow-lg">
           {error}
         </div>
       )}

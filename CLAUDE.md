@@ -539,11 +539,17 @@ bose-linc both showed as waiting on the first deploy.
 
 ### Phone: dictation, Home Screen app, Web Push
 
-- **Dictation** (`VoiceButton.jsx`): a mic beside the chat composer using the browser's
-  speech recognition (Safari/iOS dictation, Chrome; hidden on Firefox and plain http).
-  Text is appended to the draft, never sent on its own. Safari's `continuous` mode
-  repeats earlier phrases, so there it takes one utterance per session and chains
-  sessions until tapped off (three instant ends in a row = give up, not spin).
+- **Dictation** (`VoiceButton.jsx`, `routes/transcribe.js`): the mic beside the chat
+  composer records audio (MediaRecorder) and POSTs it to `/api/transcribe`, which pipes
+  it over the existing SSH ControlMaster (stdin) to **whisper.cpp on the mac mini**:
+  `whisper-server` with large-v3-turbo q5, launchd `com.maestro.whisper`, bound to
+  127.0.0.1:8178 only, `--convert` (ffmpeg) so any container works. ~1-1.5 s hot.
+  Agent names go in as Whisper's prompt so "em-sim" isn't heard as "M-SIM". Setting
+  `stt_host` picks another Maestro host. It replaced the browser's Web Speech API,
+  which an iOS Home Screen app refuses ("service-not-allowed") whatever the mic
+  permission says. The text is appended to the draft, never sent on its own.
+  whisper-server writes temp files to its cwd, so the plist sets WorkingDirectory
+  (under launchd, cwd is `/` and every request fails "FFmpeg conversion failed").
 - **Home Screen app**: `client/public/manifest.webmanifest` + icons + apple meta tags.
   No native app: Share → Add to Home Screen gives full screen, and is what iOS
   requires before it will deliver Web Push at all.

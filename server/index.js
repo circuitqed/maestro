@@ -12,6 +12,7 @@ import connectionRoutes from './routes/connections.js';
 import hostsRoutes from './routes/hosts.js';
 import usageRoutes from './routes/usage.js';
 import pushRoutes from './routes/push.js';
+import transcribeRoutes from './routes/transcribe.js';
 import { initPush, onAgentWaiting } from './services/push.js';
 import accountLoginRoutes from './routes/accountLogin.js';
 import agentApiRoutes from './routes/agentApi.js';
@@ -95,6 +96,7 @@ app.use('/api/view', viewRouter);  // HTML files as sandboxed pages; capability-
 app.use('/api/connections', connectionRoutes);
 app.use('/api/hosts', hostsRoutes);
 app.use('/api/usage', usageRoutes);  // browser-facing plan usage
+app.use('/api/transcribe', transcribeRoutes);  // chat mic: audio -> whisper on the mac mini
 app.use('/api/push', pushRoutes);  // Web Push subscriptions (phone notifications)
 app.use('/api/accounts', accountLoginRoutes);  // sign an extra Anthropic account in on a host
 
