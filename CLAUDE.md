@@ -245,6 +245,33 @@ panel/modal header switches live. The tmux TUI stays the single source of truth:
   the Access app (`cf-access-add maestro.lazybrains.com --allow ...` replaces the list:
   include Dave's two).
 
+## Non-admin users: what they can reach (2026-11-26)
+
+- **Sockets:** `/ws/terminal` and `/ws/transcript` check the agent belongs to a project
+  the user is on (`wsAllowed` in index.js). Before this, being signed in was enough to
+  attach to any tmux session on any host.
+- **HTTP is default-deny** for non-admin sessions (`services/userGate.js`): only their
+  projects/agents lists, the per-agent use routes (start/stop/input/keys/answer/pane/
+  transcript/file/view/upload/usage; these check project access themselves),
+  transcribe, push, and host names. A new route is admin-only unless added there.
+  Audit that led to it: 23 gaps, 7 critical (working dir -> `/` to read the DB and
+  secret, login panes that leave a shell, adopting any tmux session, approving spend).
+- **Still open:** the shared agent token (`~/.maestro/agent-token`, readable by any
+  agent running as dave) plus a free-form `X-Maestro-Session` header lets an agent act
+  as any other agent on `/api/agent/*`. Per-agent tokens would fix it.
+- **People outside the family/lab get an isolated Linux user**, not an agent running as
+  dave (whose agents can read every key Dave has). Allen Shealy: Linux user `allen` on
+  oracle (password locked; Maestro's key in authorized_keys; ACL denies him
+  `/home/projects`; `/home/dave` is 750; sudo only `docker restart|logs rental`, and an
+  explicit deny of CloudPanel's `ALL ALL=(ALL) NOPASSWD: /usr/bin/clpctlWrapper`, which
+  otherwise lets any user run clpctl as `clp`, who has full sudo). Maestro host
+  `oracle-allen` = `allen@100.72.255.33`; his repo is `/home/allen/allen-rental`, the
+  `rental` container mounts from there; his agent signs into his own Claude account.
+  No `~/.maestro` token and no yap identity for him.
+- **Access login methods** for maestro.lazybrains.com: Google AND one-time email code
+  (Allen's address is Yahoo). `cf-access-add` forces Google-only and REPLACES the allow
+  list: re-running it would drop the email code and anyone not passed with `--allow`.
+
 ## Terminal UX
 
 - **Desktop (>= 768px):** Full-height resizable side panel using react-resizable-panels
