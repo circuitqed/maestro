@@ -104,6 +104,88 @@ function fleetSummary() {
   return { hostsText: byHost.join('\n'), projectsText: proj.join('\n'), hosts, projects };
 }
 
+// ---- Public URL: Cloudflare tunnel route + Access, set up at start ----------------
+const ZONES = ['circuitqed.com', 'lazybrains.com'];
+export const ACCESS = ['lab', 'dave', 'anyone', 'public'];
+const CF_TUNNEL_ADD = '/home/dave/.local/bin/cf-tunnel-add';
+const CF_ACCESS_ADD = '/home/dave/.local/bin/cf-access-add';
+const CF_TOKEN = '/home/dave/.config/cloudflare/token';
+const CF_ACCOUNT = '5113ba1b3173ca9c34309c04b953b9d3';
+const CF_TUNNEL = '001ee67a-79fa-4913-8eeb-f78f7f6b7381'; // the shared oracle tunnel
+const PORT_MIN = 7800, PORT_MAX = 7999;
+
+export function validHostname(h) {
+  const s = String(h || '').toLowerCase().trim();
+  if (!/^[a-z0-9]([a-z0-9-]{0,40}[a-z0-9])?\.[a-z0-9.-]+$/.test(s)) return false;
+  return ZONES.some((z) => s === z || s.endsWith(`.${z}`)) && s.split('.').length === 3;
+}
+
+async function tunnelIngress() {
+  const tok = fs.readFileSync(CF_TOKEN, 'utf8').trim();
+  const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/cfd_tunnel/${CF_TUNNEL}/configurations`, {
+    headers: { Authorization: `Bearer ${tok}` }, signal: AbortSignal.timeout(20000),
+  });
+  const d = await r.json();
+  if (!d.success) throw new Error('could not read the tunnel config');
+  return (d.result && d.result.config && d.result.config.ingress) || [];
+}
+
+// A port nobody uses: not in any tunnel route, not reserved by another agent, not
+// listening on the host. The fleet convention is 78xx, counting up.
+async function freePort(host, ingress) {
+  const used = new Set();
+  for (const i of ingress) { const m = String(i.service || '').match(/:(\d+)\/?$/); if (m) used.add(Number(m[1])); }
+  for (const a of getAgents()) {
+    const c = typeof a.config === 'string' ? (() => { try { return JSON.parse(a.config || '{}'); } catch { return {}; } })() : (a.config || {});
+    if (c.port) used.add(Number(c.port));
+  }
+  try {
+    const { stdout } = await execOnHost(host, "ss -ltnH 2>/dev/null | awk '{print $4}' | sed 's/.*://'");
+    for (const p of stdout.split(/\s+/)) if (p) used.add(Number(p));
+  } catch { /* best effort */ }
+  const top = Math.max(PORT_MIN, ...[...used].filter((p) => p >= PORT_MIN && p <= PORT_MAX));
+  for (let p = top + 1; p <= PORT_MAX; p++) if (!used.has(p)) return p;
+  for (let p = PORT_MIN; p <= PORT_MAX; p++) if (!used.has(p)) return p;
+  throw new Error('no free port in 7800-7999');
+}
+
+/**
+ * Route https://<hostname> to the agent's port and put it behind Google sign-in.
+ * Refuses a hostname that already routes somewhere: cf-tunnel-add would silently
+ * re-point it, taking over another app's address.
+ */
+export async function setupUrl(host, hostname, access, { port = null } = {}) {
+  if (!validHostname(hostname)) throw new Error(`${hostname} is not a hostname on ${ZONES.join(' or ')}.`);
+  const ingress = await tunnelIngress();
+  const taken = ingress.find((i) => i.hostname === hostname);
+  if (port == null) port = await freePort(host, ingress);
+  let target;
+  if (!isRemote(host)) target = String(port);
+  else {
+    const { stdout } = await execOnHost(host, 'tailscale ip -4 2>/dev/null | head -1');
+    const ip = stdout.trim();
+    if (!/^100\.\d+\.\d+\.\d+$/.test(ip)) throw new Error(`${host.name} has no tailnet address for the tunnel to reach.`);
+    target = `http://${ip}:${port}`;
+  }
+  const want = /^\d+$/.test(target) ? `http://localhost:${target}` : target;
+  if (taken && taken.service !== want) throw new Error(`${hostname} already routes to ${taken.service}; choose another name.`);
+  await execFileAsync(CF_TUNNEL_ADD, [hostname, target], { timeout: 60000 });
+  if (access !== 'public') {
+    const args = [hostname];
+    if (access === 'lab') args.push('--allow-domain', 'stanford.edu', '--allow', 'david.schuster@gmail.com');
+    if (access === 'anyone') args.push('--anyone');
+    await execFileAsync(CF_ACCESS_ADD, args, { timeout: 60000 });
+  }
+  return { url: `https://${hostname}`, port, bind: isRemote(host) ? `0.0.0.0:${port} (reached over the tailnet)` : `127.0.0.1:${port}`, access };
+}
+
+const ACCESS_TEXT = {
+  lab: 'behind Google sign-in for Stanford accounts and Dave',
+  dave: 'behind Google sign-in, Dave only',
+  anyone: 'behind Google sign-in, any Google account',
+  public: 'public, with no login',
+};
+
 /** A proposed card for an idea. Never creates anything. */
 export async function draft(idea) {
   const text = String(idea || '').trim();
@@ -117,6 +199,8 @@ export async function draft(idea) {
  "projectName": if project is null, a short kebab-case name for the new project (often the same as name),
  "description": one sentence saying what this agent does, for its card,
  "why": a few words on the host choice,
+ "url": if the idea is something people open in a browser (a web app, site, dashboard, form, API others call), a public hostname for it, else null. Lab and research things go on circuitqed.com, Dave's personal projects on lazybrains.com; a short memorable subdomain (e.g. "inventory.circuitqed.com"). Use a hostname Dave named if he gave one,
+ "access": who may open the url: "lab" (Stanford Google accounts and Dave; the default for lab tools), "dave" (only Dave), "anyone" (any Google account), or "public" (no login, only for things meant to be public),
  "firstPrompt": the first message the agent will receive: Dave's idea restated as a clear task, keeping every specific he gave (names, numbers, machines), adding nothing he didn't ask for. Written to the agent in second person. Plain text.}
 
 Rules for choosing a machine:
@@ -159,6 +243,8 @@ ${projectsText}`;
     why: String(card.why || '').slice(0, 200),
     firstPrompt: String(card.firstPrompt || text),
     claudeConfigDir: defaultAccountFor(host.id),
+    url: validHostname(card.url) ? String(card.url).toLowerCase() : '',
+    access: ACCESS.includes(card.access) ? card.access : 'lab',
   };
 }
 
@@ -218,12 +304,17 @@ async function dirExists(host, dir) {
   }
 }
 
-function firstMessage(card, agent, host, dir, yapOk) {
+function firstMessage(card, agent, host, dir, yapOk, web = null) {
   const lines = [
     `[from Maestro, for Dave] ${card.firstPrompt.trim()}`,
     '',
-    `Setup (done by Maestro): you are "${agent.name}" on ${host.name}, working in ${dir} (git initialised; AGENTS.md is the project's instructions file, keep it current). claude.ai connectors are off for this project.`,
+    card.workingDir
+      ? `Setup (done by Maestro): you are "${agent.name}" on ${host.name}, working in the existing repo ${dir}; read its CLAUDE.md/AGENTS.md first and keep it current. claude.ai connectors are off for this project (.claude/settings.json).`
+      : `Setup (done by Maestro): you are "${agent.name}" on ${host.name}, working in ${dir} (git initialised; AGENTS.md is the project's instructions file, keep it current). claude.ai connectors are off for this project.`,
   ];
+  if (web) {
+    lines.push(`Your public address is ${web.url}, ${ACCESS_TEXT[web.access]} (Cloudflare tunnel and Access are already set up). Serve on ${web.bind}; in docker-compose that is \`ports: ["${web.bind.startsWith('127') ? '127.0.0.1:' : ''}${web.port}:<container port>"]\`. Don't use another port. ${web.access === 'public' ? '' : 'Cloudflare checks the login before a request reaches you; read the signed-in person from the Cf-Access-Authenticated-User-Email header (details: /home/projects/docs/google-login.md).'}`);
+  }
   if (yapOk) {
     lines.push(`You're on yap as dave/${agent.screen_session}, the lab's agent message board. Before starting: run \`yap help\`, post your card (what you do, in a sentence or two: "${card.description}"), then \`yap new\`.`);
   }
@@ -267,10 +358,20 @@ export async function spawn(card, { userId = null, registerAgent } = {}) {
 
   // Directory: <root>/<name>, suffixed if taken, so a new agent never lands in (and
   // takes over) someone else's tree.
-  let dir = path.posix.join(root, name);
-  for (let i = 2; await dirExists(host, dir); i++) {
-    dir = path.posix.join(root, `${name}-${i}`);
-    if (i > 20) throw new Error(`Could not find a free directory under ${root}.`);
+  // An existing directory (an agent for a repo that already exists) is used as is
+  // and not scaffolded: the repo has its own instructions file and layout.
+  const existingDir = typeof card.workingDir === 'string' && card.workingDir.trim() ? card.workingDir.trim() : null;
+  let dir;
+  if (existingDir) {
+    if (!existingDir.startsWith('/')) throw new Error('The working directory must be an absolute path.');
+    if (!(await dirExists(host, existingDir))) throw new Error(`${existingDir} does not exist on ${host.name}.`);
+    dir = existingDir;
+  } else {
+    dir = path.posix.join(root, name);
+    for (let i = 2; await dirExists(host, dir); i++) {
+      dir = path.posix.join(root, `${name}-${i}`);
+      if (i > 20) throw new Error(`Could not find a free directory under ${root}.`);
+    }
   }
 
   // Project: existing, or a new one named for the idea.
@@ -283,10 +384,19 @@ export async function spawn(card, { userId = null, registerAgent } = {}) {
     project = existing || createProject(pname, isRemote(host) ? null : dir, description, null, userId);
   }
 
-  await execOnHost(host, `mkdir -p ${shellQuote(dir)}`);
-  await scaffoldProject(isRemote(host) ? host : null, dir, { name, description });
+  if (!existingDir) {
+    await execOnHost(host, `mkdir -p ${shellQuote(dir)}`);
+    await scaffoldProject(isRemote(host) ? host : null, dir, { name, description });
+  }
   await writeProjectSettings(host, dir);
   if (isRemote(host) && !project.path) setProjectHostPath(project.id, host.id, dir);
+
+  // URL before the agent exists, so a name clash fails the start instead of leaving
+  // an agent told about an address it doesn't have.
+  let web = null;
+  if (card.url && String(card.url).trim()) {
+    web = await setupUrl(host, String(card.url).trim().toLowerCase(), ACCESS.includes(card.access) ? card.access : 'lab');
+  }
 
   const configDir = card.claudeConfigDir === undefined ? defaultAccountFor(host.id) : (card.claudeConfigDir || null);
   try { await pretrust(host, dir, configDir); } catch (err) { console.error('spawn: pretrust failed', err.message); }
@@ -295,7 +405,10 @@ export async function spawn(card, { userId = null, registerAgent } = {}) {
   try { hostSessions = (await getTmuxSessions(host)).map((s) => s.name); } catch { hostSessions = []; }
   const session = uniqueSessionName(host.id, sanitizeSessionName(name), hostSessions);
   if (!isValidSessionName(session)) throw new Error('Could not make a valid session name.');
-  const config = { provider: 'claude', ...(configDir ? { claudeConfigDir: configDir } : {}), spawnedFrom: String(card.idea || '').slice(0, 1000) };
+  const config = {
+    provider: 'claude', ...(configDir ? { claudeConfigDir: configDir } : {}), spawnedFrom: String(card.idea || '').slice(0, 1000),
+    ...(web ? { url: web.url, port: web.port, access: web.access } : {}),
+  };
   const agent = createAgent(project.id, name, session, 'stopped', config, host.id, dir);
   if (project.path && !isRemote(host)) appendAgentLane(project.path, name, 'claude');
 
@@ -311,8 +424,8 @@ export async function spawn(card, { userId = null, registerAgent } = {}) {
 
   const fresh = getAgent(agent.id);
   await startAgentSession(fresh, host, { registerAgent });
-  deliverFirst(agent.id, host, firstMessage({ ...card, description }, fresh, host, dir, yapOk))
+  deliverFirst(agent.id, host, firstMessage({ ...card, description }, fresh, host, dir, yapOk, web))
     .catch((err) => console.error('spawn: deliver', err.message));
 
-  return { agent: getAgent(agent.id), dir, project: getProject(project.id), yap: yapOk };
+  return { agent: getAgent(agent.id), dir, project: getProject(project.id), yap: yapOk, web };
 }

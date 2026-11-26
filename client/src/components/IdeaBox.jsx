@@ -112,7 +112,7 @@ export default function IdeaBox() {
       {error && <p role="alert" className="mt-2 text-sm text-red-300">{error}</p>}
       {done && (
         <p className="mt-2 text-sm text-emerald-300">
-          Started {done.agent && done.agent.name} in {done.dir}{done.yap ? ', on yap' : ' (yap token failed; issue it by hand)'}.
+          Started {done.agent && done.agent.name} in {done.dir}{done.yap ? ', on yap' : ' (yap token failed; issue it by hand)'}{done.web ? `, at ${done.web.url} (port ${done.web.port})` : ''}.
         </p>
       )}
 
@@ -161,6 +161,27 @@ export default function IdeaBox() {
               {accounts === null && <option disabled>Loading…</option>}
             </select>
           </div>
+          <div>
+            <span className={label}>Web address (blank = none)</span>
+            <input
+              className={field}
+              value={card.url || ''}
+              onChange={set('url')}
+              placeholder="name.circuitqed.com"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+          </div>
+          <div>
+            <span className={label}>Who can open it</span>
+            <select className={field} value={card.access || 'lab'} onChange={set('access')} disabled={!(card.url || '').trim()}>
+              <option value="lab">Lab: Stanford Google accounts + you</option>
+              <option value="dave">Only you</option>
+              <option value="anyone">Anyone with a Google account</option>
+              <option value="public">Public, no login</option>
+            </select>
+          </div>
           <div className="sm:col-span-2">
             <span className={label}>First message</span>
             <textarea className={`${field} min-h-[80px]`} value={card.firstPrompt} onChange={set('firstPrompt')} />
@@ -182,7 +203,7 @@ export default function IdeaBox() {
               Discard
             </button>
             <span className="text-xs text-gray-500">
-              Sets up its folder and git, turns the claude.ai connectors off, trusts the folder and puts it on yap.
+              Sets up its folder and git, turns the claude.ai connectors off, trusts the folder and puts it on yap{(card.url || '').trim() ? `, and routes https://${card.url.trim()} to a port it is given` : ''}.
             </span>
           </div>
         </div>

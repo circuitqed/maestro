@@ -559,6 +559,15 @@ wait. Now: type or dictate the idea -> **Draft** -> an editable card -> **Start 
   (`config.spawnedFrom` keeps the idea) -> `yap-issue dave/<session>` straight to the
   host -> start -> the first message, once the composer is up twice in a row (never
   into a widget; gives up after 15 min).
+- **Web address**: the draft proposes a hostname when the idea is something opened in
+  a browser (lab -> `*.circuitqed.com`, personal -> `*.lazybrains.com`) and who may
+  open it (lab = stanford.edu + Dave, Dave only, any Google, public). Start picks a
+  free 78xx port (not in any tunnel route, not reserved in an agent's `config.port`,
+  not listening), runs `cf-tunnel-add` (remote hosts route to their tailnet IP) and
+  `cf-access-add`, and tells the agent the URL, the port and to read
+  `Cf-Access-Authenticated-User-Email`. A hostname that already routes elsewhere is
+  refused: cf-tunnel-add would silently re-point it. `existing workingDir` on a card
+  runs the agent in an existing repo without scaffolding (how the yap agent was made).
 - The composer line is `❯` + a **no-break space**: match `/^\s*❯(\s|$)/m`, not `'❯ '`.
 - Verified end to end on zlmc 2026-11-26 (two throwaway agents, then deleted by id).
 
