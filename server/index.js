@@ -30,7 +30,7 @@ import { startTaskRunner } from './services/taskRunner.js';
 import { ensureAgentApiToken } from './services/agentToken.js';
 import { setupTerminalWS } from './services/terminal.js';
 import { setupTranscriptWS } from './services/transcript.js';
-import { initDb, getUserCount, getAgents, getHost } from './services/db.js';
+import { initDb, getUserCount, getAgents, getHost, getAgent, getUserById, userHasProjectAccess, getHosts } from './services/db.js';
 import SQLiteStore from './services/sessionStore.js';
 import { startMonitoring, onStateChange, getAllAgentStates, getAllWaiting, registerAgent } from './services/agentMonitor.js';
 import { startUpdateWatch } from './services/updateWatch.js';
@@ -156,12 +156,43 @@ const transcriptWss = new WebSocketServer({ noServer: true });
 const notifyWss = new WebSocketServer({ noServer: true });
 const notifyClients = new Set();
 
+function wsAllowed(request) {
+  const user = getUserById(request.session.user_id);
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  let url;
+  try { url = new URL(request.url, 'http://x'); } catch { return false; }
+  const can = (agent) => !!(agent && agent.project_id && userHasProjectAccess(user.id, agent.project_id));
+  if (url.pathname.startsWith('/ws/terminal')) {
+    const session = url.searchParams.get('session');
+    const hostParam = url.searchParams.get('host');
+    const localIds = new Set(getHosts().filter((h) => !h.ssh_target).map((h) => String(h.id)));
+    const hostOf = (id) => (id === null || id === undefined || id === '' || localIds.has(String(id)) ? 'local' : String(id));
+    const want = hostOf(hostParam);
+    return getAgents().some((a) => a.screen_session === session && hostOf(a.host_id) === want && can(a));
+  }
+  if (url.pathname.startsWith('/ws/transcript')) {
+    return can(getAgent(url.searchParams.get('agent')));
+  }
+  return url.pathname.startsWith('/ws/notifications');
+}
+
 server.on('upgrade', (request, socket, head) => {
   sessionParser(request, {}, () => {
     // Check authentication for WebSocket
     const userCount = getUserCount();
     if (userCount > 0 && !request.session?.user_id) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    // Per-user authorisation. Being signed in used to be enough to attach to ANY tmux
+    // session on any host (or read any transcript) -- every non-admin could open
+    // Dave's shells. A non-admin may only reach the sessions of agents in projects
+    // they belong to, on the host that agent runs on.
+    if (userCount > 0 && !wsAllowed(request)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
       socket.destroy();
       return;
     }
