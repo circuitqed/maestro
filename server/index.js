@@ -15,6 +15,7 @@ import hostsRoutes from './routes/hosts.js';
 import usageRoutes from './routes/usage.js';
 import pushRoutes from './routes/push.js';
 import { accessLogin, ensureEmailsColumn } from './services/accessAuth.js';
+import { userGate } from './services/userGate.js';
 import transcribeRoutes from './routes/transcribe.js';
 import spawnRoutes from './routes/spawn.js';
 import { initPush, onAgentWaiting } from './services/push.js';
@@ -100,6 +101,7 @@ const sessionParser = session({
 app.use(express.json({ limit: '4mb' }));
 app.use(sessionParser);
 app.use(accessLogin());  // Google sign-in via Cloudflare Access (services/accessAuth.js)
+app.use(userGate());     // non-admin sessions: default-deny (services/userGate.js)
 
 // API Routes
 app.use('/api/agent', agentApiRoutes);  // called by agents themselves, token-authed
