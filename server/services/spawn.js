@@ -1,0 +1,318 @@
+/**
+ * Ideas to agents: one sentence in, a running agent out.
+ *
+ * Making an agent was 5-10 manual steps -- pick a host, name, directory, account;
+ * start it; answer the trust prompt; turn the claude.ai connectors off and restart;
+ * issue a yap token; get the card posted -- and that friction, not the work, was what
+ * made ideas wait. Here:
+ *
+ *   draft(idea)  asks a model for a proposed card (name, host, project, first prompt),
+ *                using the fleet as it is right now and the `spawn_rules` setting;
+ *                the person edits whatever is wrong and taps Go.
+ *   spawn(card)  does every step, in order, with nothing left for a person:
+ *                dir + scaffold (AGENTS.md, git) -> .claude/settings.json with the
+ *                connectors off -> directory pre-trusted for that account -> agent row
+ *                -> yap token straight to the host -> start -> the idea delivered as
+ *                its first message once its composer is up.
+ *
+ * Pre-trusting is done here, and only here, because the person just asked for this
+ * directory to be created and run: the Go tap IS the trust decision. Maestro still
+ * never answers a trust prompt in someone else's pane.
+ *
+ * Accounts default to whatever most live Claude agents on that host already run as,
+ * learned from the fleet rather than configured, so moving the fleet to a new account
+ * moves new agents with it.
+ */
+import fs from 'fs';
+import path from 'path';
+import { execFile, exec } from 'child_process';
+import { promisify } from 'util';
+import {
+  getHosts, getHost, getProjects, getProject, getAgents, getAgent, createProject, createAgent,
+  setProjectHostPath, getSetting,
+} from './db.js';
+import { execOnHost, isRemote, shellQuote, isValidSessionName } from './hosts.js';
+import { scaffoldProject, appendAgentLane } from './scaffold.js';
+import { sanitizeSessionName, uniqueSessionName } from './sessions.js';
+import { getTmuxSessions, capturePane, sendText } from './tmux.js';
+import { startAgentSession } from './agentStart.js';
+import { looksLikePrompt } from './inject.js';
+
+const execFileAsync = promisify(execFile);
+const execAsync = promisify(exec);
+const runLocal = (cmd) => execAsync(cmd, { shell: '/bin/bash', timeout: 15000 });
+
+const GATEWAY_SETTINGS = '/home/dave/.claude-accts/stanford-api/settings.json';
+const MODEL = 'claude-opus-5-5';
+const YAP_ISSUE = '/home/projects/yap/bin/yap-issue';
+
+// What each machine is for. Editable as the `spawn_rules` setting; this is the default.
+export const DEFAULT_RULES = `- zlmc (Linux Threadripper in the lab): anything touching lab instruments, fridges, qubit measurement, QICK/RFSoC, Vivado/FPGA firmware, EM simulation (HFSS, Sonnet, em-sim), lab data. Reaches the lab subnet.
+- oracle (cloud VM, runs Maestro/yap): web apps and sites, Maestro/yap/fleet tooling, personal projects, games, writing, anything public on lazybrains.com or circuitqed.com. Low CPU (4 cores) and nearly full disk: no heavy compute.
+- mac-mini (Apple M4): macOS/iOS apps, Xcode, Apple-only tools, on-device ML that wants Metal.
+- whistler (lab Windows/WSL box): only FleetMonitor-style fridge monitoring and Windows lab software.
+- lithium: JTAG/FPGA board programming on the bench.
+- garage-wsl: AXIEM and other Windows EM tools; often offline, so avoid unless the idea needs it.
+Prefer an EXISTING project when the idea is clearly part of one; otherwise a new project.`;
+
+function gatewayKey() {
+  const s = JSON.parse(fs.readFileSync(GATEWAY_SETTINGS, 'utf8'));
+  const env = s.env || {};
+  if (!env.ANTHROPIC_AUTH_TOKEN || !env.ANTHROPIC_BASE_URL) throw new Error('gateway account is not configured');
+  return { key: env.ANTHROPIC_AUTH_TOKEN, base: env.ANTHROPIC_BASE_URL.replace(/\/$/, '') };
+}
+
+function slug(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+}
+
+/** The account most live Claude agents on this host use (null = the host's default ~/.claude). */
+export function defaultAccountFor(hostId) {
+  const counts = new Map();
+  const localId = (getHosts().find((h) => !isRemote(h)) || {}).id;
+  const want = hostId ?? localId;
+  for (const a of getAgents()) {
+    if ((a.host_id ?? localId) !== want) continue;
+    if (a.status === 'stopped') continue;
+    const cfg = typeof a.config === 'string' ? JSON.parse(a.config || '{}') : (a.config || {});
+    if ((cfg.provider || 'claude') !== 'claude') continue;
+    const dir = cfg.claudeConfigDir || '';
+    counts.set(dir, (counts.get(dir) || 0) + 1);
+  }
+  let best = '', n = -1;
+  for (const [dir, c] of counts) if (c > n) { best = dir; n = c; }
+  return best || null;
+}
+
+function hostRoot(host) {
+  if (!isRemote(host)) return '/home/projects';
+  return host.default_root || null;
+}
+
+function fleetSummary() {
+  const hosts = getHosts();
+  const agents = getAgents();
+  const projects = getProjects();
+  const byHost = hosts.map((h) => {
+    const names = agents.filter((a) => (a.host_id ?? (isRemote(h) ? -1 : h.id)) === h.id && a.status !== 'stopped').map((a) => a.name);
+    return `${h.name} (${h.status || 'unknown'}): ${names.slice(0, 25).join(', ') || 'no live agents'}`;
+  });
+  const proj = projects.map((p) => {
+    const n = agents.filter((a) => a.project_id === p.id).length;
+    return `${p.name}${p.description ? ` -- ${String(p.description).slice(0, 80)}` : ''} (${n} agents)`;
+  });
+  return { hostsText: byHost.join('\n'), projectsText: proj.join('\n'), hosts, projects };
+}
+
+/** A proposed card for an idea. Never creates anything. */
+export async function draft(idea) {
+  const text = String(idea || '').trim();
+  if (!text) throw new Error('Say what the agent should do.');
+  const { hostsText, projectsText, hosts, projects } = fleetSummary();
+  const rules = getSetting('spawn_rules') || DEFAULT_RULES;
+  const system = `You set up new AI coding agents for Dave, a physics professor who runs a fleet of Claude Code agents across several machines. Given his one-line idea, propose where and how the agent should run. Answer with ONE JSON object and nothing else:
+{"name": short kebab-case agent name, 2-4 words, specific (e.g. "bfg1-warmup-log", not "monitor-agent"),
+ "host": one of the host names below,
+ "project": the name of an EXISTING project from the list, or null for a new project,
+ "projectName": if project is null, a short kebab-case name for the new project (often the same as name),
+ "description": one sentence saying what this agent does, for its card,
+ "why": a few words on the host choice,
+ "firstPrompt": the first message the agent will receive: Dave's idea restated as a clear task, keeping every specific he gave (names, numbers, machines), adding nothing he didn't ask for. Written to the agent in second person. Plain text.}
+
+Rules for choosing a machine:
+${rules}
+
+Machines and their live agents now:
+${hostsText}
+
+Existing projects:
+${projectsText}`;
+  const { key, base } = gatewayKey();
+  const res = await fetch(`${base}/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': key, authorization: `Bearer ${key}`, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({ model: MODEL, max_tokens: 1200, system, messages: [{ role: 'user', content: text }] }),
+    signal: AbortSignal.timeout(60000),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`drafting failed: ${body?.error?.message || `HTTP ${res.status}`}`);
+  const out = (body.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('');
+  const m = out.match(/\{[\s\S]*\}/);
+  if (!m) throw new Error('drafting returned no card');
+  let card;
+  try { card = JSON.parse(m[0]); } catch { throw new Error('drafting returned an unreadable card'); }
+
+  // Normalise against what actually exists; never trust a name the model made up.
+  const host = hosts.find((h) => h.name === card.host) || hosts.find((h) => !isRemote(h));
+  const project = card.project ? projects.find((p) => p.name === card.project) : null;
+  const name = slug(card.name) || slug(text.split(/\s+/).slice(0, 3).join('-')) || 'new-agent';
+  return {
+    idea: text,
+    name,
+    hostId: host.id,
+    projectId: project ? project.id : null,
+    // Name for a NEW project, even when an existing one was picked: the picker's
+    // "New project" choice must not duplicate the existing project under its own name.
+    projectName: project ? name : (slug(card.projectName) || name),
+    existingProjectName: project ? project.name : null,
+    description: String(card.description || '').slice(0, 300),
+    why: String(card.why || '').slice(0, 200),
+    firstPrompt: String(card.firstPrompt || text),
+    claudeConfigDir: defaultAccountFor(host.id),
+  };
+}
+
+// Mark a directory trusted for the account the agent will run as, so its first start
+// doesn't stop on "Do you trust the files in this folder?". Atomic replace; a missing
+// config file is created.
+const TRUST_PY = `
+import json, os, sys, tempfile
+cfg, d = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(cfg))
+except FileNotFoundError:
+    data = {}
+p = data.setdefault('projects', {}).setdefault(d, {})
+p['hasTrustDialogAccepted'] = True
+p.setdefault('allowedTools', [])
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(cfg) or '.', prefix='.claude.json.')
+with os.fdopen(fd, 'w') as f:
+    json.dump(data, f, indent=2)
+if os.path.exists(cfg):
+    os.chmod(tmp, os.stat(cfg).st_mode & 0o777)
+os.replace(tmp, cfg)
+`;
+
+async function pretrust(host, dir, configDir) {
+  const cfg = configDir ? `${configDir.replace(/\/$/, '')}/.claude.json` : '$HOME/.claude.json';
+  const b64 = Buffer.from(TRUST_PY).toString('base64');
+  const cmd = `f=$(mktemp) && echo ${shellQuote(b64)} | base64 -d > "$f" && python3 "$f" ${configDir ? shellQuote(cfg) : `"${cfg}"`} ${shellQuote(dir)}; r=$?; rm -f "$f"; exit $r`;
+  if (isRemote(host)) await execOnHost(host, cmd);
+  else await runLocal(cmd);
+}
+
+// The project's own settings: connectors off before the first start, so an agent that
+// gets a yap token never also had Gmail/Drive (and no restart is needed to drop them).
+async function writeProjectSettings(host, dir) {
+  const py = `
+import json, os, sys
+p = os.path.join(sys.argv[1], '.claude', 'settings.json')
+os.makedirs(os.path.dirname(p), exist_ok=True)
+try:
+    d = json.load(open(p))
+except Exception:
+    d = {}
+d['disableClaudeAiConnectors'] = True
+json.dump(d, open(p, 'w'), indent=2)
+`;
+  const b64 = Buffer.from(py).toString('base64');
+  const cmd = `f=$(mktemp) && echo ${shellQuote(b64)} | base64 -d > "$f" && python3 "$f" ${shellQuote(dir)}; r=$?; rm -f "$f"; exit $r`;
+  if (isRemote(host)) await execOnHost(host, cmd);
+  else await runLocal(cmd);
+}
+
+async function dirExists(host, dir) {
+  try { await execOnHost(host, `test -e ${shellQuote(dir)}`); return true; } catch (err) {
+    if (err.code === 1) return false;
+    throw err;
+  }
+}
+
+function firstMessage(card, agent, host, dir, yapOk) {
+  const lines = [
+    `[from Maestro, for Dave] ${card.firstPrompt.trim()}`,
+    '',
+    `Setup (done by Maestro): you are "${agent.name}" on ${host.name}, working in ${dir} (git initialised; AGENTS.md is the project's instructions file, keep it current). claude.ai connectors are off for this project.`,
+  ];
+  if (yapOk) {
+    lines.push(`You're on yap as dave/${agent.screen_session}, the lab's agent message board. Before starting: run \`yap help\`, post your card (what you do, in a sentence or two: "${card.description}"), then \`yap new\`.`);
+  }
+  lines.push('If you need something set up (GitHub access, a public URL, a credential), say exactly what and why, and Dave will arrange it. Credentials come as one-time claim links (`secret-claim URL`), never pasted.');
+  return lines.join('\n');
+}
+
+// Deliver the first message once the composer is up. A trust prompt or any other
+// widget means a person has to act: wait for them rather than type into it.
+async function deliverFirst(agentId, host, text) {
+  const until = Date.now() + 15 * 60 * 1000;
+  let sawComposer = 0;
+  while (Date.now() < until) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const agent = getAgent(agentId);
+    if (!agent) return;
+    let pane = '';
+    try { pane = await capturePane(agent.screen_session, host); } catch { continue; }
+    if (looksLikePrompt(pane)) { sawComposer = 0; continue; }
+    // The composer is a ❯ line between two rules; wait for two looks in a row so a
+    // half-drawn start screen doesn't get the paste.
+    // (Claude follows the ❯ with a no-break space, which \s covers and ' ' does not.)
+    if (/^\s*❯(\s|$)/m.test(pane)) sawComposer++;
+    else sawComposer = 0;
+    if (sawComposer >= 2) {
+      try { await sendText(agent.screen_session, text, host); } catch (err) { console.error('spawn: first message failed', err.message); }
+      return;
+    }
+  }
+  console.error(`spawn: gave up delivering the first message to agent ${agentId}`);
+}
+
+/** Create and start the agent described by an (edited) card. */
+export async function spawn(card, { userId = null, registerAgent } = {}) {
+  const name = slug(card.name);
+  if (!name) throw new Error('The agent needs a name.');
+  const host = getHost(card.hostId);
+  if (!host) throw new Error('Unknown host.');
+  const root = hostRoot(host);
+  if (!root) throw new Error(`${host.name} has no default directory; set one in Manage Hosts.`);
+
+  // Directory: <root>/<name>, suffixed if taken, so a new agent never lands in (and
+  // takes over) someone else's tree.
+  let dir = path.posix.join(root, name);
+  for (let i = 2; await dirExists(host, dir); i++) {
+    dir = path.posix.join(root, `${name}-${i}`);
+    if (i > 20) throw new Error(`Could not find a free directory under ${root}.`);
+  }
+
+  // Project: existing, or a new one named for the idea.
+  let project = card.projectId ? getProject(card.projectId) : null;
+  if (card.projectId && !project) throw new Error('That project no longer exists.');
+  const description = String(card.description || '').trim();
+  if (!project) {
+    const pname = slug(card.projectName) || name;
+    const existing = getProjects().find((p) => slug(p.name) === pname);
+    project = existing || createProject(pname, isRemote(host) ? null : dir, description, null, userId);
+  }
+
+  await execOnHost(host, `mkdir -p ${shellQuote(dir)}`);
+  await scaffoldProject(isRemote(host) ? host : null, dir, { name, description });
+  await writeProjectSettings(host, dir);
+  if (isRemote(host) && !project.path) setProjectHostPath(project.id, host.id, dir);
+
+  const configDir = card.claudeConfigDir === undefined ? defaultAccountFor(host.id) : (card.claudeConfigDir || null);
+  try { await pretrust(host, dir, configDir); } catch (err) { console.error('spawn: pretrust failed', err.message); }
+
+  let hostSessions = [];
+  try { hostSessions = (await getTmuxSessions(host)).map((s) => s.name); } catch { hostSessions = []; }
+  const session = uniqueSessionName(host.id, sanitizeSessionName(name), hostSessions);
+  if (!isValidSessionName(session)) throw new Error('Could not make a valid session name.');
+  const config = { provider: 'claude', ...(configDir ? { claudeConfigDir: configDir } : {}), spawnedFrom: String(card.idea || '').slice(0, 1000) };
+  const agent = createAgent(project.id, name, session, 'stopped', config, host.id, dir);
+  if (project.path && !isRemote(host)) appendAgentLane(project.path, name, 'claude');
+
+  // yap: the token goes straight into a file on the host; it never passes through here
+  // as text we keep, log, or show.
+  let yapOk = false;
+  try {
+    await execFileAsync(YAP_ISSUE, [`dave/${session}`, '--host', isRemote(host) ? host.ssh_target : 'local', '--session', session], { timeout: 30000 });
+    yapOk = true;
+  } catch (err) {
+    console.error('spawn: yap-issue failed', (err.stderr || err.message || '').toString().slice(0, 200));
+  }
+
+  const fresh = getAgent(agent.id);
+  await startAgentSession(fresh, host, { registerAgent });
+  deliverFirst(agent.id, host, firstMessage({ ...card, description }, fresh, host, dir, yapOk))
+    .catch((err) => console.error('spawn: deliver', err.message));
+
+  return { agent: getAgent(agent.id), dir, project: getProject(project.id), yap: yapOk };
+}

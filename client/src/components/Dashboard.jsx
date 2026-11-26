@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import IdeaBox from './IdeaBox';
 import { useApp } from '../context/AppContext';
 import ProjectCard from './ProjectCard';
 import AgentRow from './AgentRow';
@@ -48,7 +49,7 @@ function Section({ title, count, defaultCollapsed = false, children, variant = '
 }
 
 function Dashboard() {
-  const { projects, agents, createProject, agentStates, agentWaiting, loadAgents, swarms, swarmAuths } = useApp();
+  const { projects, agents, createProject, agentStates, agentWaiting, loadAgents, swarms, swarmAuths, user } = useApp();
   const [view, setView] = useState(() => localStorage.getItem('dashboardView') || 'projects');
   const [showAddProject, setShowAddProject] = useState(false);
   const [showAddAgent, setShowAddAgent] = useState(false);
@@ -328,6 +329,9 @@ function Dashboard() {
           />
         </div>
       )}
+
+      {/* New agent from one sentence (services/spawn.js). Admin only, like the route. */}
+      {user?.role === 'admin' && <IdeaBox />}
 
       {/* Envelope requests come FIRST, above pending swarms. An agent waiting on an
           envelope cannot spawn anything at all, so this is the more blocking of the

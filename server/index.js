@@ -13,6 +13,7 @@ import hostsRoutes from './routes/hosts.js';
 import usageRoutes from './routes/usage.js';
 import pushRoutes from './routes/push.js';
 import transcribeRoutes from './routes/transcribe.js';
+import spawnRoutes from './routes/spawn.js';
 import { initPush, onAgentWaiting } from './services/push.js';
 import accountLoginRoutes from './routes/accountLogin.js';
 import agentApiRoutes from './routes/agentApi.js';
@@ -97,7 +98,8 @@ app.use('/api/connections', connectionRoutes);
 app.use('/api/hosts', hostsRoutes);
 app.use('/api/usage', usageRoutes);  // browser-facing plan usage
 app.use('/api/transcribe', transcribeRoutes);  // chat mic: audio -> whisper on the mac mini
-app.use('/api/push', pushRoutes);  // Web Push subscriptions (phone notifications)
+app.use('/api/push', pushRoutes);
+app.use('/api/spawn', spawnRoutes);  // idea box: one sentence -> a set-up, running agent  // Web Push subscriptions (phone notifications)
 app.use('/api/accounts', accountLoginRoutes);  // sign an extra Anthropic account in on a host
 
 // Serve static files in production.

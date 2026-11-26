@@ -537,6 +537,31 @@ numbered option (`❯ 1. Yes`). The looser test is right for refusing a delivery
 a reply ending in a numbered list above a normal composer matched it -- cryostat and
 bose-linc both showed as waiting on the first deploy.
 
+### Idea box: one sentence -> a set-up, running agent
+
+`services/spawn.js`, `routes/spawn.js` (admin), `IdeaBox.jsx` at the top of the
+dashboard. Creating an agent was 5-10 manual steps (host, name, dir, account, start,
+trust prompt, connectors off + restart, yap token, card), and that friction made ideas
+wait. Now: type or dictate the idea -> **Draft** -> an editable card -> **Start agent**.
+
+- **Draft** asks claude-opus-5-5 through the Stanford gateway (key read from
+  `~/.claude-accts/stanford-api/settings.json`, never logged), ~3 s, with the live
+  fleet (hosts, their agents, projects) and the `spawn_rules` setting (default
+  `DEFAULT_RULES` in spawn.js: what each machine is for). Output is normalised against
+  what exists; an invented host/project name is never trusted.
+- **Account** defaults to what most live Claude agents on that host run as (learned
+  from the fleet, not configured).
+- **Start** does, in order: `<default_root>/<name>` (suffixed if taken; oracle uses
+  /home/projects) -> scaffold (AGENTS.md, CLAUDE.md pointer, git) ->
+  `.claude/settings.json` with `disableClaudeAiConnectors` (so no restart later) ->
+  the dir marked trusted in that account's `.claude.json` (the Go tap is the trust
+  decision; Maestro still never answers a trust prompt in a pane) -> agent row
+  (`config.spawnedFrom` keeps the idea) -> `yap-issue dave/<session>` straight to the
+  host -> start -> the first message, once the composer is up twice in a row (never
+  into a widget; gives up after 15 min).
+- The composer line is `❯` + a **no-break space**: match `/^\s*❯(\s|$)/m`, not `'❯ '`.
+- Verified end to end on zlmc 2026-11-26 (two throwaway agents, then deleted by id).
+
 ### Phone: dictation, Home Screen app, Web Push
 
 - **Dictation** (`VoiceButton.jsx`, `routes/transcribe.js`): the mic beside the chat
