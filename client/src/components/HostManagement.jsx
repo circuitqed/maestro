@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import useEscape from '../hooks/useEscape';
 
 // Mirror the server-side validation regexes
 const NAME_REGEX = /^[\w .-]{1,64}$/;
@@ -12,6 +13,7 @@ const STATUS_DOT = {
 };
 
 function HostManagement({ onClose }) {
+  useEscape(onClose);
   const { hosts, createHost, updateHost, deleteHost, testHost } = useApp();
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
@@ -105,7 +107,7 @@ function HostManagement({ onClose }) {
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-gray-700">
             <h3 className="text-lg font-semibold text-white">Manage Hosts</h3>
-            <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors">
+            <button type="button" onClick={onClose} aria-label="Close" title="Close" className="flex items-center justify-center w-10 h-10 -my-2 -mr-2 md:w-auto md:h-auto md:my-0 md:mr-0 rounded text-gray-400 hover:text-white transition-colors">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
@@ -139,12 +141,12 @@ function HostManagement({ onClose }) {
                         </div>
                       </div>
                     </div>
-                    <div className="flex items-center gap-1 flex-shrink-0">
+                    <div className="flex items-center gap-3 md:gap-1 flex-shrink-0">
                       {!isLocal && (
                         <button
                           onClick={() => handleTest(h.id)}
                           disabled={testingId === h.id}
-                          className="px-2 py-1 text-xs rounded transition-colors
+                          className="px-3 py-2 md:px-2 md:py-1 text-xs rounded transition-colors
                                      text-gray-400 hover:text-white hover:bg-gray-600
                                      disabled:opacity-30 disabled:cursor-not-allowed"
                           title="Run tmux -V over SSH"
@@ -157,13 +159,13 @@ function HostManagement({ onClose }) {
                           <div className="flex items-center gap-1">
                             <button
                               onClick={() => handleDelete(h.id)}
-                              className="px-2 py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
+                              className="px-3 py-2 md:px-2 md:py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
                             >
                               Confirm
                             </button>
                             <button
                               onClick={() => setDeleteConfirm(null)}
-                              className="px-2 py-1 text-xs bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors"
+                              className="px-3 py-2 md:px-2 md:py-1 text-xs bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors"
                             >
                               Cancel
                             </button>
@@ -171,7 +173,7 @@ function HostManagement({ onClose }) {
                         ) : (
                           <button
                             onClick={() => setDeleteConfirm(h.id)}
-                            className="px-2 py-1 text-xs rounded transition-colors
+                            className="px-3 py-2 md:px-2 md:py-1 text-xs rounded transition-colors
                                        text-red-400 hover:text-red-300 hover:bg-gray-600"
                             title="Delete host"
                           >
@@ -203,7 +205,7 @@ function HostManagement({ onClose }) {
                         <button
                           onClick={() => handleSaveDir(h)}
                           disabled={dirSaving === h.id}
-                          className="px-2 py-1 text-xs bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors
+                          className="px-3 py-2 md:px-2 md:py-1 text-xs bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors
                                      disabled:opacity-40 flex-shrink-0"
                         >
                           {dirSaving === h.id ? '…' : dirSaved === h.id ? 'Saved' : 'Save'}

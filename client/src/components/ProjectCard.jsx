@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import AgentRow from './AgentRow';
 import ProjectSettings from './ProjectSettings';
 import AddAgentForm from './AddAgentForm';
+import useMediaQuery from '../hooks/useMediaQuery';
 
 // Git branch icon
 function GitIcon({ className }) {
@@ -31,6 +32,11 @@ function ProjectCard({ project, agents, isNew = false }) {
   const idleCount = agents.filter((a) => a.status === 'idle').length;
 
   const git = project.git;
+  // Phones: the whole title area toggles the card (the 24px chevron was the only
+  // target), and the three action icons appear only once it is expanded, so a
+  // collapsed name gets the row instead of ~7 characters. md+ is unchanged.
+  const isMobile = useMediaQuery('(max-width: 767px)');
+  const titleTap = isMobile ? { onClick: () => setExpanded((v) => !v), role: 'button', 'aria-expanded': expanded } : {};
 
   return (
     <div
@@ -39,11 +45,12 @@ function ProjectCard({ project, agents, isNew = false }) {
     >
       {/* Project Header */}
       <div className={expanded ? 'p-4' : 'px-4 py-3'}>
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap md:flex-nowrap items-center justify-between gap-x-3 gap-y-1 md:gap-3">
           {/* Expand/Collapse toggle */}
           <button
             onClick={() => setExpanded(!expanded)}
-            className="p-1 text-gray-400 hover:text-white transition-colors flex-shrink-0"
+            aria-label={expanded ? 'Collapse project' : 'Expand project'}
+            className="p-2 -ml-2 md:p-1 md:ml-0 text-gray-400 hover:text-white transition-colors flex-shrink-0"
           >
             <svg
               className={`w-4 h-4 transition-transform ${expanded ? 'rotate-90' : ''}`}
@@ -57,7 +64,7 @@ function ProjectCard({ project, agents, isNew = false }) {
 
           {/* Collapsed view: title + description inline */}
           {!expanded ? (
-            <div className="flex-1 min-w-0 flex items-center gap-3">
+            <div className="flex-1 min-w-0 flex items-center gap-3 py-2.5 -my-2.5 md:py-0 md:my-0 md:cursor-auto cursor-pointer" {...titleTap}>
               <h3 className="font-semibold text-white truncate">{project.name}</h3>
               {/* Git indicator (collapsed) */}
               {git && (
@@ -111,7 +118,7 @@ function ProjectCard({ project, agents, isNew = false }) {
             </div>
           ) : (
             /* Expanded view: full details */
-            <div className="flex-1 min-w-0">
+            <div className="flex-1 min-w-0" {...titleTap}>
               <div className="flex items-center gap-2">
                 <h3 className="font-semibold text-white truncate">{project.name}</h3>
                 {/* Explains why a project with nothing running is in Active. */}
@@ -170,7 +177,7 @@ function ProjectCard({ project, agents, isNew = false }) {
           )}
 
           {/* Action buttons */}
-          <div className="flex items-center gap-1 flex-shrink-0">
+          <div className={`${expanded ? 'flex basis-full justify-end md:basis-auto md:justify-start' : 'hidden md:flex'} items-center gap-1 flex-shrink-0`}>
             {/* Add shell button */}
             <button
               onClick={() => {
@@ -178,7 +185,7 @@ function ProjectCard({ project, agents, isNew = false }) {
                 setShowAddShell(!showAddShell);
                 setShowAddAgent(false);
               }}
-              className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+              className="p-3 md:p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
               title="Add shell"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -194,7 +201,7 @@ function ProjectCard({ project, agents, isNew = false }) {
                 setShowAddAgent(!showAddAgent);
                 setShowAddShell(false);
               }}
-              className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+              className="p-3 md:p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
               title="Add agent"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -206,7 +213,7 @@ function ProjectCard({ project, agents, isNew = false }) {
             <div className="relative">
               <button
                 onClick={() => setShowSettings(!showSettings)}
-                className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                className="p-3 md:p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
                 title="Project settings"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -28,7 +28,8 @@ function Section({ title, count, defaultCollapsed = false, children, variant = '
     <div className="mb-6">
       <button
         onClick={() => setCollapsed(!collapsed)}
-        className="flex items-center gap-2 mb-3 group"
+        aria-expanded={!collapsed}
+        className="flex items-center gap-2 mb-1.5 md:mb-3 py-2.5 pr-4 -my-1 md:py-0 md:pr-0 md:my-0 group"
       >
         <svg
           className={`w-4 h-4 text-gray-500 transition-transform ${collapsed ? '' : 'rotate-90'}`}
@@ -48,8 +49,12 @@ function Section({ title, count, defaultCollapsed = false, children, variant = '
   );
 }
 
+// Row order is re-sorted at most this often, and never this soon after a touch.
+const RESORT_MS = 30 * 1000;
+const INTERACT_HOLD_MS = 4 * 1000;
+
 function Dashboard() {
-  const { projects, agents, createProject, agentStates, agentWaiting, loadAgents, swarms, swarmAuths, user } = useApp();
+  const { projects, agents, createProject, agentStates, agentWaiting, loadAgents, swarms, swarmAuths, user, projectsLoaded, agentsLoaded } = useApp();
   const [view, setView] = useState(() => localStorage.getItem('dashboardView') || 'projects');
   // Search across every agent and project. With ~100 agents the sections are too long
   // to scan; a query replaces them with one ranked list. "/" focuses it, Esc clears.
@@ -63,6 +68,14 @@ function Dashboard() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  const orderSnapRef = React.useRef({ keys: new Map(), at: 0 });
+  const lastInteractRef = React.useRef(0);
+  useEffect(() => {
+    const mark = () => { lastInteractRef.current = Date.now(); };
+    const opts = { capture: true, passive: true };
+    ['pointerdown', 'pointerup', 'touchstart', 'touchmove', 'wheel', 'scroll'].forEach((t) => window.addEventListener(t, mark, opts));
+    return () => ['pointerdown', 'pointerup', 'touchstart', 'touchmove', 'wheel', 'scroll'].forEach((t) => window.removeEventListener(t, mark, opts));
   }, []);
   const [showAddProject, setShowAddProject] = useState(false);
   const [showAddAgent, setShowAddAgent] = useState(false);
@@ -177,11 +190,25 @@ function Dashboard() {
   const stoppedProjects = projects.filter((p) => getProjectActivity(p) === 'stopped');
 
   // Within each group, sort by most-recent agent response (last_seen_at), then
-  // most-recent user input (last_user_at).
-  const byRecency = (a, b) =>
-    (tsOf(b.last_seen_at) - tsOf(a.last_seen_at)) ||
-    (tsOf(b.last_user_at) - tsOf(a.last_user_at)) ||
-    (a.name || '').localeCompare(b.name || '');
+  // most-recent user input (last_user_at) -- but from a SNAPSHOT of those times, not
+  // the live ones. last_seen_at moves on every agent reply, so live-sorted rows swapped
+  // places under your finger and a tap landed on the neighbour. The snapshot is
+  // retaken at most every 30 s, never within 4 s of a touch, click or scroll, and
+  // otherwise only when an agent appears that it has not seen.
+  const sortKey = (a) => [tsOf(a.last_seen_at), tsOf(a.last_user_at)];
+  const snap = orderSnapRef.current;
+  const nowMs = Date.now();
+  const quiet = nowMs - lastInteractRef.current > INTERACT_HOLD_MS;
+  const unseen = agents.some((a) => !snap.keys.has(a.id));
+  if (quiet && (unseen || nowMs - snap.at > RESORT_MS)) {
+    snap.keys = new Map(agents.map((a) => [a.id, sortKey(a)]));
+    snap.at = nowMs;
+  }
+  const keyOf = (a) => snap.keys.get(a.id) || sortKey(a);
+  const byRecency = (a, b) => {
+    const ka = keyOf(a); const kb = keyOf(b);
+    return (kb[0] - ka[0]) || (kb[1] - ka[1]) || (a.name || '').localeCompare(b.name || '');
+  };
   // Swarms. A pending one is a DECISION, so it renders as the approval card at the
   // top and gets no row — the same swarm in two places would read as two swarms.
   const pendingSwarms = (swarms || []).filter((s) => s.state === 'pending_approval');
@@ -298,7 +325,7 @@ function Dashboard() {
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
-              className="w-full rounded-md bg-gray-800 border border-gray-700 pl-8 pr-3 py-1.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-primary-500"
+              className="w-full rounded-md bg-gray-800 border border-gray-700 pl-8 pr-3 py-2 md:py-1.5 text-base md:text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-primary-500"
             />
           </div>
         )}
@@ -500,7 +527,7 @@ function Dashboard() {
 
           {projects.length === 0 && (
             <div className="text-center py-12 text-gray-500">
-              No projects yet. Add one to get started.
+              {projectsLoaded ? 'No projects yet. Add one to get started.' : 'Loading projects…'}
             </div>
           )}
         </div>
@@ -588,7 +615,7 @@ function Dashboard() {
 
           {agents.length === 0 && (
             <div className="text-center py-12 text-gray-500">
-              No agents yet. Add one to get started.
+              {agentsLoaded ? 'No agents yet. Add one to get started.' : 'Loading agents…'}
             </div>
           )}
         </div>

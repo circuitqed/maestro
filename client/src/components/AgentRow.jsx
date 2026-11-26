@@ -16,7 +16,7 @@ const STATUS_COLORS = {
 };
 
 function AgentRow({ agent, showProject = false }) {
-  const { startAgent, stopAgent, deleteAgent, openAgentView, toggleAgentFavorite, agentWaiting } = useApp();
+  const { startAgent, stopAgent, deleteAgent, openAgentView, toggleAgentFavorite, agentWaiting, agentStates } = useApp();
   const waitingAt = agentWaiting && agentWaiting[agent.id];
   const [showMenu, setShowMenu] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -71,6 +71,18 @@ function AgentRow({ agent, showProject = false }) {
   const isRunning = !st.stale && ['running', 'idle', 'busy'].includes(agent.status);
   const provider = agent.config?.provider || 'claude';
 
+  // One word for the state, shown on phones, where the second line used to truncate
+  // to "hf-reado… · zl…" and the colour of a 10px dot was the only signal left.
+  const live = agentStates && agentStates[agent.id];
+  const waitLabel = waitingAt && sinceLabel(waitingAt) && sinceLabel(waitingAt) !== 'just now'
+    ? ` · ${sinceLabel(waitingAt).replace(' ago', '')}` : '';
+  const stateWord = st.stale ? { t: 'unresponsive', c: 'text-amber-300' }
+    : waitingAt ? { t: `needs you${waitLabel}`, c: 'text-amber-300' }
+    : agent.status === 'stopped' ? { t: 'stopped', c: 'text-gray-500' }
+    : (live === 'busy' || (!live && ['running', 'busy'].includes(agent.status))) ? { t: 'working', c: 'text-blue-400' }
+    : (live === 'idle' || agent.status === 'idle') ? { t: 'idle', c: 'text-green-400' }
+    : { t: agent.status || 'unknown', c: 'text-gray-500' };
+
   const isFav = !!agent.favorite;
   const Star = (
     // Always rendered, not hover-only: a control you cannot see is a control nobody
@@ -79,7 +91,7 @@ function AgentRow({ agent, showProject = false }) {
       type="button"
       onClick={(e) => { e.stopPropagation(); toggleAgentFavorite(agent.id, !isFav); }}
       title={isFav ? 'Remove from favorites' : 'Pin to favorites'}
-      className={`flex-shrink-0 p-1 rounded transition-colors ${
+      className={`hidden md:block flex-shrink-0 p-1 rounded transition-colors ${
         isFav ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-300'
       }`}
     >
@@ -91,7 +103,7 @@ function AgentRow({ agent, showProject = false }) {
   );
 
   return (
-    <div className="flex items-center gap-3 py-2 px-3 bg-gray-700/50 rounded-lg group">
+    <div className="flex items-center gap-2 md:gap-3 py-1.5 md:py-2 pl-3 pr-1 md:px-3 bg-gray-700/50 rounded-lg group">
       {/* Status indicator */}
       <span
         className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${STATUS_COLORS[st.state] || 'bg-gray-500'} ${
@@ -118,23 +130,36 @@ function AgentRow({ agent, showProject = false }) {
           <span className="truncate">{agent.name}</span>
           {waitingAt && !st.stale && (
             <span
-              className="flex-shrink-0 text-[10px] uppercase tracking-wide px-1 py-0.5 rounded bg-amber-500/20 text-amber-300"
+              className="hidden md:inline flex-shrink-0 text-[10px] uppercase tracking-wide px-1 py-0.5 rounded bg-amber-500/20 text-amber-300"
               title="Stopped on a question or permission prompt. Open it to answer."
             >
-              needs you{sinceLabel(waitingAt) && sinceLabel(waitingAt) !== 'just now' ? ` · ${sinceLabel(waitingAt).replace(' ago', '')}` : ''}
+              needs you{waitLabel}
             </span>
           )}
           {st.stale && (
             <span
-              className="flex-shrink-0 text-[10px] uppercase tracking-wide px-1 py-0.5 rounded bg-amber-500/15 text-amber-300"
+              className="hidden md:inline flex-shrink-0 text-[10px] uppercase tracking-wide px-1 py-0.5 rounded bg-amber-500/15 text-amber-300"
               title={`${agent.host_name || 'Host'} is not answering — this is the last state we could see`}
             >
               unresponsive
             </span>
           )}
         </div>
+        {/* Phones: the state word leads line two; the rest truncates after it. */}
+        <div className="md:hidden text-xs text-gray-500 truncate">
+          <span className={`font-medium ${stateWord.c}`}>{stateWord.t}</span>
+          {showProject && agent.project_name && (
+            <><span className="text-gray-600"> · </span><span className="text-gray-400">{agent.project_name}</span></>
+          )}
+          {agent.host_ssh_target && (
+            <><span className="text-gray-600"> · </span><span className="text-gray-400">{agent.host_name}</span></>
+          )}
+          {agent.screen_session && agent.screen_session !== agent.name && (
+            <><span className="text-gray-600"> · </span><span className="font-mono">{agent.screen_session}</span></>
+          )}
+        </div>
         {(agent.screen_session || (showProject && agent.project_name)) && (
-          <div className="text-xs text-gray-500 truncate">
+          <div className="hidden md:block text-xs text-gray-500 truncate">
             {showProject && agent.project_name && (
               <span className="text-gray-400">{agent.project_name}</span>
             )}
@@ -157,7 +182,7 @@ function AgentRow({ agent, showProject = false }) {
       </div>
 
       {/* Actions */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-0.5 md:gap-2">
           {Star}
         {/* Start only. Stop lives in the ⋯ menu: it used to be the same button in
             the same place, directly beside the chat and terminal icons, so the
@@ -168,7 +193,7 @@ function AgentRow({ agent, showProject = false }) {
           <button
             onClick={handleStart}
             disabled={loading || !agent.screen_session}
-            className="px-3 py-1 text-xs font-medium rounded transition-colors disabled:opacity-50
+            className="min-h-[40px] md:min-h-0 px-3 py-1 mr-1 md:mr-0 text-xs font-medium rounded transition-colors disabled:opacity-50
                        bg-green-600/20 text-green-400 hover:bg-green-600/30"
           >
             {loading ? '...' : 'Start'}
@@ -179,7 +204,7 @@ function AgentRow({ agent, showProject = false }) {
         {agent.screen_session && hasChatView(provider) && (
           <button
             onClick={handleOpenChat}
-            className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded transition-colors"
+            className="p-3 md:p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded transition-colors"
             title="Open chat view"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -193,7 +218,7 @@ function AgentRow({ agent, showProject = false }) {
         {agent.screen_session && (
           <button
             onClick={handleOpenTerminal}
-            className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded transition-colors"
+            className="p-3 md:p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded transition-colors"
             title="Open terminal"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -208,7 +233,7 @@ function AgentRow({ agent, showProject = false }) {
           <button
             onClick={() => setShowMenu(!showMenu)}
             title={isRunning ? 'More — stop, delete' : 'More — delete'}
-            className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded transition-colors"
+            className="p-3 md:p-1.5 text-gray-400 hover:text-white hover:bg-gray-600 rounded transition-colors"
           >
             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
               <circle cx="12" cy="6" r="1.5" />
@@ -220,12 +245,20 @@ function AgentRow({ agent, showProject = false }) {
           {showMenu && (
             <>
               <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
-              <div className="absolute right-0 top-full mt-1 w-36 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-20 py-1">
+              <div className="absolute right-0 top-full mt-1 w-44 md:w-36 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-20 py-1">
+                {/* Phones: favourite lives here rather than as a 22px star beside chat. */}
+                <button
+                  onClick={() => { setShowMenu(false); toggleAgentFavorite(agent.id, !isFav); }}
+                  className="md:hidden w-full px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
+                >
+                  {isFav ? '★ Unpin from favorites' : '☆ Pin to favorites'}
+                </button>
+                <div className="md:hidden my-1 border-t border-gray-700" />
                 {isRunning && (
                   <button
                     onClick={() => { setShowMenu(false); handleStop(); }}
                     disabled={loading || !agent.screen_session}
-                    className="w-full px-3 py-2 text-left text-sm text-amber-300 hover:bg-gray-700 disabled:opacity-50"
+                    className="w-full px-3 py-2.5 md:py-2 text-left text-sm text-amber-300 hover:bg-gray-700 disabled:opacity-50"
                   >
                     {loading ? 'Stopping…' : 'Stop'}
                   </button>
@@ -236,7 +269,7 @@ function AgentRow({ agent, showProject = false }) {
                     setShowMenu(false);
                     setShowConfirm(true);
                   }}
-                  className="w-full px-3 py-2 text-left text-sm text-red-400 hover:bg-gray-700"
+                  className="w-full px-3 py-2.5 md:py-2 text-left text-sm text-red-400 hover:bg-gray-700"
                 >
                   Delete
                 </button>

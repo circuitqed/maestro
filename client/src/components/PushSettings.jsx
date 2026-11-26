@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import useEscape from '../hooks/useEscape';
 import { pushStatus, enablePush, disablePush, testPush, isIOS } from '../lib/push';
 
 /**
@@ -16,6 +17,7 @@ const TEXT = {
 };
 
 export default function PushSettings({ onClose }) {
+  useEscape(onClose);
   const [status, setStatus] = useState(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
@@ -39,7 +41,7 @@ export default function PushSettings({ onClose }) {
         <div className="bg-gray-800 rounded-lg shadow-xl w-full max-w-sm pointer-events-auto">
           <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
             <h2 className="text-sm font-medium text-white">Phone notifications</h2>
-            <button onClick={onClose} className="text-gray-400 hover:text-white" type="button" aria-label="Close">✕</button>
+            <button onClick={onClose} className="flex items-center justify-center w-10 h-10 -my-2 -mr-2 md:w-auto md:h-auto md:my-0 md:mr-0 rounded text-gray-400 hover:text-white transition-colors" type="button" aria-label="Close" title="Close">✕</button>
           </div>
           <div className="p-4 space-y-3">
             <p className="text-sm text-gray-300">{status ? TEXT[status] : 'Checking…'}</p>

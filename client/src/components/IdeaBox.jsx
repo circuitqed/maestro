@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import VoiceButton from './VoiceButton';
+import useMediaQuery from '../hooks/useMediaQuery';
 
 /**
  * One sentence in, a running agent out (server/services/spawn.js).
@@ -36,6 +37,8 @@ export default function IdeaBox() {
   const [error, setError] = useState('');
   const [done, setDone] = useState(null);
   const inputRef = useRef(null);
+  // A shorter placeholder on phones, where the long one wrapped to two lines at 16px.
+  const isMobile = useMediaQuery('(max-width: 767px)');
 
   useEffect(() => {
     fetch('/api/hosts', { credentials: 'include' }).then((r) => r.json()).then((h) => setHosts(Array.isArray(h) ? h : [])).catch(() => {});
@@ -56,7 +59,10 @@ export default function IdeaBox() {
     const el = inputRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
+    // scrollHeight leaves out the border, and the box is border-box: setting height to
+    // scrollHeight alone came up 2px short, so the field scrolled and clipped its top line.
+    const border = el.offsetHeight - el.clientHeight;
+    el.style.height = `${Math.min(el.scrollHeight + border, 128)}px`;
   }, [idea]);
 
   const makeDraft = async () => {
@@ -88,7 +94,9 @@ export default function IdeaBox() {
 
   return (
     <div className="bg-gray-800 rounded-lg p-3 mb-4 border border-gray-700">
-      <div className="flex items-end gap-2">
+      {/* Phones: the field takes the whole first row, mic and Draft go underneath. On
+          md+ it is one row: mic, field, Draft. */}
+      <div className="flex flex-wrap md:flex-nowrap items-end gap-2">
         <VoiceButton value={idea} onChange={setIdea} inputRef={inputRef} disabled={phase !== 'idle'} />
         <textarea
           ref={inputRef}
@@ -96,14 +104,14 @@ export default function IdeaBox() {
           value={idea}
           onChange={(e) => setIdea(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); makeDraft(); } }}
-          placeholder="New agent: describe what it should do…"
-          className="flex-1 min-w-0 min-h-[38px] max-h-32 resize-none rounded bg-gray-900 border border-gray-600 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+          placeholder={isMobile ? 'New agent: what should it do?' : 'New agent: describe what it should do…'}
+          className="order-first basis-full md:order-none md:basis-auto flex-1 min-w-0 min-h-[38px] max-h-32 resize-none rounded bg-gray-900 border border-gray-600 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
         />
         <button
           type="button"
           onClick={makeDraft}
           disabled={!idea.trim() || phase !== 'idle'}
-          className="flex-shrink-0 px-3 py-2 text-sm font-medium rounded bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40"
+          className="ml-auto md:ml-0 flex-shrink-0 px-4 md:px-3 py-2 text-sm font-medium rounded bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40"
         >
           {phase === 'drafting' ? 'Drafting…' : 'Draft'}
         </button>

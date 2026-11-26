@@ -64,3 +64,14 @@
 /* KaTeX display math: scroll wide equations instead of overflowing the chat */
 .katex-display { overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
 .katex-display > .katex { white-space: nowrap; }
+
+/* iOS Safari zooms the page whenever a focused field's text is under 16px, and does
+   not zoom back out. Every text field people type in on a phone gets 16px; md and up
+   keep whatever size the component sets. */
+@media (max-width: 767px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}

@@ -45,7 +45,7 @@ function ModelBadge({ info, className = '', onClick, busy = false, provider = nu
       type={onClick ? 'button' : undefined}
       onClick={onClick}
       disabled={Tag === 'button' ? busy : undefined}
-      className={`inline-flex items-center gap-1 rounded bg-gray-700/70 px-1.5 py-0.5 text-[11px] text-gray-300 min-w-0 ${interactive} ${className}`}
+      className={`inline-flex items-center gap-1 rounded bg-gray-700/70 min-h-[36px] px-2 text-xs md:min-h-0 md:px-1.5 py-0.5 md:text-[11px] text-gray-300 min-w-0 ${interactive} ${className}`}
       title={
         `${info.provider === 'codex' ? 'OpenAI Codex' : 'Claude Code'} · ${info.model}` +
         `${info.effort ? ` · ${info.effort} effort` : ''}${busy ? ' — busy, finish the turn to change it' : onClick ? ' — click to change' : ''}`

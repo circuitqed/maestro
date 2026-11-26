@@ -213,7 +213,7 @@ function AccountBadge({ agentId, hostId, hostName, provider = 'claude', running 
           `${shape.label}: ${label}${mine && mine.detail ? ` (${mine.detail})` : ''}` +
           (pending ? ' — restart to apply' : '') + '\nClick to switch'
         }
-        className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors ${
+        className={`inline-flex items-center gap-1 rounded min-h-[36px] px-2 text-xs md:min-h-0 md:px-1.5 py-0.5 md:text-[11px] transition-colors ${
           pending
             ? 'bg-amber-500/15 text-amber-300 hover:bg-amber-500/25'
             : isAlt

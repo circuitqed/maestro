@@ -98,7 +98,7 @@ function Header() {
             {showMenu && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
-                <div className="absolute right-0 mt-2 w-48 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-20">
+                <div className="absolute right-0 mt-2 w-56 md:w-48 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-20">
                   {user && (
                     <div className="px-4 py-2 border-b border-gray-700">
                       <div className="text-sm text-white font-medium">{user.username}</div>

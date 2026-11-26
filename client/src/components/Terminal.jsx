@@ -202,6 +202,7 @@ const Terminal = forwardRef(function Terminal({ sessionName, hostId, showStatusB
   }, []);
 
   // Shared style for toolbar buttons
+  const phoneBtn = 'flex-1 min-w-[40px] h-10 flex items-center justify-center bg-gray-700 active:bg-gray-500 text-gray-200 rounded text-xs font-mono font-medium select-none whitespace-nowrap';
   const toolBtn = 'h-9 px-2.5 flex items-center justify-center bg-gray-700 active:bg-gray-500 text-gray-200 rounded text-xs font-mono font-medium select-none whitespace-nowrap';
 
   return (
@@ -360,8 +361,38 @@ const Terminal = forwardRef(function Terminal({ sessionName, hostId, showStatusB
         </div>
       )}
 
+      {/* Touch toolbar - special keys + copy/paste. On a phone it is two rows of
+          evenly spread keys (each at least 40px): one row of 14 overflowed, leaving
+          Select / Screen / Paste off the right edge and the keys 30px wide. Arrows and
+          Enter stay first. A touch tablet keeps the single scrolling row. */}
+      {showKeyBar && isMobile && (
+        <div className="flex-shrink-0 px-1.5 py-1.5 bg-gray-800 border-t border-gray-700/50 space-y-1.5">
+          <div className="flex gap-1.5">
+            <RepeatKey seq={KEYS.LEFT} label="←" title="Left arrow" sendKeys={sendKeys} className={`${phoneBtn} !text-base`} />
+            <RepeatKey seq={KEYS.UP} label="↑" title="Up arrow" sendKeys={sendKeys} className={`${phoneBtn} !text-base`} />
+            <RepeatKey seq={KEYS.DOWN} label="↓" title="Down arrow" sendKeys={sendKeys} className={`${phoneBtn} !text-base`} />
+            <RepeatKey seq={KEYS.RIGHT} label="→" title="Right arrow" sendKeys={sendKeys} className={`${phoneBtn} !text-base`} />
+            <button aria-label="Enter" title="Enter" onTouchStart={(e) => { e.preventDefault(); sendKeys(KEYS.ENTER); }} className={`${phoneBtn} !text-base`}>⏎</button>
+            <button onTouchStart={(e) => { e.preventDefault(); sendKeys(KEYS.TAB); }} className={phoneBtn}>Tab</button>
+            <button onTouchStart={(e) => { e.preventDefault(); sendKeys(KEYS.ESCAPE); }} className={phoneBtn}>Esc</button>
+          </div>
+          <div className="flex gap-1.5">
+            <button onTouchStart={(e) => { e.preventDefault(); sendKeys(KEYS.CTRL_C); }} className={phoneBtn}>^C</button>
+            <button onTouchStart={(e) => { e.preventDefault(); sendKeys(KEYS.CTRL_B); }} className={phoneBtn}>^B</button>
+            <button onTouchStart={(e) => { e.preventDefault(); sendKeys(KEYS.CTRL_O); }} className={phoneBtn}>^O</button>
+            <button onTouchStart={(e) => { e.preventDefault(); enterSelectMode(); }} className={`${phoneBtn} flex-[1.4]`}>Select</button>
+            <button
+              onTouchStart={(e) => { e.preventDefault(); copyScreen(); }}
+              className={`${phoneBtn} flex-[1.4] ${copyFlash ? '!bg-green-600 !text-white' : ''}`}
+            >
+              {copyFlash ? 'Copied' : 'Screen'}
+            </button>
+            <button onTouchStart={(e) => { e.preventDefault(); pasteClipboard(); }} className={`${phoneBtn} flex-[1.4]`}>Paste</button>
+          </div>
+        </div>
+      )}
       {/* Touch toolbar - special keys + copy/paste */}
-      {showKeyBar && (
+      {showKeyBar && !isMobile && (
         <div className="flex-shrink-0 flex items-center gap-1.5 px-2 py-1.5 bg-gray-800 border-t border-gray-700/50 overflow-x-auto">
           <RepeatKey seq={KEYS.LEFT} label="←" title="Left arrow" sendKeys={sendKeys} className={`${toolBtn} !text-base`} />
           <RepeatKey seq={KEYS.UP} label="↑" title="Up arrow" sendKeys={sendKeys} className={`${toolBtn} !text-base`} />

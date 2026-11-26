@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import useEscape from '../hooks/useEscape';
 import UsageBar, { elapsedFraction, FIVE_HOURS_MIN, SEVEN_DAYS_MIN } from './UsageBar';
 
 /**
@@ -115,6 +116,7 @@ const STATUS_TONE = {
 };
 
 export default function PlanUsage({ onClose }) {
+  useEscape(onClose);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -157,7 +159,7 @@ export default function PlanUsage({ onClose }) {
               >
                 {loading ? 'Checking…' : 'Refresh'}
               </button>
-              <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors">
+              <button type="button" onClick={onClose} aria-label="Close" title="Close" className="flex items-center justify-center w-10 h-10 -my-2 -mr-2 md:w-auto md:h-auto md:my-0 md:mr-0 rounded text-gray-400 hover:text-white transition-colors">
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
@@ -178,14 +180,17 @@ export default function PlanUsage({ onClose }) {
               const hosts = [...new Set((p.signedInOn || []).map((h) => h.host))].sort();
               return (
                 <div key={p.identity} className="border border-gray-700 rounded p-3 bg-gray-900/40">
-                  <div className="flex items-baseline justify-between gap-2 mb-2">
-                    <div className="min-w-0">
-                      <span className="text-sm text-white truncate">{p.name || p.email || p.identity}</span>
-                      <span className="ml-2 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-gray-700 text-gray-300">
+                  {/* The name truncates on its own block-level span (truncate on an inline
+                      span does nothing), so it can no longer run under the badge. On a
+                      phone the host list drops to its own line instead of squeezing both. */}
+                  <div className="flex flex-col gap-0.5 md:flex-row md:items-baseline md:justify-between md:gap-2 mb-2">
+                    <div className="min-w-0 flex items-baseline gap-2">
+                      <span className="block min-w-0 truncate text-sm text-white">{p.name || p.email || p.identity}</span>
+                      <span className="flex-shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-gray-700 text-gray-300">
                         {p.kind}
                       </span>
                     </div>
-                    <span className="text-xs text-gray-500 flex-shrink-0">{hosts.join(', ')}</span>
+                    <span className="text-xs text-gray-500 md:flex-shrink-0 break-words">{hosts.join(', ')}</span>
                   </div>
 
                   {p.ok && p.budget ? (

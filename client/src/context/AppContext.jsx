@@ -10,6 +10,10 @@ export function AppProvider({ children }) {
   const [setupRequired, setSetupRequired] = useState(false);
   const [loading, setLoading] = useState(true);
   const [projects, setProjects] = useState([]);
+  // False until the first /api/projects (and /api/agents) answer lands, so the
+  // dashboard can say "Loading" instead of "No projects yet" for those seconds.
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [agents, setAgents] = useState([]);
   const [hosts, setHosts] = useState([]);
   const [activeTerminal, setActiveTerminal] = useState(null);
@@ -128,6 +132,8 @@ export function AppProvider({ children }) {
       setProjects(data);
     } catch (err) {
       console.error('Failed to load projects:', err);
+    } finally {
+      setProjectsLoaded(true);
     }
   };
 
@@ -138,6 +144,8 @@ export function AppProvider({ children }) {
       setAgents(data);
     } catch (err) {
       console.error('Failed to load agents:', err);
+    } finally {
+      setAgentsLoaded(true);
     }
   };
 
@@ -722,6 +730,8 @@ export function AppProvider({ children }) {
     projects,
     agents,
     hosts,
+    projectsLoaded,
+    agentsLoaded,
     loadProjects,
     loadAgents,
     loadHosts,

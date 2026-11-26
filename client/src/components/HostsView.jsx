@@ -233,7 +233,9 @@ function HostCard({ host, agents, onAddShell, onTest, busy, stats }) {
         drag ? 'border-sky-500 bg-sky-500/5' : 'border-gray-700'
       }`}
     >
-      <div className="flex items-start justify-between gap-3 mb-3">
+      {/* Phones: the buttons take a second row, so the host name gets the full width
+          instead of truncating beside three buttons. */}
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between md:gap-3 mb-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${st.dot}`} title={st.label} />
@@ -245,20 +247,20 @@ function HostCard({ host, agents, onAddShell, onTest, busy, stats }) {
             {host.default_root && <span className="text-gray-600"> · {host.default_root}</span>}
           </div>
         </div>
-        <div className="flex items-center gap-1.5 flex-shrink-0">
+        <div className="flex flex-wrap items-center gap-2 md:gap-1.5 md:flex-shrink-0">
           {!isLocal && (
             <button
               type="button"
               onClick={test}
               disabled={testing || busy}
-              className="text-xs px-2 py-1 rounded border border-gray-600 text-gray-300 hover:bg-gray-700 disabled:opacity-50"
+              className="inline-flex items-center min-h-[36px] md:min-h-0 text-xs px-3 md:px-2 py-1 rounded border border-gray-600 text-gray-300 hover:bg-gray-700 disabled:opacity-50"
             >
               {testing ? 'Testing…' : 'Test'}
             </button>
           )}
           <label
             title={`Send a file to ${host.name}`}
-            className="text-xs px-2 py-1 rounded border border-gray-600 text-gray-300 hover:bg-gray-700 cursor-pointer"
+            className="inline-flex items-center min-h-[36px] md:min-h-0 text-xs px-3 md:px-2 py-1 rounded border border-gray-600 text-gray-300 hover:bg-gray-700 cursor-pointer"
           >
             Send file
             <input
@@ -273,7 +275,7 @@ function HostCard({ host, agents, onAddShell, onTest, busy, stats }) {
             onClick={add}
             disabled={adding || busy}
             title={`Open a new shell on ${host.name}`}
-            className="text-xs px-2 py-1 rounded bg-sky-600/80 text-white hover:bg-sky-600 disabled:opacity-50"
+            className="inline-flex items-center min-h-[36px] md:min-h-0 text-xs px-3 md:px-2 py-1 rounded bg-sky-600/80 text-white hover:bg-sky-600 disabled:opacity-50"
           >
             {adding ? 'Starting…' : '+ Shell'}
           </button>

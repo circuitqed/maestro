@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useContext, createContext } from 'react';
+import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -414,7 +415,7 @@ function CompactionNotice({ text }) {
         </button>
       </div>
       {open && (
-        <div className="mt-1.5 mx-auto max-w-[92%] rounded-lg border border-gray-700 bg-gray-800/40 px-3 py-2 text-xs text-gray-300">
+        <div className="mt-1.5 mx-auto max-w-full md:max-w-[92%] rounded-lg border border-gray-700 bg-gray-800/40 px-3 py-2 text-xs text-gray-300">
           <Markdown>{text}</Markdown>
         </div>
       )}
@@ -537,7 +538,7 @@ function ChecklistCard({ title, items }) {
   const col = { completed: 'text-green-400', in_progress: 'text-blue-300', pending: 'text-gray-500', cancelled: 'text-red-400' };
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[92%] w-full my-1 rounded border border-gray-700 bg-gray-800/60 px-2.5 py-1.5">
+      <div className="min-w-0 max-w-full md:max-w-[92%] w-full my-1 rounded border border-gray-700 bg-gray-800/60 px-2.5 py-1.5">
         <div className="text-xs font-medium text-blue-300 mb-1">{title}</div>
         <div className="space-y-0.5">
           {items.map((it, i) => (
@@ -760,6 +761,7 @@ function parseActivePrompt(text) {
   // unnumbered "Submit" row (submitCursor). Arrow-driven answers need it.
   let numberedCursor = -1;
   let submitCursor = false;
+  let labelCol = -1; // text column of the last numbered option's label
   for (let i = start; i < footerIdx; i++) {
     if (/^\s*[❯›]\s+Submit\s*$/.test(lines[i])) submitCursor = true;
     const m = lines[i].match(/^[\s│┃▎☐☑◉○❯›>*·-]*?(\d+)[.)]\s+(.*\S)\s*$/);
@@ -776,6 +778,20 @@ function parseActivePrompt(text) {
       const rest = box ? raw.slice(box[0].length) : raw;
       const current = /[✔✓]/.test(rest);
       options.push({ n: parseInt(m[1], 10), label: (box ? box[0] + ' ' : '') + rest.replace(/[✔✓]/g, '').replace(/\s{2,}/g, '  ').trim(), current });
+      labelCol = lines[i].indexOf(m[2]);
+    } else if (options.length && labelCol > 0 && lines[i].trim()) {
+      // AskUserQuestion puts each option's description on the line(s) under it,
+      // indented to the label's column. They were dropped, so on a phone (where the
+      // terminal is not one tap away) the choice had to be made from bare labels.
+      // Rows at the cursor's column ("Submit", "Type something") and rules stay out.
+      const t = lines[i].replace(/[│┃▎]/g, ' ');
+      const col = t.search(/\S/);
+      if (col >= labelCol - 1 && !/^[\s─━═╌]+$/.test(t)) {
+        const last = options[options.length - 1];
+        last.description = `${last.description ? `${last.description} ` : ''}${t.trim()}`;
+      }
+    } else if (!lines[i].trim()) {
+      labelCol = -1;
     }
   }
   // Not every select is numbered. Claude's "Do you trust this folder?" is driven purely
@@ -972,7 +988,7 @@ function LoginPromptCard({ prompt, onSubmitCode, onStartLogin, onPressKeys }) {
   if (prompt.stage === 'done') {
     return (
       <div className="flex justify-start">
-        <div className="min-w-0 max-w-[92%] w-full my-1 rounded-lg border border-emerald-500/50 bg-emerald-950/20 px-3 py-2">
+        <div className="min-w-0 max-w-full md:max-w-[92%] w-full my-1 rounded-lg border border-emerald-500/50 bg-emerald-950/20 px-3 py-2">
           <div className="text-sm text-emerald-200 mb-2">
             Signed in{prompt.account ? ` as ${prompt.account}` : ''}. The agent is holding on a
             confirmation — it can't take a message until this is dismissed.
@@ -1014,7 +1030,7 @@ function LoginPromptCard({ prompt, onSubmitCode, onStartLogin, onPressKeys }) {
 
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[92%] w-full my-1 rounded-lg border border-amber-500/60 bg-amber-950/20 px-3 py-2">
+      <div className="min-w-0 max-w-full md:max-w-[92%] w-full my-1 rounded-lg border border-amber-500/60 bg-amber-950/20 px-3 py-2">
         <div className="flex items-center gap-1.5 text-xs text-amber-300 mb-2">
           <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -1162,7 +1178,7 @@ function EffortPromptCard({ prompt, onPressKeys }) {
   };
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[92%] w-full my-1 rounded-lg border border-blue-500/60 bg-blue-950/30 px-3 py-2">
+      <div className="min-w-0 max-w-full md:max-w-[92%] w-full my-1 rounded-lg border border-blue-500/60 bg-blue-950/30 px-3 py-2">
         <div className="text-xs text-blue-300 mb-2 font-medium">Set reasoning effort</div>
         <div className="flex flex-wrap gap-1.5">
           {prompt.levels.map((name, i) => (
@@ -1377,7 +1393,7 @@ function ModelPromptCard({ prompt, onAnswer, onPressKeys, provider }) {
 
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[92%] w-full my-1 rounded-lg border border-blue-500/60 bg-blue-950/30 px-3 py-2">
+      <div className="min-w-0 max-w-full md:max-w-[92%] w-full my-1 rounded-lg border border-blue-500/60 bg-blue-950/30 px-3 py-2">
         <div className="flex items-center gap-1.5 text-xs text-blue-300 mb-2">
           <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -1513,7 +1529,7 @@ function ActivePromptCard({ prompt, onAnswer, onPressKeys, onTypeAnswer }) {
   };
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[92%] w-full my-1 rounded-lg border border-blue-500/60 bg-blue-950/30 px-3 py-2">
+      <div className="min-w-0 max-w-full md:max-w-[92%] w-full my-1 rounded-lg border border-blue-500/60 bg-blue-950/30 px-3 py-2">
         <div className="flex items-center gap-1.5 text-xs text-blue-300 mb-2">
           <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -1592,6 +1608,9 @@ function ActivePromptCard({ prompt, onAnswer, onPressKeys, onTypeAnswer }) {
                   <span className="ml-1.5 text-[10px] rounded bg-blue-600/40 text-blue-200 px-1.5 py-0.5 align-middle">
                     current
                   </span>
+                )}
+                {opt.description && (
+                  <span className="block text-xs text-gray-400 mt-0.5 break-words">{opt.description}</span>
                 )}
               </button>
             );
@@ -1770,7 +1789,7 @@ function TaskMessageCard({ info }) {
   const tone = bad ? 'amber' : done ? 'emerald' : 'sky';
   return (
     <div className="flex justify-start">
-      <div className={`min-w-0 max-w-[92%] w-full my-1 rounded-lg border px-3 py-2 border-${tone}-500/40 bg-${tone}-950/20`}>
+      <div className={`min-w-0 max-w-full md:max-w-[92%] w-full my-1 rounded-lg border px-3 py-2 border-${tone}-500/40 bg-${tone}-950/20`}>
         <div className="flex items-center gap-2">
           <span className={`text-[11px] uppercase tracking-wide text-${tone}-300`}>
             {info.headline ? `Agent task — ${info.headline}` : 'Agent task'}
@@ -1842,7 +1861,7 @@ function renderUserPrompt(rec) {
     const failed = /fail|error/i.test(c.status);
     return (
       <div className="flex justify-center my-1">
-        <div className={`inline-flex items-center gap-1.5 max-w-[92%] text-[11px] rounded-full border px-3 py-0.5 ${failed ? 'text-red-300 border-red-700/50 bg-red-900/20' : 'text-gray-400 border-gray-700 bg-gray-800/60'}`}>
+        <div className={`inline-flex items-center gap-1.5 max-w-full md:max-w-[92%] text-[11px] rounded-full border px-3 py-0.5 ${failed ? 'text-red-300 border-red-700/50 bg-red-900/20' : 'text-gray-400 border-gray-700 bg-gray-800/60'}`}>
           <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
           </svg>
@@ -1876,7 +1895,7 @@ function renderToolResults(rec, ctx) {
     : null;
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[92%] w-full space-y-1">
+      <div className="min-w-0 max-w-full md:max-w-[92%] w-full space-y-1">
         {results.map((r, i) => (
           <ToolResultCard
             key={`${rec.uuid}-${i}`}
@@ -1962,7 +1981,7 @@ function CodexToolCard({ input }) {
   const summary = codexToolSummary(tool, input);
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[92%] w-full my-1 rounded border border-gray-700 bg-gray-800/60 px-2.5 py-1.5">
+      <div className="min-w-0 max-w-full md:max-w-[92%] w-full my-1 rounded border border-gray-700 bg-gray-800/60 px-2.5 py-1.5">
         <div className="flex items-center gap-1.5 text-xs">
           <svg className="w-3.5 h-3.5 text-blue-300 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -1998,7 +2017,7 @@ function CodexPatchCard({ payload }) {
   const col = { add: 'text-green-400', update: 'text-blue-300', delete: 'text-red-400' };
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[92%] w-full my-1 rounded border border-gray-700 bg-gray-800/60 px-2.5 py-1.5">
+      <div className="min-w-0 max-w-full md:max-w-[92%] w-full my-1 rounded border border-gray-700 bg-gray-800/60 px-2.5 py-1.5">
         <div className="flex items-center gap-1.5 text-xs">
           <svg className="w-3.5 h-3.5 text-blue-300 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -2158,7 +2177,7 @@ function imageSourcesIn(blocks) {
 function InlineImages({ srcs, onImage }) {
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[92%] w-full space-y-1">
+      <div className="min-w-0 max-w-full md:max-w-[92%] w-full space-y-1">
         {srcs.map((src, i) => (
           <button
             key={i}
@@ -2204,7 +2223,7 @@ function artifactUrlsIn(blocks) {
 function ArtifactCard({ urls }) {
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[92%] w-full my-1 space-y-1">
+      <div className="min-w-0 max-w-full md:max-w-[92%] w-full my-1 space-y-1">
         {urls.map((u) => (
           <a
             key={u}
@@ -2241,7 +2260,7 @@ function visualPartOf(rec, ctx) {
     if (sent.length) {
       return (
         <div className="flex justify-start">
-          <div className="min-w-0 max-w-[92%] w-full space-y-1">
+          <div className="min-w-0 max-w-full md:max-w-[92%] w-full space-y-1">
             {sent.map((b, i) => <SentFileCard key={b.id || i} block={b} />)}
           </div>
         </div>
@@ -2353,8 +2372,8 @@ function claudeParts(rec, ctx) {
       }
     });
     return {
-      message: msg.length ? <div className="flex justify-start"><div className="min-w-0 max-w-[92%] space-y-1">{msg}</div></div> : null,
-      tool: tool.length ? <div className="flex justify-start"><div className="min-w-0 max-w-[92%] space-y-1">{tool}</div></div> : null,
+      message: msg.length ? <div className="flex justify-start"><div className="min-w-0 max-w-full md:max-w-[92%] space-y-1">{msg}</div></div> : null,
+      tool: tool.length ? <div className="flex justify-start"><div className="min-w-0 max-w-full md:max-w-[92%] space-y-1">{tool}</div></div> : null,
       toolCount,
     };
   }
@@ -2466,7 +2485,7 @@ function CodexContextPill({ info }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="flex justify-center my-1">
-      <div className="min-w-0 max-w-[92%]">
+      <div className="min-w-0 max-w-full md:max-w-[92%]">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
@@ -2541,7 +2560,7 @@ function codexPart(rec, ctx) {
     };
   }
   if (rec.type === 'event_msg' && p.type === 'agent_message' && p.message) {
-    return { message: <div className="flex justify-start"><div className="min-w-0 max-w-[92%] space-y-1"><Markdown>{p.message}</Markdown></div></div>, tool: null, toolCount: 0 };
+    return { message: <div className="flex justify-start"><div className="min-w-0 max-w-full md:max-w-[92%] space-y-1"><Markdown>{p.message}</Markdown></div></div>, tool: null, toolCount: 0 };
   }
   if (rec.type === 'response_item' && p.type === 'custom_tool_call') {
     if (codexToolName(p.input) === 'apply_patch') return { message: null, tool: null, toolCount: 0 };
@@ -2602,7 +2621,7 @@ function codexPart(rec, ctx) {
         tool: null, toolCount: 0,
       };
     }
-    return { message: <div className="flex justify-start"><div className="min-w-0 max-w-[92%] space-y-1"><Markdown>{text}</Markdown></div></div>, tool: null, toolCount: 0 };
+    return { message: <div className="flex justify-start"><div className="min-w-0 max-w-full md:max-w-[92%] space-y-1"><Markdown>{text}</Markdown></div></div>, tool: null, toolCount: 0 };
   }
   if (rec.type === 'event_msg' && p.type === 'patch_apply_end') {
     return { message: null, tool: <CodexPatchCard payload={p} />, toolCount: 1 };
@@ -2617,7 +2636,7 @@ function CollapsedToolGroup({ count, children }) {
   const label = count > 0 ? `${count} tool call${count === 1 ? '' : 's'}` : 'tool activity';
   return (
     <div className="flex justify-start my-0.5">
-      <div className="min-w-0 max-w-[92%] w-full">
+      <div className="min-w-0 max-w-full md:max-w-[92%] w-full">
         <button
           type="button"
           onClick={() => setOpen((o) => !o)}
@@ -2780,7 +2799,7 @@ function FileViewer({ agentId, path, onClose, variant = 'modal' }) {
 // ChatView
 // ---------------------------------------------------------------------------
 
-function ChatView({ agentId, session, onMeta }) {
+function ChatView({ agentId, session, onMeta, headerSlot = null }) {
   const { sendAgentInput, answerAgentQuestion, getAgentPane, agentStates, agents } = useApp();
   // Desktop docks the file viewer as a side panel; mobile uses a modal (no room to dock).
   const isDesktop = useMediaQuery('(min-width: 768px)');
@@ -3316,7 +3335,10 @@ function ChatView({ agentId, session, onMeta }) {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+    // scrollHeight excludes the border and the box is border-box, so height =
+    // scrollHeight alone was 2px short and the field scrolled, clipping its top line.
+    const border = el.offsetHeight - el.clientHeight;
+    el.style.height = `${Math.min(el.scrollHeight + border, 160)}px`;
   }, [input]);
 
   const onAnswerQuestion = useCallback(
@@ -3577,29 +3599,45 @@ function ChatView({ agentId, session, onMeta }) {
     <ChatAgentContext.Provider value={chatCtx}>
     <div ref={outerRef} className="relative h-full w-full flex bg-gray-900">
       <div className="relative flex-1 min-w-0 flex flex-col bg-gray-900">
-      {/* Filter toggle: hide all tool activity, show only the conversation */}
-      <button
-        type="button"
-        onClick={() =>
+      {/* Filter toggle: hide all tool activity, show only the conversation. On a
+          phone it lives in the panel header's badge row (portalled into headerSlot):
+          floating at top-right it sat on top of the first lines of every message. */}
+      {(() => {
+        const toggleMessagesOnly = () =>
           setMessagesOnly((v) => {
             const nv = !v;
             try { localStorage.setItem('maestro-chat-messages-only', nv ? '1' : '0'); } catch { /* ignore */ }
             return nv;
-          })
-        }
-        title={messagesOnly ? 'Show tool calls' : 'Hide tool calls — show only messages'}
-        className={`absolute top-2 right-2 z-20 flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] shadow-sm transition-colors ${
-          messagesOnly
-            ? 'border-blue-500/60 bg-blue-600/40 text-blue-100'
-            : 'border-gray-700 bg-gray-800/85 text-gray-400 hover:text-gray-200'
-        }`}
-      >
-        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-        </svg>
-        Messages only
-      </button>
+          });
+        const inHeader = !!headerSlot && !isDesktop;
+        const pill = (
+          <button
+            type="button"
+            onClick={toggleMessagesOnly}
+            aria-pressed={messagesOnly}
+            title={messagesOnly ? 'Show tool calls' : 'Hide tool calls — show only messages'}
+            className={`${inHeader
+              ? 'min-h-[36px] px-2 text-xs whitespace-nowrap'
+              : 'absolute top-2 right-2 z-20 px-2 py-0.5 text-[11px] shadow-sm'
+            } flex items-center gap-1 rounded-full border transition-colors ${
+              messagesOnly
+                ? 'border-blue-500/60 bg-blue-600/40 text-blue-100'
+                : 'border-gray-700 bg-gray-800/85 text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            {/* In the header the label is short and iconless so the pill fits on the
+                badge row instead of wrapping it onto a third line. */}
+            {!inHeader && (
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+            )}
+            {inHeader ? 'Msgs only' : 'Messages only'}
+          </button>
+        );
+        return inHeader ? createPortal(pill, headerSlot) : pill;
+      })()}
         {/* Messages. The whole conversation is a drop target, not just the send
             box: that was a ~40px strip at the bottom, so dropping onto the
             conversation -- where the cursor naturally goes, and 95% of the panel --
@@ -3751,7 +3789,7 @@ function ChatView({ agentId, session, onMeta }) {
             ))}
           </div>
         )}
-        <div className="flex items-end gap-2 w-full min-w-0">
+        <div className="flex items-end gap-1.5 md:gap-2 w-full min-w-0">
           <input
             ref={fileInputRef}
             type="file"
@@ -3759,6 +3797,11 @@ function ChatView({ agentId, session, onMeta }) {
             className="hidden"
             onChange={(e) => { uploadFiles(e.target.files); e.target.value = ''; }}
           />
+          {/* Phones: attach and mic stack in one narrow column so the text field gets
+              the width (it was ~210px and its placeholder wrapped to three lines). The
+              mic stays one tap away. md+: "contents" dissolves the column, leaving
+              attach, mic, field, Send in one row exactly as before. */}
+          <div className="flex flex-col flex-shrink-0 self-end md:contents">
           <button
             type="button"
             onClick={() => fileInputRef.current && fileInputRef.current.click()}
@@ -3769,22 +3812,30 @@ function ChatView({ agentId, session, onMeta }) {
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg>
           </button>
           <VoiceButton value={input} onChange={setInput} inputRef={textareaRef} disabled={sending} />
+          </div>
           <textarea
             ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Message the agent…  (Enter to send, Shift+Enter for newline)"
+            placeholder={isDesktop ? 'Message the agent…  (Enter to send, Shift+Enter for newline)' : 'Message…'}
             rows={1}
-            className="flex-1 min-w-0 min-h-[38px] max-h-40 overflow-y-auto resize-none rounded bg-gray-900 border border-gray-600 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+            className="flex-1 min-w-0 min-h-[72px] md:min-h-[38px] max-h-40 overflow-y-auto resize-none rounded bg-gray-900 border border-gray-600 px-3 py-2 text-base md:text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
           />
           <button
             type="button"
             onClick={handleSend}
             disabled={sending || attachments.some((a) => a.status === 'uploading') || (!input.trim() && !attachments.some((a) => a.status === 'done'))}
-            className="flex-shrink-0 px-4 py-2 text-sm font-medium rounded bg-blue-600 text-white hover:bg-blue-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            aria-label="Send"
+            title="Send"
+            className="flex-shrink-0 flex items-center justify-center w-11 h-11 md:w-auto md:h-auto px-0 md:px-4 py-0 md:py-2 text-sm font-medium rounded bg-blue-600 text-white hover:bg-blue-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {sending ? '…' : 'Send'}
+            {/* Phones: a 44px arrow, which leaves the text field ~30px more than the word did. */}
+            {sending ? '…' : isDesktop ? 'Send' : (
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M5 12h14M13 6l6 6-6 6" />
+              </svg>
+            )}
           </button>
         </div>
       </div>

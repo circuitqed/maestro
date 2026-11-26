@@ -8,9 +8,11 @@ import UsageBadge from './UsageBadge';
 import { useApp } from '../context/AppContext';
 
 function ViewToggle({ mode, onChange }) {
-  const base = 'px-2.5 py-1 rounded text-xs transition-colors';
+  // Mobile-only component: 40px-tall segments, since this is the control you reach for
+  // most in the header and it was 24px.
+  const base = 'min-h-[40px] px-3.5 rounded text-sm transition-colors';
   return (
-    <div className="flex items-center rounded bg-gray-700 p-0.5">
+    <div className="flex items-center rounded-md bg-gray-700 p-0.5">
       <button
         type="button"
         onClick={() => mode !== 'terminal' && onChange('terminal')}
@@ -35,6 +37,9 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
   const { setViewMode, sendAgentInput, agentStates, agents } = useApp();
   // Which model the chat is on, reported up by ChatView (see TerminalPanel).
   const [modelInfo, setModelInfo] = useState(null);
+  // ChatView portals its "Messages only" toggle into the badge row, so it does not
+  // float over the conversation on a phone.
+  const [headerSlot, setHeaderSlot] = useState(null);
   const handleMeta = useCallback((info) => setModelInfo(info), []);
   // Live status beats the DB row, which lags a tick behind.
   const agentRow = (agents || []).find((a) => String(a.id) === String(agentId));
@@ -108,8 +113,9 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
           <div className="flex items-center gap-2">
             <button
               onClick={onClose}
-              className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex-shrink-0"
+              className="p-2 -ml-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex-shrink-0"
               title="Close"
+              aria-label="Close"
             >
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -121,7 +127,7 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
             {agentId != null && <div className="flex-shrink-0"><ViewToggle mode={mode} onChange={setViewMode} /></div>}
           </div>
           {mode === 'chat' && agentId != null && (
-          <div className="flex flex-wrap items-center gap-1.5 pl-1">
+          <div className="flex flex-wrap items-center gap-1 pl-1">
             <ModelBadge
               info={modelInfo}
               provider={agentProvider}
@@ -133,6 +139,7 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
             <ConnectionBadge hostId={hostId} />
             <AccountBadge agentId={agentId} hostId={hostId} provider={agentProvider} running={agentRunning} />
             <UsageBadge agentId={agentId} provider={agentProvider} />
+            <div ref={setHeaderSlot} className="ml-auto flex-shrink-0" />
           </div>
           )}
         </div>
@@ -140,7 +147,7 @@ function TerminalModal({ agentId, sessionName, hostId, mode = 'terminal', onClos
         {/* Body - terminal or chat */}
         <div className="flex-1 min-h-0 overflow-hidden">
           {mode === 'chat' ? (
-            <ChatView key={agentId} agentId={agentId} session={sessionName} onMeta={handleMeta} />
+            <ChatView key={agentId} agentId={agentId} session={sessionName} onMeta={handleMeta} headerSlot={headerSlot} />
           ) : (
             <Terminal sessionName={sessionName} hostId={hostId} />
           )}
