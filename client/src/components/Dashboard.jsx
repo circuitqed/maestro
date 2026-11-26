@@ -51,6 +51,19 @@ function Section({ title, count, defaultCollapsed = false, children, variant = '
 function Dashboard() {
   const { projects, agents, createProject, agentStates, agentWaiting, loadAgents, swarms, swarmAuths, user } = useApp();
   const [view, setView] = useState(() => localStorage.getItem('dashboardView') || 'projects');
+  // Search across every agent and project. With ~100 agents the sections are too long
+  // to scan; a query replaces them with one ranked list. "/" focuses it, Esc clears.
+  const [query, setQuery] = useState('');
+  const searchRef = React.useRef(null);
+  useEffect(() => {
+    const onKey = (e) => {
+      const t = e.target;
+      const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+      if (e.key === '/' && !typing) { e.preventDefault(); searchRef.current && searchRef.current.focus(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   const [showAddProject, setShowAddProject] = useState(false);
   const [showAddAgent, setShowAddAgent] = useState(false);
   const [newProject, setNewProject] = useState({ name: '', path: '', description: '' });
@@ -211,14 +224,35 @@ function Dashboard() {
   const stoppedAgents = agents.filter((a) => notFav(a) && bucket(a) === 'stopped').sort(byRecency);
   const unresponsiveAgents = agents.filter((a) => notFav(a) && bucket(a) === 'unresponsive').sort(byRecency);
 
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const searching = terms.length > 0 && view !== 'hosts';
+  // Every term must appear somewhere; a hit in the name ranks above a hit elsewhere.
+  const agentHay = (a) => [
+    a.name, a.screen_session, a.project_name, a.host_name, a.working_dir,
+    a.config && a.config.spawnedFrom, a.config && a.config.url,
+  ].filter(Boolean).join(' \n ').toLowerCase();
+  const score = (name, hay) => {
+    if (!terms.every((t) => hay.includes(t))) return -1;
+    const n = String(name || '').toLowerCase();
+    return terms.reduce((acc, t) => acc + (n.startsWith(t) ? 3 : n.includes(t) ? 2 : 0), 0);
+  };
+  const agentHits = searching
+    ? agents.map((a) => [a, score(a.name, agentHay(a))]).filter(([, sc]) => sc >= 0)
+        .sort((x, y) => y[1] - x[1] || byRecency(x[0], y[0])).map(([a]) => a)
+    : [];
+  const projectHits = searching
+    ? projects.map((p) => [p, score(p.name, [p.name, p.description, p.path].filter(Boolean).join(' ').toLowerCase())])
+        .filter(([, sc]) => sc >= 0).sort((x, y) => y[1] - x[1]).map(([p]) => p)
+    : [];
+
   return (
     <div className="flex-1 overflow-auto p-4 md:p-6">
-      {/* Header with view toggle */}
-      <div className="flex items-center justify-between mb-6">
+      {/* Header with view toggle. Wraps on phones: the search drops to its own row. */}
+      <div className="flex flex-wrap items-center justify-between gap-y-3 mb-6">
         <div className="flex items-center gap-1 bg-gray-800 rounded-lg p-1">
           <button
             onClick={() => setView('projects')}
-            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+            className={`px-3 md:px-4 py-2 text-sm font-medium rounded-md transition-colors ${
               view === 'projects'
                 ? 'bg-primary-600 text-white'
                 : 'text-gray-400 hover:text-white'
@@ -228,7 +262,7 @@ function Dashboard() {
           </button>
           <button
             onClick={() => setView('agents')}
-            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+            className={`px-3 md:px-4 py-2 text-sm font-medium rounded-md transition-colors ${
               view === 'agents'
                 ? 'bg-primary-600 text-white'
                 : 'text-gray-400 hover:text-white'
@@ -238,7 +272,7 @@ function Dashboard() {
           </button>
           <button
             onClick={() => setView('hosts')}
-            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+            className={`px-3 md:px-4 py-2 text-sm font-medium rounded-md transition-colors ${
               view === 'hosts'
                 ? 'bg-primary-600 text-white'
                 : 'text-gray-400 hover:text-white'
@@ -247,6 +281,27 @@ function Dashboard() {
             Hosts
           </button>
         </div>
+
+        {view !== 'hosts' && (
+          <div className="relative order-last basis-full md:order-none md:basis-auto md:flex-1 min-w-0 md:max-w-md md:mx-3">
+            <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11A6 6 0 115 11a6 6 0 0112 0z" />
+            </svg>
+            <input
+              ref={searchRef}
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Escape') { setQuery(''); e.currentTarget.blur(); } }}
+              placeholder="Search agents and projects  ( / )"
+              aria-label="Search agents and projects"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              className="w-full rounded-md bg-gray-800 border border-gray-700 pl-8 pr-3 py-1.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-primary-500"
+            />
+          </div>
+        )}
 
         {view === 'projects' && (
           <button
@@ -362,7 +417,40 @@ function Dashboard() {
       )}
 
       {/* Projects View */}
-      {view === 'projects' && (
+      {searching && (
+        <div>
+          {agentHits.length === 0 && projectHits.length === 0 && (
+            <p className="text-sm text-gray-400">
+              Nothing matches “{query.trim()}”. Search looks at agent and project names, sessions, machines, folders and the idea an agent was started from.
+            </p>
+          )}
+          <Section title={`Agents matching \u201c${query.trim()}\u201d`} count={agentHits.length} variant="active">
+            {agentHits.length ? (
+              <div className="space-y-2">
+                {agentHits.slice(0, 60).map((agent) => (
+                  <AgentRow key={agent.id} agent={agent} showProject />
+                ))}
+                {agentHits.length > 60 && (
+                  <p className="text-xs text-gray-500">{agentHits.length - 60} more; add a word to narrow it.</p>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500">No agent matches. Search looks at names, sessions, projects, machines, folders and the idea an agent was started from.</p>
+            )}
+          </Section>
+          {projectHits.length > 0 && (
+            <Section title="Projects" count={projectHits.length} variant="idle">
+              <div className="space-y-4">
+                {projectHits.slice(0, 20).map((project) => (
+                  <ProjectCard key={project.id} project={project} agents={projectAgents[project.id] || []} />
+                ))}
+              </div>
+            </Section>
+          )}
+        </div>
+      )}
+
+      {view === 'projects' && !searching && (
         <div>
           {/* Active Projects */}
           <Section title="Active" count={activeProjects.length + activeSwarms.length} variant="active">
@@ -419,7 +507,7 @@ function Dashboard() {
       )}
 
       {/* Agents View */}
-      {view === 'agents' && (
+      {view === 'agents' && !searching && (
         <div>
           {/* A swarm belongs to the agent that launched it, so it nests UNDER that
               agent rather than floating at the top: a swarm is something an agent is
