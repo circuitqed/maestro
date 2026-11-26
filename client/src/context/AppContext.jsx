@@ -13,6 +13,7 @@ export function AppProvider({ children }) {
   const [agents, setAgents] = useState([]);
   const [hosts, setHosts] = useState([]);
   const [activeTerminal, setActiveTerminal] = useState(null);
+  const [loginInfo, setLoginInfo] = useState({ passwordLogin: true, googleEmail: null });
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [swarms, setSwarms] = useState([]);
   const [swarmGlobal, setSwarmGlobal] = useState(null);
@@ -59,6 +60,7 @@ export function AppProvider({ children }) {
       setAuthenticated(data.authenticated);
       setUser(data.user);
       setSetupRequired(data.setupRequired || false);
+      setLoginInfo({ passwordLogin: data.passwordLogin !== false, googleEmail: data.googleEmail || null });
     } catch (err) {
       console.error('Auth check failed:', err);
     } finally {
@@ -112,6 +114,11 @@ export function AppProvider({ children }) {
     setSwarms([]);
     setSwarmGlobal(null);
     setActiveSwarm(null);
+    // Through the public address the Google (Access) cookie would sign straight back
+    // in on the next request, so end that too.
+    if (!/^(localhost|127\.|10\.|100\.|192\.168\.)/.test(window.location.hostname)) {
+      window.location.href = '/cdn-cgi/access/logout';
+    }
   };
 
   const loadProjects = async () => {
@@ -704,6 +711,7 @@ export function AppProvider({ children }) {
     // Auth
     authenticated,
     user,
+    loginInfo,
     setupRequired,
     loading,
     login,

@@ -3,6 +3,8 @@ import session from 'express-session';
 import { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 import path from 'path';
+import crypto from 'crypto';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 import authRoutes from './routes/auth.js';
@@ -12,6 +14,7 @@ import connectionRoutes from './routes/connections.js';
 import hostsRoutes from './routes/hosts.js';
 import usageRoutes from './routes/usage.js';
 import pushRoutes from './routes/push.js';
+import { accessLogin, ensureEmailsColumn } from './services/accessAuth.js';
 import transcribeRoutes from './routes/transcribe.js';
 import spawnRoutes from './routes/spawn.js';
 import { initPush, onAgentWaiting } from './services/push.js';
@@ -61,11 +64,26 @@ server.requestTimeout = 0;
 server.timeout = 5 * 60 * 1000;
 
 // Session configuration with SQLite store for persistence
+// The cookie-signing secret. It defaulted to a string in this (public) repo, so anyone
+// could forge an admin session for the public URL; found and fixed 2026-11-26. Now:
+// SESSION_SECRET from .env (gitignored), else a random one kept in data/ -- never a
+// constant in source.
+function sessionSecret() {
+  const env = process.env.SESSION_SECRET;
+  if (env && env !== 'maestro-secret-change-in-production' && env.length >= 32) return env;
+  const f = path.join(__dirname, 'data', '.session-secret');
+  try { const v = fs.readFileSync(f, 'utf8').trim(); if (v.length >= 32) return v; } catch { /* make one */ }
+  const v = crypto.randomBytes(48).toString('base64url');
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, v, { mode: 0o600 });
+  return v;
+}
+
 const sessionParser = session({
   store: new SQLiteStore({
     ttl: 7 * 24 * 60 * 60 * 1000, // 7 days
   }),
-  secret: process.env.SESSION_SECRET || 'maestro-secret-change-in-production',
+  secret: sessionSecret(),
   resave: false,
   saveUninitialized: false,
   cookie: {
@@ -81,6 +99,7 @@ const sessionParser = session({
 // parse and reported as "Maestro is down".
 app.use(express.json({ limit: '4mb' }));
 app.use(sessionParser);
+app.use(accessLogin());  // Google sign-in via Cloudflare Access (services/accessAuth.js)
 
 // API Routes
 app.use('/api/agent', agentApiRoutes);  // called by agents themselves, token-authed
@@ -207,6 +226,7 @@ const PORT = process.env.PORT || 5000;
 
 initDb().then(() => {
   try { initPush(); } catch (err) { console.error('push: init failed', err.message); }
+  try { ensureEmailsColumn(); } catch (err) { console.error('users.emails migration failed', err.message); }
   server.listen(PORT, () => {
     console.log(`Maestro server running on port ${PORT}`);
     // Start monitoring agents for idle/busy state

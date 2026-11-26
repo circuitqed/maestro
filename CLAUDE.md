@@ -222,6 +222,29 @@ panel/modal header switches live. The tmux TUI stays the single source of truth:
   the client renders it with the Claude path unchanged. A tool output always sits at
   the step right after its call, so pairing is by step index and stateless.
 
+## Login: Google via Cloudflare Access (2026-11-26)
+
+- **maestro.lazybrains.com is behind Cloudflare Access** (Google; Dave's two addresses;
+  730 h session). `services/accessAuth.js` verifies the `Cf-Access-Jwt-Assertion`
+  (RS256 against the team certs, aud = setting `access_aud`, iss, exp) and maps its
+  email to `users.emails` (comma separated), creating the session. The signature is
+  what matters: the header alone can be sent by anyone on the tailnet.
+- **Password login is refused through the tunnel** (`cf-ray`/`cf-connecting-ip`
+  present) unless setting `password_login_public`=on; it still works on localhost and
+  the tailnet, so Maestro stays reachable if Cloudflare or Google is down. Agents use
+  `http://100.72.255.33:7007` (tailnet), so Access never touches them.
+- `/api/view/*` is an Access **bypass** app: those pages run in a sandboxed opaque
+  origin whose subresource requests carry no cookies, and they are already authorised
+  by the HMAC capability token in the URL.
+- Logout through the public URL also goes to `/cdn-cgi/access/logout`, or the Access
+  cookie would sign straight back in.
+- **Session secret:** it used to default to a string in this public repo (anyone could
+  forge an admin cookie). Now `SESSION_SECRET` comes from `.env` (gitignored, 0600), or
+  the server generates `data/.session-secret`. Never a constant in source.
+- Adding a person: put their Google address(es) in `users.emails` AND their address in
+  the Access app (`cf-access-add maestro.lazybrains.com --allow ...` replaces the list:
+  include Dave's two).
+
 ## Terminal UX
 
 - **Desktop (>= 768px):** Full-height resizable side panel using react-resizable-panels

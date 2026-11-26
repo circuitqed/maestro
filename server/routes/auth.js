@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { passwordAllowed } from '../services/accessAuth.js';
 import bcrypt from 'bcrypt';
 import {
   getUserByUsername, getUserById, getUserCount, getUsers, normalizeUsername,
@@ -29,7 +30,13 @@ router.get('/session', (req, res) => {
     }
   }
 
-  res.json({ authenticated: false, user: null, setupRequired: false });
+  res.json({
+    authenticated: false, user: null, setupRequired: false,
+    // Through the public URL, Google (Cloudflare Access) is the login; the password
+    // form is only offered on localhost / the tailnet.
+    passwordLogin: passwordAllowed(req),
+    googleEmail: req.accessUnknownEmail || null,
+  });
 });
 
 // First-time admin setup
@@ -54,6 +61,9 @@ router.post('/setup', async (req, res) => {
 // Login
 router.post('/login', async (req, res) => {
   const { username, password } = req.body;
+  if (!passwordAllowed(req)) {
+    return res.status(403).json({ error: 'Password login is off on the public address. Sign in with Google.' });
+  }
 
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password required' });

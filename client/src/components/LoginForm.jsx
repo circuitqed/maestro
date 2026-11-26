@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 
 function LoginForm() {
-  const { login, setup, setupRequired } = useApp();
+  const { login, setup, setupRequired, loginInfo } = useApp();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -25,6 +25,27 @@ function LoginForm() {
       setLoading(false);
     }
   };
+
+  // On the public address the login is Google (Cloudflare Access) and the password
+  // form is refused by the server, so don't offer it.
+  if (!setupRequired && loginInfo && loginInfo.passwordLogin === false) {
+    return (
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
+        <div className="bg-gray-800 rounded-lg p-6 shadow-xl max-w-sm w-full space-y-3">
+          <h1 className="text-xl font-bold text-white">Maestro</h1>
+          {loginInfo.googleEmail ? (
+            <p className="text-sm text-gray-300">
+              You're signed in with Google as <span className="text-white">{loginInfo.googleEmail}</span>, but that
+              address isn't linked to a Maestro user. Ask an admin to add it.
+            </p>
+          ) : (
+            <p className="text-sm text-gray-300">Maestro uses Google sign-in. Reload the page to sign in.</p>
+          )}
+          <a href="/cdn-cgi/access/logout" className="inline-block text-sm text-blue-300 hover:text-blue-200">Sign out of Google for this site</a>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
