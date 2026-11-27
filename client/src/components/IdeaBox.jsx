@@ -55,6 +55,15 @@ export default function IdeaBox() {
     return () => { live = false; };
   }, [card && card.hostId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The "Started …" line is a receipt, not state: it used to stay until the page
+  // reloaded. A failure (yap or GitHub) is kept longer, since it asks for action.
+  useEffect(() => {
+    if (!done) return undefined;
+    const failed = !done.yap || (done.github && done.github.error);
+    const t = setTimeout(() => setDone(null), failed ? 120000 : 20000);
+    return () => clearTimeout(t);
+  }, [done]);
+
   useLayoutEffect(() => {
     const el = inputRef.current;
     if (!el) return;
@@ -93,7 +102,7 @@ export default function IdeaBox() {
   const host = card && hosts.find((h) => h.id === Number(card.hostId));
 
   return (
-    <div className="bg-gray-800 rounded-lg p-3 mb-4 border border-gray-700">
+    <div className="bg-gray-800 rounded-lg p-2 mb-3 border border-gray-700">
       {/* Phones: the field takes the whole first row, mic and Draft go underneath. On
           md+ it is one row: mic, field, Draft. */}
       <div className="flex flex-wrap md:flex-nowrap items-end gap-2">
@@ -118,11 +127,16 @@ export default function IdeaBox() {
       </div>
 
       {error && <p role="alert" className="mt-2 text-sm text-red-300">{error}</p>}
-      {done && (
-        <p className="mt-2 text-sm text-emerald-300">
-          Started {done.agent && done.agent.name} in {done.dir}{done.yap ? ', on yap' : ' (yap token failed; issue it by hand)'}{done.web ? `, at ${done.web.url} (port ${done.web.port})` : ''}{done.github ? (done.github.error ? `. GitHub failed: ${done.github.error}` : `, pushing to ${done.github.url}`) : ''}.
-        </p>
-      )}
+      {done && (() => {
+        const full = `Started ${done.agent ? done.agent.name : 'agent'} in ${done.dir}${done.yap ? ', on yap' : ' (yap token failed; issue it by hand)'}${done.web ? `, at ${done.web.url} (port ${done.web.port})` : ''}${done.github ? (done.github.error ? `. GitHub failed: ${done.github.error}` : `, pushing to ${done.github.url}`) : ''}.`;
+        return (
+          <div className="mt-2 flex items-center gap-2 text-sm text-emerald-300">
+            {/* One line; the whole sentence is on hover. It clears itself after 20 s. */}
+            <p className="flex-1 min-w-0 truncate" title={full}>{full}</p>
+            <button type="button" onClick={() => setDone(null)} aria-label="Dismiss" title="Dismiss" className="flex-shrink-0 w-8 h-8 -my-1.5 rounded text-gray-400 hover:text-gray-100 hover:bg-gray-700">×</button>
+          </div>
+        );
+      })()}
 
       {card && (
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
