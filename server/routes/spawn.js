@@ -1,6 +1,6 @@
 import express from 'express';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
-import { draft, spawn } from '../services/spawn.js';
+import { draft, spawn, githubForAgent } from '../services/spawn.js';
 import { registerAgent } from '../services/agentMonitor.js';
 
 // The dashboard's idea box (services/spawn.js). Admin only: it creates projects,
@@ -20,6 +20,15 @@ router.post('/go', async (req, res) => {
   try {
     const out = await spawn(req.body || {}, { userId: req.user && req.user.id, registerAgent });
     res.status(201).json(out);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// A GitHub repo + deploy key for an existing agent.
+router.post('/github', async (req, res) => {
+  try {
+    res.json(await githubForAgent(Number(req.body && req.body.agentId), req.body && req.body.repo));
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

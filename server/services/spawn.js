@@ -12,8 +12,10 @@
  *   spawn(card)  does every step, in order, with nothing left for a person:
  *                dir + scaffold (AGENTS.md, git) -> .claude/settings.json with the
  *                connectors off -> directory pre-trusted for that account -> agent row
- *                -> yap token straight to the host -> start -> the idea delivered as
- *                its first message once its composer is up.
+ *                -> GitHub repo + per-repo deploy key (github.js) -> yap token straight
+ *                to the host -> start -> the idea delivered as its first message
+ *                once its composer is up.
+ *   githubForAgent(id, repo)  the GitHub step alone, for an agent that already exists.
  *
  * Pre-trusting is done here, and only here, because the person just asked for this
  * directory to be created and run: the Go tap IS the trust decision. Maestro still
@@ -37,6 +39,7 @@ import { sanitizeSessionName, uniqueSessionName } from './sessions.js';
 import { getTmuxSessions, capturePane, sendText } from './tmux.js';
 import { startAgentSession } from './agentStart.js';
 import { looksLikePrompt } from './inject.js';
+import { setupGithub, validRepo, repoExists } from './github.js';
 
 const execFileAsync = promisify(execFile);
 const execAsync = promisify(exec);
@@ -200,6 +203,7 @@ export async function draft(idea) {
  "description": one sentence saying what this agent does, for its card,
  "why": a few words on the host choice,
  "url": if the idea is something people open in a browser (a web app, site, dashboard, form, API others call), a public hostname for it, else null. Lab and research things go on circuitqed.com, Dave's personal projects on lazybrains.com; a short memorable subdomain (e.g. "inventory.circuitqed.com"). Use a hostname Dave named if he gave one,
+ "github": the GitHub repo for its code as "owner/name", or null. Almost every agent that writes code wants one: lab and research work goes under "SchusterLab", Dave's personal projects under "circuitqed"; the name is usually the agent's name. null only for an agent that writes no code (a monitor, a one-off question),
  "access": who may open the url: "lab" (Stanford Google accounts and Dave; the default for lab tools), "dave" (only Dave), "anyone" (any Google account), or "public" (no login, only for things meant to be public),
  "firstPrompt": the first message the agent will receive: Dave's idea restated as a clear task, keeping every specific he gave (names, numbers, machines), adding nothing he didn't ask for. Written to the agent in second person. Plain text.}
 
@@ -245,6 +249,7 @@ ${projectsText}`;
     claudeConfigDir: defaultAccountFor(host.id),
     url: validHostname(card.url) ? String(card.url).toLowerCase() : '',
     access: ACCESS.includes(card.access) ? card.access : 'lab',
+    github: validRepo(card.github) ? String(card.github) : '',
   };
 }
 
@@ -304,7 +309,7 @@ async function dirExists(host, dir) {
   }
 }
 
-function firstMessage(card, agent, host, dir, yapOk, web = null) {
+function firstMessage(card, agent, host, dir, yapOk, web = null, github = null) {
   const lines = [
     `[from Maestro, for Dave] ${card.firstPrompt.trim()}`,
     '',
@@ -314,6 +319,11 @@ function firstMessage(card, agent, host, dir, yapOk, web = null) {
   ];
   if (web) {
     lines.push(`Your public address is ${web.url}, ${ACCESS_TEXT[web.access]} (Cloudflare tunnel and Access are already set up). Serve on ${web.bind}; in docker-compose that is \`ports: ["${web.bind.startsWith('127') ? '127.0.0.1:' : ''}${web.port}:<container port>"]\`. Don't use another port. ${web.access === 'public' ? '' : 'Cloudflare checks the login before a request reaches you; read the signed-in person from the Cf-Access-Authenticated-User-Email header (details: /home/projects/docs/google-login.md).'}`);
+  }
+  if (github && !github.error) {
+    lines.push(`GitHub: ${github.url} (${github.created ? 'new, private' : 'existing'}) is your repo; remote origin = ${github.remote}, which uses a deploy key on this machine that can push to that repo only.${github.pushed ? ' The initial commit is already pushed.' : ''}${github.note ? ` ${github.note}` : ''} Commit and push your work there.`);
+  } else if (github && github.error) {
+    lines.push(`GitHub setup for ${github.repo} failed (${github.error}); tell Dave if you need it.`);
   }
   if (yapOk) {
     lines.push(`You're on yap as dave/${agent.screen_session}, the lab's agent message board. Before starting: run \`yap help\`, post your card (what you do, in a sentence or two: "${card.description}"), then \`yap new\`.`);
@@ -374,6 +384,15 @@ export async function spawn(card, { userId = null, registerAgent } = {}) {
     }
   }
 
+  // GitHub: refuse a taken name now, before anything is created. A drafted name that
+  // matches a real repo must not hand this agent write access to it; an agent run in
+  // an existing working dir may of course use that repo's own GitHub repo.
+  const githubRepo = String(card.github || '').trim();
+  if (githubRepo) {
+    if (!validRepo(githubRepo)) throw new Error(`"${githubRepo}" is not an owner/repo name.`);
+    if (!existingDir && await repoExists(githubRepo)) throw new Error(`github.com/${githubRepo} already exists; pick another name, or leave the GitHub field blank.`);
+  }
+
   // Project: existing, or a new one named for the idea.
   let project = card.projectId ? getProject(card.projectId) : null;
   if (card.projectId && !project) throw new Error('That project no longer exists.');
@@ -390,6 +409,16 @@ export async function spawn(card, { userId = null, registerAgent } = {}) {
   }
   await writeProjectSettings(host, dir);
   if (isRemote(host) && !project.path) setProjectHostPath(project.id, host.id, dir);
+
+  let github = null;
+  if (githubRepo) {
+    try {
+      github = await setupGithub(host, dir, githubRepo, { allowExisting: !!existingDir, description, agentName: name });
+    } catch (err) {
+      console.error('spawn: github failed', err.message);
+      github = { repo: githubRepo, error: err.message };
+    }
+  }
 
   // URL before the agent exists, so a name clash fails the start instead of leaving
   // an agent told about an address it doesn't have.
@@ -424,8 +453,28 @@ export async function spawn(card, { userId = null, registerAgent } = {}) {
 
   const fresh = getAgent(agent.id);
   await startAgentSession(fresh, host, { registerAgent });
-  deliverFirst(agent.id, host, firstMessage({ ...card, description }, fresh, host, dir, yapOk, web))
+  deliverFirst(agent.id, host, firstMessage({ ...card, description }, fresh, host, dir, yapOk, web, github))
     .catch((err) => console.error('spawn: deliver', err.message));
 
-  return { agent: getAgent(agent.id), dir, project: getProject(project.id), yap: yapOk, web };
+  return { agent: getAgent(agent.id), dir, project: getProject(project.id), yap: yapOk, web, github };
+}
+
+/**
+ * GitHub for an agent that already exists (the agent menu's "GitHub repo…"). An
+ * existing repo is allowed: Dave typed this name for this agent. The agent is told
+ * once its composer is free, the same way as a first message.
+ */
+export async function githubForAgent(agentId, repo) {
+  const agent = getAgent(agentId);
+  if (!agent) throw new Error('Unknown agent.');
+  const host = agent.host_id ? getHost(agent.host_id) : getHosts().find((h) => !isRemote(h));
+  const dir = agent.working_dir || (agent.project_id && getProject(agent.project_id)?.path);
+  if (!host || !dir) throw new Error('This agent has no working directory to attach a repo to.');
+  try { await execOnHost(host, `git -C ${shellQuote(dir)} rev-parse --git-dir >/dev/null`); } catch {
+    throw new Error(`${dir} on ${host.name} is not a git repository.`);
+  }
+  const out = await setupGithub(host, dir, String(repo || '').trim(), { allowExisting: true, agentName: agent.name });
+  const msg = `[from Maestro, for Dave] GitHub is set up: ${out.url} (${out.created ? 'new, private' : 'existing'}). Remote origin = ${out.remote}, using a deploy key on this machine that can push to that repo only.${out.pushed ? ' Your current branch is pushed.' : ''}${out.note ? ` ${out.note}` : ''}`;
+  deliverFirst(agent.id, host, msg).catch((err) => console.error('github: notify', err.message));
+  return { ...out, dir, host: host.name };
 }

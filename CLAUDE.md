@@ -618,6 +618,17 @@ wait. Now: type or dictate the idea -> **Draft** -> an editable card -> **Start 
   `Cf-Access-Authenticated-User-Email`. A hostname that already routes elsewhere is
   refused: cf-tunnel-add would silently re-point it. `existing workingDir` on a card
   runs the agent in an existing repo without scaffolding (how the yap agent was made).
+- **GitHub** (`services/github.js`): the card's GitHub field (drafted: lab -> `SchusterLab/<name>`,
+  personal -> `circuitqed/<name>`) creates a PRIVATE repo, makes a per-repo deploy key on the
+  agent's host (`~/.ssh/deploy/<repo>`, alias `Host github-<repo>` in `~/.ssh/config`, the
+  fleet's existing convention), adds it with write access, sets `origin` to
+  `git@github-<repo>:<owner>/<repo>.git` and pushes the scaffold commit. A repo that already
+  exists is refused (a drafted name must not hand out write access to a real repo), except
+  for an existing `workingDir`. Existing agents: the row's ⋯ -> **GitHub repo…** (admin;
+  `POST /api/spawn/github {agentId, repo}`) does the same, allows an existing repo, never
+  replaces an existing `origin`, and tells the agent when its composer is free. The API
+  token is gh's, read from `~/.config/gh/hosts.yml`; it has no `delete_repo` scope, so a
+  test repo can't be cleaned up: test against an existing one.
 - The composer line is `❯` + a **no-break space**: match `/^\s*❯(\s|$)/m`, not `'❯ '`.
 - Verified end to end on zlmc 2026-11-26 (two throwaway agents, then deleted by id).
 

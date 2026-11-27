@@ -120,7 +120,7 @@ export default function IdeaBox() {
       {error && <p role="alert" className="mt-2 text-sm text-red-300">{error}</p>}
       {done && (
         <p className="mt-2 text-sm text-emerald-300">
-          Started {done.agent && done.agent.name} in {done.dir}{done.yap ? ', on yap' : ' (yap token failed; issue it by hand)'}{done.web ? `, at ${done.web.url} (port ${done.web.port})` : ''}.
+          Started {done.agent && done.agent.name} in {done.dir}{done.yap ? ', on yap' : ' (yap token failed; issue it by hand)'}{done.web ? `, at ${done.web.url} (port ${done.web.port})` : ''}{done.github ? (done.github.error ? `. GitHub failed: ${done.github.error}` : `, pushing to ${done.github.url}`) : ''}.
         </p>
       )}
 
@@ -191,6 +191,18 @@ export default function IdeaBox() {
             </select>
           </div>
           <div className="sm:col-span-2">
+            <span className={label}>GitHub repo (blank = none)</span>
+            <input
+              className={field}
+              value={card.github || ''}
+              onChange={set('github')}
+              placeholder="SchusterLab/name"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+          </div>
+          <div className="sm:col-span-2">
             <span className={label}>First message</span>
             <textarea className={`${field} min-h-[80px]`} value={card.firstPrompt} onChange={set('firstPrompt')} />
           </div>
@@ -211,7 +223,7 @@ export default function IdeaBox() {
               Discard
             </button>
             <span className="text-xs text-gray-500">
-              Sets up its folder and git, turns the claude.ai connectors off, trusts the folder and puts it on yap{(card.url || '').trim() ? `, and routes https://${card.url.trim()} to a port it is given` : ''}.
+              Sets up its folder and git, turns the claude.ai connectors off, trusts the folder and puts it on yap{(card.github || '').trim() ? `, creates ${card.github.trim()} (private) with a deploy key for it` : ''}{(card.url || '').trim() ? `, and routes https://${card.url.trim()} to a port it is given` : ''}.
             </span>
           </div>
         </div>

@@ -16,7 +16,7 @@ const STATUS_COLORS = {
 };
 
 function AgentRow({ agent, showProject = false }) {
-  const { startAgent, stopAgent, deleteAgent, openAgentView, toggleAgentFavorite, agentWaiting, agentStates } = useApp();
+  const { startAgent, stopAgent, deleteAgent, openAgentView, toggleAgentFavorite, agentWaiting, agentStates, user } = useApp();
   const waitingAt = agentWaiting && agentWaiting[agent.id];
   const [showMenu, setShowMenu] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -43,6 +43,26 @@ function AgentRow({ agent, showProject = false }) {
       await stopAgent(agent.id);
     } catch (err) {
       console.error('Failed to stop agent:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // A private repo + a deploy key on the agent's machine, and the agent told (services/github.js).
+  const handleGithub = async () => {
+    const repo = window.prompt('GitHub repo for this agent (owner/name). Created private if it doesn\u2019t exist; the agent gets a key that can push to it only.', `SchusterLab/${agent.screen_session || agent.name}`);
+    if (!repo || !repo.trim()) return;
+    setLoading(true);
+    try {
+      const res = await fetch('/api/spawn/github', {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: agent.id, repo: repo.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      window.alert(`${data.created ? 'Created' : 'Connected'} ${data.url}.${data.pushed ? ' Pushed.' : ''}${data.note ? ` ${data.note}` : ''} The agent has been told.`);
+    } catch (err) {
+      window.alert(`GitHub setup failed: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -263,7 +283,16 @@ function AgentRow({ agent, showProject = false }) {
                     {loading ? 'Stopping…' : 'Stop'}
                   </button>
                 )}
-                {isRunning && <div className="my-1 border-t border-gray-700" />}
+                {user?.role === 'admin' && provider !== 'shell' && (
+                  <button
+                    onClick={() => { setShowMenu(false); handleGithub(); }}
+                    disabled={loading}
+                    className="w-full px-3 py-2.5 md:py-2 text-left text-sm text-gray-200 hover:bg-gray-700 disabled:opacity-50"
+                  >
+                    GitHub repo…
+                  </button>
+                )}
+                <div className="my-1 border-t border-gray-700" />
                 <button
                   onClick={() => {
                     setShowMenu(false);
