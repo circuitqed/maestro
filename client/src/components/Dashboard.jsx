@@ -325,8 +325,23 @@ function Dashboard() {
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
-              className="w-full rounded-md bg-gray-800 border border-gray-700 pl-8 pr-3 py-2 md:py-1.5 text-base md:text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-primary-500"
+              className="maestro-search w-full rounded-md bg-gray-800 border border-gray-700 pl-8 pr-10 py-2 md:py-1.5 text-base md:text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-primary-500"
             />
+            {query && (
+              // Our own clear button: the native one is hidden (index.css) because iOS
+              // barely shows it and desktop draws it in a colour that ignores the theme.
+              <button
+                type="button"
+                onClick={() => { setQuery(''); searchRef.current && searchRef.current.focus(); }}
+                aria-label="Clear search"
+                title="Clear search (Esc)"
+                className="absolute right-0 top-0 h-full w-10 flex items-center justify-center text-gray-400 hover:text-gray-100"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+            )}
           </div>
         )}
 
