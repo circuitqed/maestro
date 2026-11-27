@@ -81,13 +81,16 @@ export function hasSubscription(endpoint) {
   return !!getDb().prepare('SELECT 1 FROM push_subscriptions WHERE endpoint = ?').get(endpoint);
 }
 
-/** Send one payload to every subscription (or only `endpoint`). Returns counts. */
-export async function sendToAll(payload, { endpoint } = {}) {
+/** Send one payload to every subscription (or only `endpoint`, or only admins'). Returns counts. */
+export async function sendToAll(payload, { endpoint, admins = false } = {}) {
   if (!ready || getSetting('push') === 'off') return { sent: 0, failed: 0, removed: 0, disabled: true };
   const db = getDb();
+  // admins: machine alerts (disk) are for whoever runs the fleet, not every signed-in phone.
   const subs = endpoint
     ? db.prepare('SELECT * FROM push_subscriptions WHERE endpoint = ?').all(endpoint)
-    : db.prepare('SELECT * FROM push_subscriptions').all();
+    : admins
+      ? db.prepare("SELECT s.* FROM push_subscriptions s JOIN users u ON u.id = s.user_id WHERE u.role = 'admin'").all()
+      : db.prepare('SELECT * FROM push_subscriptions').all();
   const body = JSON.stringify(payload);
   let sent = 0, failed = 0, removed = 0;
   await Promise.all(subs.map(async (s) => {

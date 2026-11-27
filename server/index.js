@@ -19,6 +19,7 @@ import { userGate } from './services/userGate.js';
 import transcribeRoutes from './routes/transcribe.js';
 import spawnRoutes from './routes/spawn.js';
 import { initPush, onAgentWaiting } from './services/push.js';
+import { startDiskWatch } from './services/diskWatch.js';
 import accountLoginRoutes from './routes/accountLogin.js';
 import agentApiRoutes from './routes/agentApi.js';
 import swarmApiRoutes from './routes/swarmApi.js';
@@ -259,6 +260,7 @@ const PORT = process.env.PORT || 5000;
 
 initDb().then(() => {
   try { initPush(); } catch (err) { console.error('push: init failed', err.message); }
+  startDiskWatch();
   try { ensureEmailsColumn(); } catch (err) { console.error('users.emails migration failed', err.message); }
   server.listen(PORT, () => {
     console.log(`Maestro server running on port ${PORT}`);
