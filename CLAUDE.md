@@ -268,6 +268,15 @@ panel/modal header switches live. The tmux TUI stays the single source of truth:
   `oracle-allen` = `allen@100.72.255.33`; his repo is `/home/allen/allen-rental`, the
   `rental` container mounts from there; his agent signs into his own Claude account.
   No `~/.maestro` token and no yap identity for him.
+- **James Sedoruk** (2026-11-27), same pattern: Linux user `james`, host `oracle-james`
+  (id 9, `james@100.72.255.33`), project dc-monitor-startup moved to
+  `/home/james/dc-monitor-startup` (old copy `/home/projects/.dc-monitor-startup-moved-20261127`),
+  sudo only `docker restart|logs dc-monitor-startup-web-1`, his own Claude login, no yap.
+  The agent restarted with a fresh conversation (its old transcript is in dave's home and
+  was not copied: it held Dave's side of planning the pitch to James's company).
+- Found while setting him up: `/opt/stacks/cloudflared/compose.yaml` (holds the TUNNEL_TOKEN)
+  was world-readable since Jan; now root-only (700/600). Check other users can't read
+  secrets outside home dirs whenever an outside user is added.
 - **Access login methods** for maestro.lazybrains.com: Google AND one-time email code
   (Allen's address is Yahoo). `cf-access-add` forces Google-only and REPLACES the allow
   list: re-running it would drop the email code and anyone not passed with `--allow`.
