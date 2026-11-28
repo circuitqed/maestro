@@ -278,7 +278,7 @@ panel/modal header switches live. The tmux TUI stays the single source of truth:
   was world-readable since Jan; now root-only (700/600). Check other users can't read
   secrets outside home dirs whenever an outside user is added.
 - **Access login methods** for maestro.lazybrains.com: Google AND one-time email code
-  (Allen's address is Yahoo). `cf-access-add` forces Google-only and REPLACES the allow
+  (added for Allen's Yahoo address; since 2026-11-28 he uses allen.shealy@gmail.com with Google). `cf-access-add` forces Google-only and REPLACES the allow
   list: re-running it would drop the email code and anyone not passed with `--allow`.
 
 ## Terminal UX
